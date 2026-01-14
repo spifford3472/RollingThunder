@@ -1,0 +1,38 @@
+{
+  "id": "hf",
+  "order": 2,
+  "title": "HF",
+
+  "layout": {
+    "top": ["topbar_core"],
+    "middle": [
+      ["hf_status"]
+    ],
+    "bottom": []
+  },
+
+  "requires": ["redis_state", "mqtt_bus"],
+  "optional": ["hf_radio_proxy", "logging", "noaa_same", "meshtastic_c2"],
+
+  "controls": {
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.ok",
+      "ui.cancel",
+      "alert.ack",
+      "radio.hf.query"
+    ]
+  },
+
+  "focusPolicy": {
+    "defaultPanel": "hf_status",
+    "rotation": ["hf_status", "alerts_overlay"]
+  },
+
+  "meta": {
+    "purpose": "HF status page. Read-only by default."
+  }
+}

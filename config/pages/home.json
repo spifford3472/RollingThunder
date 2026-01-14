@@ -1,0 +1,40 @@
+{
+  "id": "home",
+  "order": 1,
+  "title": "Home",
+
+  "layout": {
+    "top": ["topbar_core"],
+    "middle": [
+      ["alerts_overlay"],
+      ["node_health_summary"]
+    ],
+    "bottom": []
+  },
+
+  "requires": ["redis_state", "mqtt_bus", "gps_ingest"],
+  "optional": ["logging", "node_health", "noaa_same", "meshtastic_c2"],
+
+  "controls": {
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.ok",
+      "ui.cancel",
+      "alert.ack",
+      "alert.silence",
+      "host.status"
+    ]
+  },
+
+  "focusPolicy": {
+    "defaultPanel": "alerts_overlay",
+    "rotation": ["alerts_overlay", "node_health_summary"]
+  },
+
+  "meta": {
+    "purpose": "Default safe landing page with alerts + system health."
+  }
+}

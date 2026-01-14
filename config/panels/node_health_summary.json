@@ -1,0 +1,23 @@
+{
+  "id": "node_health_summary",
+  "type": "node_health_summary",
+  "focusable": true,
+
+  "refresh": { "mode": "poll", "intervalMs": 1000 },
+
+  "bindings": {
+    "nodes": { "source": "state", "key": "rt:nodes:health" },
+    "controller": { "source": "state", "key": "rt:node:rt-controller" },
+    "radio": { "source": "state", "key": "rt:node:rt-radio" },
+    "display": { "source": "state", "key": "rt:node:rt-display" },
+    "wpsd": { "source": "state", "key": "rt:node:rt-wpsd" }
+  },
+
+  "actions": [
+    { "intent": "host.status", "params": { "scope": "summary" } }
+  ],
+
+  "meta": {
+    "purpose": "At-a-glance health of nodes/services."
+  }
+}

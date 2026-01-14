@@ -1,0 +1,24 @@
+{
+  "id": "hf_status",
+  "type": "radio_status",
+  "focusable": true,
+
+  "refresh": { "mode": "poll", "intervalMs": 500 },
+
+  "bindings": {
+    "snapshot": { "source": "state", "key": "rt:hf:snapshot" }
+  },
+
+  "actions": [
+    { "intent": "radio.hf.query" },
+    { "intent": "ui.open", "params": { "target": "qso_logger" } }
+  ],
+
+  "drivingMode": {
+    "allowActions": ["radio.hf.query"]
+  },
+
+  "meta": {
+    "purpose": "HF read-only status panel (freq/mode/ptt/tx)."
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "alerts_overlay",
+  "type": "alerts_overlay",
+  "focusable": true,
+
+  "refresh": { "mode": "push", "topic": "rt/alerts/active" },
+
+  "bindings": {
+    "alerts": { "source": "state", "key": "rt:alerts:active" },
+    "focused_alert": { "source": "state", "key": "rt:alerts:focused" }
+  },
+
+  "actions": [
+    { "intent": "alert.ack", "params": { "scope": "focused" } },
+    { "intent": "alert.ack", "params": { "scope": "all_visible" } },
+    { "intent": "alert.silence", "params": { "minutes": 10 } }
+  ],
+
+  "drivingMode": {
+    "allowActions": ["alert.ack"]
+  },
+
+  "meta": {
+    "purpose": "Cross-page alert UI. Must be safe while driving."
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "topbar_core",
+  "type": "topbar",
+  "focusable": false,
+
+  "refresh": { "mode": "poll", "intervalMs": 500 },
+
+  "bindings": {
+    "clock": { "source": "state", "key": "rt:gps:time" },
+    "gps_fix": { "source": "state", "key": "rt:gps:fix" },
+    "gps_speed": { "source": "state", "key": "rt:gps:speed" },
+    "active_alerts": { "source": "state", "key": "rt:alerts:active" }
+  },
+
+  "meta": {
+    "purpose": "Always-visible status bar (time, gps, alert indicator). No actions."
+  }
+}
