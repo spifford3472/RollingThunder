@@ -34,3 +34,14 @@ coverage/
 # Misc
 *.log
 .venv/
+
+# Local overrides / secrets
+config/app.local.json
+config/*.secrets.json
+
+# Runtime state (never in Git)
+var/
+state/
+
+
+
