@@ -17,7 +17,9 @@
     "python.analysis.autoImportCompletions": true,
 
     "docker.commands.composeUp": "docker compose -f infra/docker/compose.dev.yml up -d",
-    "docker.commands.composeDown": "docker compose -f infra/docker/compose.dev.yml down"
+    "docker.commands.composeDown": "docker compose -f infra/docker/compose.dev.yml down",
+    "containers.commands.composeUp": "docker compose -f infra/docker/compose.dev.yml up -d",
+    "containers.commands.composeDown": "docker compose -f infra/docker/compose.dev.yml down"
   },
   "extensions": {
     "recommendations": [
@@ -29,4 +31,10 @@
       "dbaeumer.vscode-eslint"
     ]
   }
+  {
+  "github.copilot.enable": {
+    "*": true
+  },
+  "github.copilot.editor.enableAutoCompletions": true
+}
 }
