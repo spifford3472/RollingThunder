@@ -5,13 +5,13 @@
 
   "refresh": { "mode": "poll", "intervalMs": 1000 },
 
-  "bindings": {
-    "nodes": { "source": "state", "key": "rt:nodes:health" },
-    "controller": { "source": "state", "key": "rt:node:rt-controller" },
-    "radio": { "source": "state", "key": "rt:node:rt-radio" },
-    "display": { "source": "state", "key": "rt:node:rt-display" },
-    "wpsd": { "source": "state", "key": "rt:node:rt-wpsd" }
-  },
+  "bindings": [
+    {"id": "nodes", "source": "state", "key": "rt:nodes:health" },
+    {"id": "controller", "source": "state", "key": "rt:node:rt-controller" },
+    {"radio": "alerts", "source": "state", "key": "rt:node:rt-radio" },
+    {"display": "alerts", "source": "state", "key": "rt:node:rt-display" },
+    {"id": "wpsd", "source": "state", "key": "rt:node:rt-wpsd" }
+  ],
 
   "actions": [
     { "intent": "host.status", "params": { "scope": "summary" } }

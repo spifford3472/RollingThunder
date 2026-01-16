@@ -5,9 +5,9 @@
 
   "refresh": { "mode": "poll", "intervalMs": 500 },
 
-  "bindings": {
-    "snapshot": { "source": "state", "key": "rt:hf:snapshot" }
-  },
+  "bindings": [
+    {"id": "snapshot", "source": "state", "key": "rt:hf:snapshot" }
+  ],
 
   "actions": [
     { "intent": "radio.hf.query" },

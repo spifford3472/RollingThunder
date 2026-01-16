@@ -5,10 +5,10 @@
 
   "refresh": { "mode": "push", "topic": "rt/alerts/active" },
 
-  "bindings": {
-    "alerts": { "source": "state", "key": "rt:alerts:active" },
-    "focused_alert": { "source": "state", "key": "rt:alerts:focused" }
-  },
+  "bindings": [
+    { "id": "alerts", "source": "state", "key": "rt:alerts:active" },
+    { "id": "focused_alert", "source": "state", "key": "rt:alerts:focused" }
+  ],
 
   "actions": [
     { "intent": "alert.ack", "params": { "scope": "focused" } },

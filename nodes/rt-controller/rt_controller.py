@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from config_loader import load_and_resolve_app_config, ConfigError
+from config_validator import validate_or_raise, ValidationError
 
 
 def _default_app_json_path() -> Path:
@@ -14,7 +15,7 @@ def _default_app_json_path() -> Path:
     Assumes repo layout:
       repo/
         config/app.json
-        nodes/rt-controller/rt_controller.py  (this file)
+        nodes/rt-controller/rt_controller.py
 
     Default: ../../config/app.json from this script’s directory.
     """
@@ -23,14 +24,15 @@ def _default_app_json_path() -> Path:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="RollingThunder rt-controller bootstrap (Phase 2)")
+    parser = argparse.ArgumentParser(
+        description="RollingThunder rt-controller bootstrap (Phase 3)"
+    )
     parser.add_argument(
         "--config",
         type=Path,
         default=_default_app_json_path(),
         help="Path to config/app.json",
     )
-    # in argparse:
     parser.add_argument(
         "--print-config",
         action="store_true",
@@ -44,27 +46,57 @@ def main(argv: list[str]) -> int:
 
     args = parser.parse_args(argv)
 
+    # ------------------------------------------------------------
+    # Load config + resolve includes
+    # ------------------------------------------------------------
     try:
         cfg, includes = load_and_resolve_app_config(args.config)
     except ConfigError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(f"CONFIG LOAD FAILED\n------------------\n{e}", file=sys.stderr)
         return 2
 
-    # after cfg is loaded:
+    # ------------------------------------------------------------
+    # Phase 3: Schema validation
+    # ------------------------------------------------------------
+    repo_root = args.config.resolve().parent.parent
+    intents_md_path = repo_root / "docs" / "INTENTS.md"
+
+    include_maps = {
+        "pages": getattr(includes, "page_id_to_file", {}),
+        "panels": getattr(includes, "panel_id_to_file", {}),
+    }
+
+    try:
+        report = validate_or_raise(
+            cfg,
+            intents_md_path=intents_md_path,
+            include_maps=include_maps,
+        )
+        validation_status = "OK"
+    except ValidationError as e:
+        print(str(e), file=sys.stderr)
+        return 3
+
+    # ------------------------------------------------------------
+    # JSON-only output mode (machine-readable)
+    # ------------------------------------------------------------
     if args.print_config_json:
         print(json.dumps(cfg, indent=2, sort_keys=False))
         return 0
 
-
+    # ------------------------------------------------------------
+    # Human-readable summary
+    # ------------------------------------------------------------
     print("RollingThunder Controller Bootstrap")
     print("----------------------------------")
-    
+
     pages = cfg.get("pages") if isinstance(cfg.get("pages"), list) else []
     panels = cfg.get("panels") if isinstance(cfg.get("panels"), list) else []
     services = cfg.get("services")
     services_count = len(services) if isinstance(services, dict) else 0
 
     print(f"Loaded: {args.config}")
+
     if includes.pages_files:
         print(f"Pages:  {len(pages)} (from {len(includes.pages_files)} files)")
     else:
@@ -76,13 +108,20 @@ def main(argv: list[str]) -> int:
         print(f"Panels: {len(panels)}")
 
     print(f"Services: {services_count}")
-    print("Validation: NOT RUN")
+    print(f"Validation: {validation_status}")
+
+    if report.warnings:
+        print("\nWarnings:")
+        for w in report.warnings:
+            print(f"- {w}")
+
     print("Redis: NOT CONNECTED")
     print("MQTT: NOT CONNECTED")
 
     if args.print_config:
         print("\n--- RESOLVED CONFIG (JSON) ---")
         print(json.dumps(cfg, indent=2, sort_keys=False))
+
     return 0
 
 
