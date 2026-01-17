@@ -6,23 +6,6 @@ from typing import Any, Dict
 
 import redis
 
-
-def _ns(cfg: Dict[str, Any]) -> str:
-    return str(((cfg.get("globals") or {}).get("state") or {}).get("namespace") or "rt").strip()
-
-
-def _k(prefix: str, *parts: str) -> str:
-    return prefix + ":" + ":".join(parts)
-
-
-# nodes/rt-controller/heartbeat.py
-from __future__ import annotations
-
-import time
-from typing import Any, Dict
-
-import redis
-
 from health_publisher import publish_controller_health
 
 
