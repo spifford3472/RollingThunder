@@ -23,7 +23,7 @@ def _default_app_json_path() -> Path:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="RollingThunder rt-controller bootstrap (Phase 6)"
+        description="RollingThunder rt-controller bootstrap (Phase 7B)"
     )
     parser.add_argument("--config", type=Path, default=_default_app_json_path(), help="Path to config/app.json")
     parser.add_argument("--print-config", action="store_true", help="Print resolved config after the summary (human-readable)")
@@ -49,6 +49,7 @@ def main(argv: list[str]) -> int:
     redis_status = "NOT CONNECTED"
     mqtt_status = "NOT CONNECTED"
     publish_status = "NOT RUN"
+    mqtt_event_status = "NOT RUN"
 
     # ------------------------------------------------------------
     # Load config + resolve includes
@@ -153,7 +154,7 @@ def main(argv: list[str]) -> int:
             qos=1,
         )
         mqtt_event_status = "OK"
-    except MqttConnectError as e:
+    except Exception as e:
         print(f"MQTT ONLINE EVENT PUBLISH FAILED\n-------------------------------\n{e}", file=sys.stderr)
         return 7
 
