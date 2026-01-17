@@ -208,7 +208,10 @@ def main(argv: list[str]) -> int:
         cfg,
         node_id=args.node_id,
         interval_sec=float(args.heartbeat_sec),
+        boot_ms=boot_ms,
+        mqtt_ok=("CONNECTED" in mqtt_status),
     )
+
     return 0
 
 
