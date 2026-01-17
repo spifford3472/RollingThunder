@@ -13,6 +13,7 @@ from redis_client import resolve_redis_conn_info, connect_and_ping, RedisConnect
 from mqtt_client import resolve_mqtt_conn_info, connect_and_probe, MqttConnectError, publish_json_event
 from state_publisher import publish_initial_state, StatePublishError
 from heartbeat import run_redis_heartbeat
+from health_publisher import publish_controller_health
 
 
 
@@ -157,6 +158,17 @@ def main(argv: list[str]) -> int:
     except Exception as e:
         print(f"MQTT ONLINE EVENT PUBLISH FAILED\n-------------------------------\n{e}", file=sys.stderr)
         return 7
+
+    # ------------------------------------------------------------
+    # Phase 9: publish initial system health snapshot
+    # ------------------------------------------------------------
+    publish_controller_health(
+        redis_client,
+        cfg,
+        node_id=args.node_id,
+        boot_ms=boot_ms,
+        mqtt_ok=("CONNECTED" in mqtt_status),
+    )
 
 
     # ------------------------------------------------------------
