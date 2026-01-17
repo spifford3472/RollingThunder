@@ -9,6 +9,7 @@ from pathlib import Path
 from config_loader import load_and_resolve_app_config, ConfigError
 from config_validator import validate_or_raise, ValidationError
 from redis_client import resolve_redis_conn_info, connect_and_ping, RedisConnectError
+from mqtt_client import resolve_mqtt_conn_info, connect_and_probe, MqttConnectError
 
 
 
@@ -49,6 +50,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--redis-host", default=None, help="Override Redis host")
     parser.add_argument("--redis-port", type=int, default=None, help="Override Redis port")
     parser.add_argument("--redis-db", type=int, default=None, help="Override Redis DB index")
+
+    parser.add_argument("--mqtt-host", default=None, help="Override MQTT host")
+    parser.add_argument("--mqtt-port", type=int, default=None, help="Override MQTT port")
+
 
     args = parser.parse_args(argv)
 
@@ -98,7 +103,26 @@ def main(argv: list[str]) -> int:
             redis_status = f"CONNECTED ({redis_info.host}:{redis_info.port} db={redis_info.db})"
         except RedisConnectError as e:
             print(f"REDIS CONNECT FAILED\n--------------------\n{e}", file=sys.stderr)
+            redis_status = "NOT CONNECTED"
             return 4
+
+        # ------------------------------------------------------------
+        # Phase 5: MQTT connectivity (connect + handshake only)
+        # ------------------------------------------------------------
+        mqtt_info = resolve_mqtt_conn_info(cfg, node_id="rt-controller")
+
+        if args.mqtt_host:
+            mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "host": args.mqtt_host})
+        if args.mqtt_port is not None:
+            mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "port": int(args.mqtt_port)})
+
+        try:
+            _ = connect_and_probe(mqtt_info)
+            mqtt_status = f"CONNECTED ({mqtt_info.host}:{mqtt_info.port})"
+        except MqttConnectError as e:
+            print(f"MQTT CONNECT FAILED\n-------------------\n{e}", file=sys.stderr)
+            mqtt_status = "NOT CONNECTED"
+            return 5
 
     except ValidationError as e:
         print(str(e), file=sys.stderr)
@@ -143,7 +167,7 @@ def main(argv: list[str]) -> int:
             print(f"- {w}")
 
     print(f"Redis: {redis_status}")
-    print("MQTT: NOT CONNECTED")
+    print(f"MQTT: {mqtt_status}")
 
     if args.print_config:
         print("\n--- RESOLVED CONFIG (JSON) ---")

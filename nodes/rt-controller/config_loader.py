@@ -17,7 +17,8 @@ class ConfigError(RuntimeError):
 class ResolvedIncludes:
     pages_files: List[Path]
     panels_files: List[Path]
-
+    page_id_to_file: Dict[str, Path]
+    panel_id_to_file: Dict[str, Path]
 
 def _load_json_file(path: Path) -> Any:
     try:
@@ -47,10 +48,18 @@ def _expand_globs(base_dir: Path, patterns: List[str]) -> List[Path]:
 
 def _resolve_include_block(
     base_dir: Path, block: Any, kind: str
-) -> Tuple[List[Dict[str, Any]], List[Path]]:
+) -> Tuple[List[Dict[str, Any]], List[Path], Dict[str, Path]]:
     """
     block is expected to be an object like: { "include": ["config/pages/*.json"] }
-    Returns (list_of_objects, list_of_files_loaded)
+
+    Returns:
+      (list_of_objects, list_of_files_loaded, id_to_file_map)
+
+    Rules enforced here:
+    - include must match at least one file
+    - each file must contain exactly one JSON object (loader enforces object)
+    - object must contain non-empty string 'id'
+    - duplicate IDs are a hard error
     """
     if not isinstance(block, dict):
         raise ConfigError(f"'{kind}' must be an object; got {type(block).__name__}")
@@ -58,7 +67,7 @@ def _resolve_include_block(
     inc = block.get("include")
     if inc is None:
         # Not include-based; allow empty list here to keep Phase 2 narrow.
-        return [], []
+        return [], [], {}
 
     if not isinstance(inc, list) or not all(isinstance(x, str) for x in inc):
         raise ConfigError(f"'{kind}.include' must be a list of strings")
@@ -68,15 +77,28 @@ def _resolve_include_block(
         raise ConfigError(f"No files matched {kind}.include patterns: {inc}")
 
     objects: List[Dict[str, Any]] = []
+    id_to_file: Dict[str, Path] = {}
+
     for fp in files:
         obj = _load_json_file(fp)
         if not isinstance(obj, dict):
-            raise ConfigError(f"{kind} include file must contain a JSON object: {fp}")
-        if "id" not in obj or not isinstance(obj["id"], str) or not obj["id"].strip():
-            raise ConfigError(f"{kind} include file missing required string 'id': {fp}")
+            raise ConfigError(f"{kind} include file must contain a single JSON object: {fp}")
+
+        obj_id = obj.get("id")
+        if not isinstance(obj_id, str) or not obj_id.strip():
+            raise ConfigError(f"{kind} include file missing required non-empty string 'id': {fp}")
+
+        obj_id = obj_id.strip()
+        if obj_id in id_to_file:
+            prev = id_to_file[obj_id]
+            raise ConfigError(
+                f"Duplicate {kind} id '{obj_id}' in include files: {prev} and {fp}"
+            )
+
+        id_to_file[obj_id] = fp
         objects.append(obj)
 
-    return objects, files
+    return objects, files, id_to_file
 
 
 def load_and_resolve_app_config(app_json_path: Path) -> Tuple[Dict[str, Any], ResolvedIncludes]:
@@ -103,17 +125,20 @@ def load_and_resolve_app_config(app_json_path: Path) -> Tuple[Dict[str, Any], Re
     panels_objs, panels_files = [], []
 
     if "pages" in resolved:
-        pages_objs, pages_files = _resolve_include_block(base_dir, resolved["pages"], "pages")
+        pages_objs, pages_files, page_id_to_file = _resolve_include_block(base_dir, resolved["pages"], "pages")
         if pages_objs:
             resolved["pages"] = pages_objs
 
     if "panels" in resolved:
-        panels_objs, panels_files = _resolve_include_block(base_dir, resolved["panels"], "panels")
+        panels_objs, panels_files, panel_id_to_file = _resolve_include_block(base_dir, resolved["panels"], "panels")
         if panels_objs:
             resolved["panels"] = panels_objs
 
     includes = ResolvedIncludes(
         pages_files=pages_files,
         panels_files=panels_files,
+        page_id_to_file=page_id_to_file,
+        panel_id_to_file=panel_id_to_file,
     )
+    
     return resolved, includes
