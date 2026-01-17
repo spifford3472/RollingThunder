@@ -10,42 +10,21 @@ from config_loader import load_and_resolve_app_config, ConfigError
 from config_validator import validate_or_raise, ValidationError
 from redis_client import resolve_redis_conn_info, connect_and_ping, RedisConnectError
 from mqtt_client import resolve_mqtt_conn_info, connect_and_probe, MqttConnectError
-
+from state_publisher import publish_initial_state, StatePublishError
 
 
 def _default_app_json_path() -> Path:
-    """
-    Assumes repo layout:
-      repo/
-        config/app.json
-        nodes/rt-controller/rt_controller.py
-
-    Default: ../../config/app.json from this script’s directory.
-    """
     here = Path(__file__).resolve().parent
     return (here / ".." / ".." / "config" / "app.json").resolve()
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="RollingThunder rt-controller bootstrap (Phase 3)"
+        description="RollingThunder rt-controller bootstrap (Phase 6)"
     )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=_default_app_json_path(),
-        help="Path to config/app.json",
-    )
-    parser.add_argument(
-        "--print-config",
-        action="store_true",
-        help="Print resolved config after the summary (human-readable)",
-    )
-    parser.add_argument(
-        "--print-config-json",
-        action="store_true",
-        help="Print resolved config JSON only (machine-readable; no banner/summary)",
-    )
+    parser.add_argument("--config", type=Path, default=_default_app_json_path(), help="Path to config/app.json")
+    parser.add_argument("--print-config", action="store_true", help="Print resolved config after the summary (human-readable)")
+    parser.add_argument("--print-config-json", action="store_true", help="Print resolved config JSON only (machine-readable; no banner/summary)")
 
     parser.add_argument("--redis-host", default=None, help="Override Redis host")
     parser.add_argument("--redis-port", type=int, default=None, help="Override Redis port")
@@ -54,8 +33,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--mqtt-host", default=None, help="Override MQTT host")
     parser.add_argument("--mqtt-port", type=int, default=None, help="Override MQTT port")
 
+    parser.add_argument("--node-id", default="rt-controller", help="Logical node id")
 
     args = parser.parse_args(argv)
+
+    # Status defaults for summary
+    validation_status = "NOT RUN"
+    redis_status = "NOT CONNECTED"
+    mqtt_status = "NOT CONNECTED"
+    publish_status = "NOT RUN"
 
     # ------------------------------------------------------------
     # Load config + resolve includes
@@ -65,6 +51,11 @@ def main(argv: list[str]) -> int:
     except ConfigError as e:
         print(f"CONFIG LOAD FAILED\n------------------\n{e}", file=sys.stderr)
         return 2
+
+    # JSON-only mode should have zero side effects
+    if args.print_config_json:
+        print(json.dumps(cfg, indent=2, sort_keys=False))
+        return 0
 
     # ------------------------------------------------------------
     # Phase 3: Schema validation
@@ -78,62 +69,62 @@ def main(argv: list[str]) -> int:
     }
 
     try:
-        report = validate_or_raise(
-            cfg,
-            intents_md_path=intents_md_path,
-            include_maps=include_maps,
-        )
+        report = validate_or_raise(cfg, intents_md_path=intents_md_path, include_maps=include_maps)
         validation_status = "OK"
-
-        # ------------------------------------------------------------
-        # Phase 4: Redis connectivity (connect + ping only)
-        # ------------------------------------------------------------
-        redis_info = resolve_redis_conn_info(cfg)
-
-        # CLI overrides (if provided)
-        if args.redis_host:
-            redis_info = redis_info.__class__(**{**redis_info.__dict__, "host": args.redis_host})
-        if args.redis_port is not None:
-            redis_info = redis_info.__class__(**{**redis_info.__dict__, "port": int(args.redis_port)})
-        if args.redis_db is not None:
-            redis_info = redis_info.__class__(**{**redis_info.__dict__, "db": int(args.redis_db)})
-
-        try:
-            redis_client = connect_and_ping(redis_info)
-            redis_status = f"CONNECTED ({redis_info.host}:{redis_info.port} db={redis_info.db})"
-        except RedisConnectError as e:
-            print(f"REDIS CONNECT FAILED\n--------------------\n{e}", file=sys.stderr)
-            redis_status = "NOT CONNECTED"
-            return 4
-
-        # ------------------------------------------------------------
-        # Phase 5: MQTT connectivity (connect + handshake only)
-        # ------------------------------------------------------------
-        mqtt_info = resolve_mqtt_conn_info(cfg, node_id="rt-controller")
-
-        if args.mqtt_host:
-            mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "host": args.mqtt_host})
-        if args.mqtt_port is not None:
-            mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "port": int(args.mqtt_port)})
-
-        try:
-            _ = connect_and_probe(mqtt_info)
-            mqtt_status = f"CONNECTED ({mqtt_info.host}:{mqtt_info.port})"
-        except MqttConnectError as e:
-            print(f"MQTT CONNECT FAILED\n-------------------\n{e}", file=sys.stderr)
-            mqtt_status = "NOT CONNECTED"
-            return 5
-
     except ValidationError as e:
         print(str(e), file=sys.stderr)
+        validation_status = "FAILED"
         return 3
 
     # ------------------------------------------------------------
-    # JSON-only output mode (machine-readable)
+    # Phase 4: Redis connectivity
     # ------------------------------------------------------------
-    if args.print_config_json:
-        print(json.dumps(cfg, indent=2, sort_keys=False))
-        return 0
+    redis_info = resolve_redis_conn_info(cfg)
+    if args.redis_host:
+        redis_info = redis_info.__class__(**{**redis_info.__dict__, "host": args.redis_host})
+    if args.redis_port is not None:
+        redis_info = redis_info.__class__(**{**redis_info.__dict__, "port": int(args.redis_port)})
+    if args.redis_db is not None:
+        redis_info = redis_info.__class__(**{**redis_info.__dict__, "db": int(args.redis_db)})
+
+    try:
+        redis_client = connect_and_ping(redis_info)
+        redis_status = f"CONNECTED ({redis_info.host}:{redis_info.port} db={redis_info.db})"
+    except RedisConnectError as e:
+        print(f"REDIS CONNECT FAILED\n--------------------\n{e}", file=sys.stderr)
+        return 4
+
+    # ------------------------------------------------------------
+    # Phase 5: MQTT connectivity
+    # ------------------------------------------------------------
+    mqtt_info = resolve_mqtt_conn_info(cfg, node_id=args.node_id)
+    if args.mqtt_host:
+        mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "host": args.mqtt_host})
+    if args.mqtt_port is not None:
+        mqtt_info = mqtt_info.__class__(**{**mqtt_info.__dict__, "port": int(args.mqtt_port)})
+
+    try:
+        _ = connect_and_probe(mqtt_info)
+        mqtt_status = f"CONNECTED ({mqtt_info.host}:{mqtt_info.port})"
+    except MqttConnectError as e:
+        print(f"MQTT CONNECT FAILED\n-------------------\n{e}", file=sys.stderr)
+        return 5
+
+    # ------------------------------------------------------------
+    # Phase 6: publish initial system state to Redis
+    # ------------------------------------------------------------
+    try:
+        publish_initial_state(
+            redis_client,
+            cfg,
+            node_id=args.node_id,
+            mqtt_connected=True,
+            redis_connected=True,
+        )
+        publish_status = "OK"
+    except StatePublishError as e:
+        print(f"STATE PUBLISH FAILED\n--------------------\n{e}", file=sys.stderr)
+        return 6
 
     # ------------------------------------------------------------
     # Human-readable summary
@@ -147,7 +138,6 @@ def main(argv: list[str]) -> int:
     services_count = len(services) if isinstance(services, dict) else 0
 
     print(f"Loaded: {args.config}")
-
     if includes.pages_files:
         print(f"Pages:  {len(pages)} (from {len(includes.pages_files)} files)")
     else:
@@ -168,6 +158,7 @@ def main(argv: list[str]) -> int:
 
     print(f"Redis: {redis_status}")
     print(f"MQTT: {mqtt_status}")
+    print(f"State Publish: {publish_status}")
 
     if args.print_config:
         print("\n--- RESOLVED CONFIG (JSON) ---")
