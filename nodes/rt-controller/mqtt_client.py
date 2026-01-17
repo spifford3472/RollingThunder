@@ -121,3 +121,30 @@ def connect_and_probe(info: MqttConnInfo) -> mqtt.Client:
         raise MqttConnectError(
             f"Unable to connect to MQTT broker at {info.host}:{info.port}: {e}"
         )
+
+import json
+from typing import Any, Dict
+
+def publish_json_event(
+    info: MqttConnInfo,
+    topic: str,
+    payload: Dict[str, Any],
+    *,
+    retain: bool = True,
+    qos: int = 1,
+) -> None:
+    """
+    Minimal one-shot publish: connect -> publish -> disconnect.
+    No subscriptions, no loops.
+    """
+    client = mqtt.Client(client_id=info.client_id, protocol=mqtt.MQTTv311)
+    if info.username:
+        client.username_pw_set(info.username, info.password)
+
+    client.connect(info.host, info.port, keepalive=info.keepalive_sec)
+
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=False)
+    result = client.publish(topic, payload=body, qos=qos, retain=retain)
+    result.wait_for_publish(timeout=info.connect_timeout_sec)
+
+    client.disconnect()

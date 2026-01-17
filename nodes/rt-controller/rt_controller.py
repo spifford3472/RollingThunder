@@ -4,13 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from config_loader import load_and_resolve_app_config, ConfigError
 from config_validator import validate_or_raise, ValidationError
 from redis_client import resolve_redis_conn_info, connect_and_ping, RedisConnectError
-from mqtt_client import resolve_mqtt_conn_info, connect_and_probe, MqttConnectError
+from mqtt_client import resolve_mqtt_conn_info, connect_and_probe, MqttConnectError, publish_json_event
 from state_publisher import publish_initial_state, StatePublishError
+from heartbeat import run_redis_heartbeat
+
 
 
 def _default_app_json_path() -> Path:
@@ -34,6 +37,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--mqtt-port", type=int, default=None, help="Override MQTT port")
 
     parser.add_argument("--node-id", default="rt-controller", help="Logical node id")
+
+    parser.add_argument("--once", action="store_true", help="Run bootstrap once and exit (no heartbeat loop)")
+    parser.add_argument("--heartbeat-sec", type=float, default=5.0, help="Redis heartbeat interval seconds")
+
 
     args = parser.parse_args(argv)
 
@@ -71,6 +78,7 @@ def main(argv: list[str]) -> int:
     try:
         report = validate_or_raise(cfg, intents_md_path=intents_md_path, include_maps=include_maps)
         validation_status = "OK"
+        boot_ms = int(time.time() * 1000)
     except ValidationError as e:
         print(str(e), file=sys.stderr)
         validation_status = "FAILED"
@@ -120,11 +128,35 @@ def main(argv: list[str]) -> int:
             node_id=args.node_id,
             mqtt_connected=True,
             redis_connected=True,
+            boot_ms=boot_ms,
         )
         publish_status = "OK"
     except StatePublishError as e:
         print(f"STATE PUBLISH FAILED\n--------------------\n{e}", file=sys.stderr)
         return 6
+
+    # ------------------------------------------------------------
+    # Phase 7: publish MQTT "online" event
+    # ------------------------------------------------------------
+    state_ns = str(((cfg.get("globals") or {}).get("state") or {}).get("namespace") or "rt").strip()
+    online_topic = f"{state_ns}/events/nodes/{args.node_id}/online"
+    try:
+        publish_json_event(
+            mqtt_info,
+            online_topic,
+            {
+                "node_id": args.node_id,
+                "boot_ms": boot_ms,
+                "status": "online",
+            },
+            retain=True,
+            qos=1,
+        )
+        mqtt_event_status = "OK"
+    except MqttConnectError as e:
+        print(f"MQTT ONLINE EVENT PUBLISH FAILED\n-------------------------------\n{e}", file=sys.stderr)
+        return 7
+
 
     # ------------------------------------------------------------
     # Human-readable summary
@@ -164,6 +196,18 @@ def main(argv: list[str]) -> int:
         print("\n--- RESOLVED CONFIG (JSON) ---")
         print(json.dumps(cfg, indent=2, sort_keys=False))
 
+    print(f"MQTT Online Event: {mqtt_event_status}")
+
+    if args.once:
+        return 0
+
+    # Phase 7: heartbeat loop (runs forever)
+    run_redis_heartbeat(
+        redis_client,
+        cfg,
+        node_id=args.node_id,
+        interval_sec=float(args.heartbeat_sec),
+    )
     return 0
 
 

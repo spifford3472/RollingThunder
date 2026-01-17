@@ -36,6 +36,7 @@ def publish_initial_state(
     node_id: str = "rt-controller",
     mqtt_connected: bool = False,
     redis_connected: bool = True,
+    boot_ms: int,
 ) -> None:
     """
     Publish a deterministic initial snapshot to Redis.
@@ -54,8 +55,6 @@ def publish_initial_state(
     pages = cfg.get("pages") if isinstance(cfg.get("pages"), list) else []
     panels = cfg.get("panels") if isinstance(cfg.get("panels"), list) else []
     services = cfg.get("services") if isinstance(cfg.get("services"), dict) else {}
-
-    boot_ms = _now_ms()
 
     try:
         pipe = r.pipeline(transaction=False)
