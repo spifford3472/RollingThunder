@@ -24,7 +24,7 @@ def _default_app_json_path() -> Path:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="RollingThunder rt-controller bootstrap (Phase 7B)"
+        description="RollingThunder rt-controller bootstrap (Phase 9)"
     )
     parser.add_argument("--config", type=Path, default=_default_app_json_path(), help="Path to config/app.json")
     parser.add_argument("--print-config", action="store_true", help="Print resolved config after the summary (human-readable)")
