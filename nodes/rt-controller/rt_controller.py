@@ -8,6 +8,8 @@ from pathlib import Path
 
 from config_loader import load_and_resolve_app_config, ConfigError
 from config_validator import validate_or_raise, ValidationError
+from redis_client import resolve_redis_conn_info, connect_and_ping, RedisConnectError
+
 
 
 def _default_app_json_path() -> Path:
@@ -44,6 +46,10 @@ def main(argv: list[str]) -> int:
         help="Print resolved config JSON only (machine-readable; no banner/summary)",
     )
 
+    parser.add_argument("--redis-host", default=None, help="Override Redis host")
+    parser.add_argument("--redis-port", type=int, default=None, help="Override Redis port")
+    parser.add_argument("--redis-db", type=int, default=None, help="Override Redis DB index")
+
     args = parser.parse_args(argv)
 
     # ------------------------------------------------------------
@@ -73,6 +79,27 @@ def main(argv: list[str]) -> int:
             include_maps=include_maps,
         )
         validation_status = "OK"
+
+        # ------------------------------------------------------------
+        # Phase 4: Redis connectivity (connect + ping only)
+        # ------------------------------------------------------------
+        redis_info = resolve_redis_conn_info(cfg)
+
+        # CLI overrides (if provided)
+        if args.redis_host:
+            redis_info = redis_info.__class__(**{**redis_info.__dict__, "host": args.redis_host})
+        if args.redis_port is not None:
+            redis_info = redis_info.__class__(**{**redis_info.__dict__, "port": int(args.redis_port)})
+        if args.redis_db is not None:
+            redis_info = redis_info.__class__(**{**redis_info.__dict__, "db": int(args.redis_db)})
+
+        try:
+            redis_client = connect_and_ping(redis_info)
+            redis_status = f"CONNECTED ({redis_info.host}:{redis_info.port} db={redis_info.db})"
+        except RedisConnectError as e:
+            print(f"REDIS CONNECT FAILED\n--------------------\n{e}", file=sys.stderr)
+            return 4
+
     except ValidationError as e:
         print(str(e), file=sys.stderr)
         return 3
@@ -115,7 +142,7 @@ def main(argv: list[str]) -> int:
         for w in report.warnings:
             print(f"- {w}")
 
-    print("Redis: NOT CONNECTED")
+    print(f"Redis: {redis_status}")
     print("MQTT: NOT CONNECTED")
 
     if args.print_config:

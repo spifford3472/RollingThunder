@@ -29,7 +29,7 @@
 
   "focusPolicy": {
     "defaultPanel": "hf_status",
-    "rotation": ["hf_status", "alerts_overlay"]
+    "rotation": ["hf_status"]
   },
 
   "meta": {
