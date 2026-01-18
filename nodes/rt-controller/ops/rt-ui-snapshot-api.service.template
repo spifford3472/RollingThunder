@@ -1,0 +1,14 @@
+[Unit]
+Description=RollingThunder UI Snapshot API (read-only, CORS-enabled)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/ui_snapshot_api.py
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

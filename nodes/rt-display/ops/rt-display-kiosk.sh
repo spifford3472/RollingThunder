@@ -6,6 +6,9 @@ UI_FILE="/opt/rollingthunder/display/ui/index.html"
 
 # Default dummy endpoint (local). Swap later to rt-controller API:
 POLL_MS="1000"
+CTRL_URL="http://rt-controller:8625/api/v1/ui/snapshot"
+START_URL="http://127.0.0.1:8619/index.html?url=${CTRL_URL}&ms=${POLL_MS}"
+
 
 # Use an isolated Chromium profile so kiosk settings don't fight the desktop.
 CHROME_PROFILE_DIR="/var/lib/rt-display/chromium-profile"
