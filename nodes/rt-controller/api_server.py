@@ -46,15 +46,16 @@ def create_app(cfg: Dict[str, Any]) -> Flask:
         # Return a compact snapshot from the authoritative Redis keys
         system_info = r.hgetall(_k(prefix, "system", "info"))
         system_health = r.hgetall(_k(prefix, "system", "health"))
-        nodes = sorted([x.decode("utf-8") for x in r.smembers(_k(prefix, "system", "nodes"))])
+        raw_nodes = r.smembers(_k(prefix, "system", "nodes"))
+        nodes = sorted([(x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else str(x)) for x in raw_nodes])
 
-        # Decode bytes -> str/int where reasonable
-        def decode_hash(h: Dict[bytes, bytes]) -> Dict[str, Any]:
+
+        def decode_hash(h) -> Dict[str, Any]:
             out: Dict[str, Any] = {}
-            for k, v in h.items():
-                ks = k.decode("utf-8")
-                vs = v.decode("utf-8")
-                # Try int conversion for *_ms, *_sec, counts, pid, flags
+            for k, v in (h or {}).items():
+                ks = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                vs = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+
                 if ks.endswith("_ms") or ks.endswith("_sec") or ks.endswith("_count") or ks in (
                     "pages_count", "panels_count", "services_count", "pid", "redis_connected", "mqtt_connected"
                 ):
@@ -63,8 +64,10 @@ def create_app(cfg: Dict[str, Any]) -> Flask:
                         continue
                     except Exception:
                         pass
+
                 out[ks] = vs
             return out
+
 
         return jsonify(
             {
