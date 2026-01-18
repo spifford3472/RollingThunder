@@ -51,4 +51,6 @@ exec "$CHROMIUM_BIN" \
   --check-for-update-interval=31536000 \
   --user-data-dir="$CHROME_PROFILE_DIR" \
   --autoplay-policy=no-user-gesture-required \
+  --disable-features=CloudMessaging,PushMessaging \
+  --disable-notifications \
   --app="$START_URL"
