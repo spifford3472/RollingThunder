@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RollingThunder — rt-display</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { margin: 0; background: #0b0f14; color: #e6edf3; }
+    .wrap { padding: 24px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { background: #111826; border: 1px solid #223043; border-radius: 12px; padding: 16px; min-width: 280px; flex: 1; }
+    .title { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
+    .muted { color: #9fb0c0; }
+    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid #223043; }
+    .ok { background: rgba(46, 160, 67, 0.18); border-color: rgba(46, 160, 67, 0.55); }
+    .bad { background: rgba(248, 81, 73, 0.18); border-color: rgba(248, 81, 73, 0.55); }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c9d1d9; }
+    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
+    .kv div { padding: 2px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="row">
+      <div class="card">
+        <p class="title">RollingThunder — rt-display</p>
+        <div class="kv">
+          <div class="muted">Endpoint</div><div id="endpoint"></div>
+          <div class="muted">Poll interval</div><div id="interval"></div>
+          <div class="muted">Now</div><div id="now"></div>
+          <div class="muted">Last success</div><div id="lastOk"></div>
+          <div class="muted">Last error</div><div id="lastErr"></div>
+        </div>
+        <div style="margin-top:12px;">
+          <span id="status" class="pill bad">BOOTING</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="title">Payload</p>
+        <pre id="payload">{}</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const url = params.get("url") || "./health.json";
+  const pollMs = Math.max(250, Number(params.get("ms") || 1000));
+
+  const el = {
+    endpoint: document.getElementById("endpoint"),
+    interval: document.getElementById("interval"),
+    now: document.getElementById("now"),
+    lastOk: document.getElementById("lastOk"),
+    lastErr: document.getElementById("lastErr"),
+    status: document.getElementById("status"),
+    payload: document.getElementById("payload"),
+  };
+
+  el.endpoint.textContent = url;
+  el.interval.textContent = `${pollMs} ms`;
+
+  let lastOk = "-";
+  let lastErr = "-";
+
+  function setStatus(ok, label) {
+    el.status.textContent = label;
+    el.status.classList.toggle("ok", ok);
+    el.status.classList.toggle("bad", !ok);
+  }
+
+  async function fetchWithTimeout(resource, timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(resource, { signal: controller.signal, cache: "no-store" });
+      return resp;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  async function tick() {
+    el.now.textContent = new Date().toLocaleString();
+
+    try {
+      const resp = await fetchWithTimeout(url, Math.min(1500, pollMs));
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+
+      lastOk = new Date().toLocaleTimeString();
+      el.lastOk.textContent = lastOk;
+      el.lastErr.textContent = lastErr;
+
+      el.payload.textContent = JSON.stringify(data, null, 2);
+      setStatus(true, "ONLINE");
+    } catch (e) {
+      lastErr = `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
+      el.lastErr.textContent = lastErr;
+      setStatus(false, "OFFLINE");
+    }
+  }
+
+  tick();
+  setInterval(tick, pollMs);
+})();
+</script>
+</body>
+</html>

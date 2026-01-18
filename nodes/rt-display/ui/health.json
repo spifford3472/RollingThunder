@@ -1,0 +1,9 @@
+{
+  "node": "rt-display",
+  "source": "dummy-controller",
+  "ts": "static",
+  "health": {
+    "ok": true,
+    "note": "Replace this URL with rt-controller read-only API when ready."
+  }
+}

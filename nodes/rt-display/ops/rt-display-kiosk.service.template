@@ -1,0 +1,15 @@
+[Unit]
+Description=RollingThunder rt-display Kiosk (Chromium)
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Environment=DISPLAY=:0
+ExecStart=/usr/local/bin/rt-display-kiosk.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
