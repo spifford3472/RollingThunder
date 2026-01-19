@@ -1,0 +1,30 @@
+[Unit]
+Description=RollingThunder Node Presence Ingestor (Phase 14.4/14.5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rollingthunder/rt-controller/node_presence_ingestor.py
+Restart=always
+RestartSec=2
+
+# Redis
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+
+# MQTT (broker on controller in dev; adjust if needed)
+Environment=RT_MQTT_HOST=127.0.0.1
+Environment=RT_MQTT_PORT=1883
+
+# Presence settings
+Environment=RT_PRESENCE_TOPIC_PREFIX=rt/presence
+Environment=RT_KEY_NODE_PREFIX=rt:nodes:
+Environment=RT_PRESENCE_TTL_SEC=10
+Environment=RT_PRESENCE_SWEEP_SEC=2
+Environment=PYTHONUNBUFFERED=1
+
+
+[Install]
+WantedBy=multi-user.target

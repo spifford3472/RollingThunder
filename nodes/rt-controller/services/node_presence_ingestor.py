@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""
+node_presence_ingestor.py — RollingThunder (rt-controller)
+
+Phase 14.4:
+- Subscribe to MQTT presence topics: rt/presence/+
+- Ingest node presence payloads (JSON)
+- Publish derived node presence state into Redis hashes:
+    rt:nodes:<node_id>
+
+Phase 14.5:
+- TTL-based online/offline evaluation (controller-owned judgment)
+- Periodically sweep rt:nodes:* and mark stale nodes offline
+
+Constraints:
+- Read-only on MQTT; write-only to Redis for derived state
+- No control actions
+- Bounded payload storage (no dumping unbounded JSON into Redis)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any, Dict, Optional, Tuple
+
+import redis
+import threading
+
+try:
+    import paho.mqtt.client as mqtt  # type: ignore
+except Exception:
+    mqtt = None  # type: ignore
+
+
+# -----------------------------
+# Env config
+# -----------------------------
+REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
+REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
+REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
+REDIS_TIMEOUT = float(os.environ.get("RT_REDIS_TIMEOUT_SEC", "0.35"))
+
+MQTT_HOST = os.environ.get("RT_MQTT_HOST", "127.0.0.1")
+MQTT_PORT = int(os.environ.get("RT_MQTT_PORT", "1883"))
+MQTT_KEEPALIVE = int(os.environ.get("RT_MQTT_KEEPALIVE", "30"))
+
+TOPIC_PREFIX = os.environ.get("RT_PRESENCE_TOPIC_PREFIX", "rt/presence")
+NODE_KEY_PREFIX = os.environ.get("RT_KEY_NODE_PREFIX", "rt:nodes:")
+
+# Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
+TTL_SEC = float(os.environ.get("RT_PRESENCE_TTL_SEC", "10.0"))
+SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def safe_str(v: Any, max_len: int = 200) -> str:
+    s = "" if v is None else str(v)
+    if len(s) > max_len:
+        return s[:max_len]
+    return s
+
+
+def parse_json(payload_bytes: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        obj = json.loads(payload_bytes.decode("utf-8", errors="replace"))
+        if not isinstance(obj, dict):
+            return None, "payload_not_object"
+        return obj, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, str]]:
+    """
+    Extract a bounded subset of fields from a presence payload.
+    Returns (node_id, mapping_for_redis_hash)
+    """
+    node_id = msg.get("node_id")
+    if not isinstance(node_id, str) or not node_id.strip():
+        return None, {"publisher_error": "missing_node_id"}
+
+    role = msg.get("role")
+    role_s = safe_str(role, 50) if isinstance(role, str) else "unknown"
+
+    ip = None
+    net = msg.get("net")
+    if isinstance(net, dict):
+        ip_val = net.get("ip")
+        if isinstance(ip_val, str) and ip_val.strip():
+            ip = ip_val.strip()
+
+    render_ok = None
+    ui = msg.get("ui")
+    if isinstance(ui, dict):
+        ro = ui.get("render_ok")
+        if isinstance(ro, bool):
+            render_ok = ro
+
+    hostname = msg.get("hostname")
+    hostname_s = safe_str(hostname, 80) if isinstance(hostname, str) else ""
+
+    ts = msg.get("timestamp")
+    ts_s = safe_str(ts, 40) if isinstance(ts, str) else ""
+
+    # Controller-derived fields:
+    ms = now_ms()
+
+    mapping: Dict[str, str] = {
+        "id": node_id.strip(),
+        "role": role_s,
+        "status": "online",
+        "last_seen_ms": str(ms),
+        "last_seen_ts": ts_s,          # node-reported timestamp (informational)
+        "last_update_ms": str(ms),     # controller update time
+    }
+    if hostname_s:
+        mapping["hostname"] = hostname_s
+    if ip:
+        mapping["ip"] = ip
+    if render_ok is not None:
+        mapping["ui_render_ok"] = "true" if render_ok else "false"
+
+    # Clear old errors on healthy ingestion
+    mapping["publisher_error"] = ""
+
+    return node_id.strip(), mapping
+
+
+def mark_offline_if_stale(r: redis.Redis, key: str, ttl_ms: int) -> None:
+    """
+    If a node hash is older than TTL, mark offline and set age_sec.
+    """
+    try:
+        if r.type(key) != "hash":
+            return
+
+        h = r.hgetall(key)
+        last_seen_ms = h.get("last_seen_ms")
+        if not last_seen_ms:
+            return
+
+        try:
+            last_seen_i = int(last_seen_ms)
+        except Exception:
+            return
+
+        age_ms = now_ms() - last_seen_i
+        age_sec = max(0, int(age_ms / 1000))
+
+        mapping: Dict[str, str] = {
+            "age_sec": str(age_sec),
+            "last_update_ms": str(now_ms()),
+        }
+
+        if age_ms > ttl_ms:
+            # Only flip if not already offline (reduces churn)
+            if (h.get("status") or "").strip() != "offline":
+                mapping["status"] = "offline"
+        else:
+            # Keep online when within TTL (but don't force status if unknown)
+            if (h.get("status") or "").strip() in ("", "unknown", "offline"):
+                mapping["status"] = "online"
+
+        r.hset(key, mapping=mapping)
+
+    except Exception:
+        return
+
+
+def main() -> int:
+    if mqtt is None:
+        print("[presence_ingestor] ERROR: paho-mqtt not installed")
+        return 2
+
+    r = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+        socket_timeout=REDIS_TIMEOUT,
+        socket_connect_timeout=REDIS_TIMEOUT,
+    )
+
+    # Verify Redis reachable early (but keep service resilient)
+    try:
+        r.ping()
+    except Exception as e:
+        print(f"[presence_ingestor] WARN: Redis ping failed at startup: {type(e).__name__}: {e}")
+
+    ttl_ms = int(TTL_SEC * 1000)
+
+    # Shared state for sweeper
+    last_sweep = 0.0
+
+    def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int) -> None:
+        if rc == 0:
+            topic = f"{TOPIC_PREFIX}/+"
+            client.subscribe(topic, qos=0)
+            print(f"[presence_ingestor] MQTT connected; subscribed {topic}")
+        else:
+            print(f"[presence_ingestor] MQTT connect failed rc={rc}")
+
+    def on_message(client: mqtt.Client, userdata: Any, msg_in: Any) -> None:
+        nonlocal last_sweep
+
+        # Parse message
+        payload, perr = parse_json(msg_in.payload)
+        if payload is None:
+            # No spam: only record errors if we can infer node_id from topic
+            return
+
+        node_id, mapping = derive_node_fields(payload)
+        if not node_id:
+            return
+
+        key = f"{NODE_KEY_PREFIX}{node_id}"
+        try:
+            # Write bounded fields only
+            r.hset(key, mapping=mapping)
+        except Exception as e:
+            try:
+                r.hset(key, mapping={
+                    "publisher_error": safe_str(f"redis_write_failed: {type(e).__name__}: {e}", 240),
+                    "last_update_ms": str(now_ms()),
+                })
+            except Exception:
+                pass
+
+
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    try:
+        client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE)
+    except Exception as e:
+        print(f"[presence_ingestor] ERROR: MQTT connect failed: {type(e).__name__}: {e}")
+        # Keep trying forever (systemd will restart, but we can also retry)
+        while True:
+            time.sleep(2.0)
+            try:
+                client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE)
+                break
+            except Exception:
+                continue
+
+    def sweeper_loop() -> None:
+        # Runs forever; controller-owned TTL enforcement
+        while True:
+            try:
+                for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
+                    mark_offline_if_stale(r, k, ttl_ms)
+            except Exception:
+                pass
+            time.sleep(SWEEP_SEC)
+
+    t = threading.Thread(target=sweeper_loop, name="presence-sweeper", daemon=True)
+    t.start()
+
+
+    # Blocking loop (simple + appliance-style)
+    client.loop_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
