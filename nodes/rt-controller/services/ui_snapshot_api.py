@@ -2,26 +2,20 @@
 """
 RollingThunder - UI Snapshot API (rt-controller)
 
-Phase 12:
-- Build a read-only UI snapshot from Redis structured state.
-- No writes, no control loops.
-- Bounded output to protect UI + network.
-- CORS enabled for rt-display polling.
-
-Redis model (observed):
-- rt:system:health  (hash)
-- rt:system:nodes   (set of node ids)
-- rt:nodes:<id>     (hash per node)
-- rt:services:*     (hash per service)
+Phase 12c-A:
+- Type coercion for Redis hash values (ints/bools/floats/null) when unambiguous
+- Derived system health flag: data.system.health.ok
+- Still read-only, bounded, CORS enabled
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import redis
 
@@ -43,14 +37,23 @@ KEY_SYSTEM_NODES = os.environ.get("RT_KEY_SYSTEM_NODES", "rt:system:nodes")
 KEY_NODE_PREFIX = os.environ.get("RT_KEY_NODE_PREFIX", "rt:nodes:")
 KEY_SERVICE_PREFIX = os.environ.get("RT_KEY_SERVICE_PREFIX", "rt:services:")
 
-# Output bounds
+# Output bounds / limits
 MAX_STR_CHARS = int(os.environ.get("RT_MAX_STR_CHARS", "20000"))
 MAX_SERVICES = int(os.environ.get("RT_MAX_SERVICES", "50"))
-MAX_SERVICE_FIELDS = int(os.environ.get("RT_MAX_SERVICE_FIELDS", "60"))
+
+# Derived health freshness threshold (seconds)
+HEALTH_STALE_SEC = int(os.environ.get("RT_HEALTH_STALE_SEC", "30"))
+
+_INT_RE = re.compile(r"^-?\d+$")
+_FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
 
 def now_iso_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _try_parse_json(s: Optional[str]) -> Any:
@@ -59,13 +62,51 @@ def _try_parse_json(s: Optional[str]) -> Any:
     s = s.strip()
     if not s:
         return None
-    # Quick gate: only attempt if it looks like JSON
     if not (s.startswith("{") or s.startswith("[") or s.startswith('"')):
         return s
     try:
         return json.loads(s)
     except Exception:
         return s
+
+
+def _coerce_scalar(s: Any) -> Any:
+    """
+    Convert common Redis-string scalars to real JSON types.
+    Only acts on plain strings.
+    """
+    if s is None or not isinstance(s, str):
+        return s
+
+    v = s.strip()
+    if v == "":
+        return None
+
+    low = v.lower()
+    if low in ("null", "none", "(nil)"):
+        return None
+    if low in ("true", "false"):
+        return low == "true"
+
+    # common 0/1 flags
+    if v == "0":
+        return False
+    if v == "1":
+        return True
+
+    # int/float
+    if _INT_RE.match(v):
+        try:
+            return int(v)
+        except Exception:
+            return s
+    if _FLOAT_RE.match(v):
+        try:
+            return float(v)
+        except Exception:
+            return s
+
+    return s
 
 
 def _truncate(value: Any, max_chars: int = MAX_STR_CHARS) -> Any:
@@ -86,21 +127,52 @@ def _truncate(value: Any, max_chars: int = MAX_STR_CHARS) -> Any:
 
 def _hgetall_parsed(r: redis.Redis, key: str) -> Dict[str, Any]:
     """
-    Read a Redis hash and attempt to parse any JSON-ish values.
+    Read Redis hash and parse/coerce values:
+    1) JSON-ish strings -> JSON
+    2) otherwise scalar coercion (int/bool/float/null)
     """
-    raw = r.hgetall(key)  # decode_responses=True => Dict[str,str]
+    raw = r.hgetall(key)  # Dict[str,str] with decode_responses=True
     out: Dict[str, Any] = {}
     for k, v in raw.items():
-        out[k] = _truncate(_try_parse_json(v))
+        parsed = _try_parse_json(v)
+        if isinstance(parsed, str):
+            parsed = _coerce_scalar(parsed)
+        out[k] = _truncate(parsed)
     return out
 
 
 def _service_summary_fields(h: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Keep service info tight and predictable for UI.
-    """
     keep = ("id", "scope", "ownerNode", "startPolicy", "stopPolicy", "state", "last_update_ms")
     return {k: h.get(k) for k in keep if k in h}
+
+
+def _derive_system_ok(system_health: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Add a derived OK flag and minimal diagnostics.
+    Uses:
+      - redis_ok (bool)
+      - mqtt_ok (bool)
+      - last_seen_ms freshness
+    """
+    redis_ok = bool(system_health.get("redis_ok")) if system_health.get("redis_ok") is not None else False
+    mqtt_ok = bool(system_health.get("mqtt_ok")) if system_health.get("mqtt_ok") is not None else False
+
+    last_seen_ms = system_health.get("last_seen_ms")
+    stale = True
+    age_sec = None
+    if isinstance(last_seen_ms, int):
+        age_sec = max(0, int((now_ms() - last_seen_ms) / 1000))
+        stale = age_sec > HEALTH_STALE_SEC
+
+    ok = bool(redis_ok and mqtt_ok and (stale is False))
+
+    # Put derived fields under system_health
+    system_health["ok"] = ok
+    system_health["stale"] = stale
+    if age_sec is not None:
+        system_health["age_sec"] = age_sec
+
+    return system_health
 
 
 class UiSnapshotHandler(BaseHTTPRequestHandler):
@@ -147,8 +219,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             )
             r.ping()
 
-            # System health
+            # System health + derived ok
             system_health = _hgetall_parsed(r, KEY_SYSTEM_HEALTH)
+            system_health = _derive_system_ok(system_health)
 
             # Nodes
             nodes: Dict[str, Any] = {}
@@ -159,13 +232,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
             for nid in node_ids:
                 nk = f"{KEY_NODE_PREFIX}{nid}"
-                # Guard: only read if it exists to avoid surprises
                 if r.exists(nk):
                     nodes[nid] = _hgetall_parsed(r, nk)
 
-            # Services (hashes under rt:services:*)
+            # Services
             services: Dict[str, Any] = {}
-            # Scan is safe; bounded by MAX_SERVICES
             count = 0
             for key in r.scan_iter(match=f"{KEY_SERVICE_PREFIX}*"):
                 if count >= MAX_SERVICES:
@@ -173,7 +244,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 if r.type(key) != "hash":
                     continue
                 h = _hgetall_parsed(r, key)
-                # Use either explicit id field or key suffix as identifier
                 sid = str(h.get("id") or key.split(":", 2)[-1])
                 services[sid] = _service_summary_fields(h)
                 count += 1
