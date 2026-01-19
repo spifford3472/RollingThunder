@@ -1,0 +1,16 @@
+[Unit]
+Description=RollingThunder rt-display presence publisher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rollingthunder/display/display_presence.py
+Restart=always
+RestartSec=2
+Environment=RT_MQTT_HOST=rt-controller
+Environment=RT_MQTT_PORT=1883
+Environment=RT_PRESENCE_HTTP_PORT=8787
+
+[Install]
+WantedBy=multi-user.target

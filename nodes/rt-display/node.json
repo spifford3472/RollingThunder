@@ -1,0 +1,10 @@
+{
+  "node_id": "rt-display",
+  "node_role": "display",
+  "hostname": "rt-display",
+  "ui_capabilities": {
+    "hdmi": true,
+    "touch": false,
+    "resolution": "1920x1080"
+  }
+}
