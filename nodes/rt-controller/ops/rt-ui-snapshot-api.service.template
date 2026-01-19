@@ -22,6 +22,12 @@ Environment=RT_STATE_ALERTS_JSON=alerts:active_json
 Environment=RT_STATE_NODE_HEALTH_JSON=system:nodes_health_json
 Environment=RT_STATE_GPS_JSON=gps:fix_json
 
+Environment=RT_KEY_SYSTEM_HEALTH=rt:system:health
+Environment=RT_KEY_SYSTEM_NODES=rt:system:nodes
+Environment=RT_KEY_NODE_PREFIX=rt:nodes:
+Environment=RT_KEY_SERVICE_PREFIX=rt:services:
+
+
 ExecStart=/usr/bin/python3 /opt/rollingthunder/services/ui_snapshot_api.py
 Restart=always
 RestartSec=1
