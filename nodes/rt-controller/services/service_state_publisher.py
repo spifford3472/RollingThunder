@@ -53,6 +53,14 @@ DEFAULT_UNIT_MAP: Dict[str, str] = {
 # Optional override via env var containing JSON dict: {"service_id":"unit.service", ...}
 UNIT_MAP_JSON = os.environ.get("RT_UNIT_MAP_JSON", "")
 
+def set_error(r: redis.Redis, key: str, msg: str) -> None:
+    try:
+        r.hset(key, mapping={
+            "publisher_error": msg[:300],
+            "last_update_ms": str(now_ms()),
+        })
+    except Exception:
+        pass
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -162,20 +170,28 @@ def main() -> None:
 
                 unit = unit_map.get(sid)
                 if not unit:
-                    # Don’t invent unit names automatically; stay deterministic.
-                    # If unmapped, mark unknown but still refresh timestamp so UI shows “alive but unmapped”.
-                    r.hset(key, mapping={"state": "unknown", "last_update_ms": str(now_ms())})
+                    r.hset(key, mapping={
+                        "state": "unknown",
+                        "last_update_ms": str(now_ms()),
+                    })
+                    r.hdel(key, "publisher_error")
                     continue
+
 
                 info = run_systemctl_show(unit)
                 state = normalize_state(info)
 
-                # Always refresh last_update_ms
-                r.hset(key, mapping={"state": state, "last_update_ms": str(now_ms())})
+                r.hset(key, mapping={
+                    "state": state,
+                    "last_update_ms": str(now_ms()),
+                })
+                # Clear any previous error
+                r.hdel(key, "publisher_error")
 
-            except Exception:
-                # Keep moving; one bad key shouldn't break the loop
+            except Exception as e:
+                set_error(r, key, f"{type(e).__name__}: {e}")
                 continue
+
 
         elapsed = time.time() - start
         sleep_for = max(0.2, POLL_SEC - elapsed)
