@@ -181,12 +181,20 @@ def main() -> None:
                 info = run_systemctl_show(unit)
                 state = normalize_state(info)
 
-                r.hset(key, mapping={
+                mapping = {
                     "state": state,
                     "last_update_ms": str(now_ms()),
-                })
-                # Clear any previous error
-                r.hdel(key, "publisher_error")
+                }
+
+                # If we have a unit mapping but systemd can't find it, record it.
+                if state == "missing":
+                    mapping["publisher_error"] = f"mapped_unit_missing: {unit}"
+                else:
+                    # Clear any previous error on a healthy observation
+                    r.hdel(key, "publisher_error")
+
+                r.hset(key, mapping=mapping)
+
 
             except Exception as e:
                 set_error(r, key, f"{type(e).__name__}: {e}")
