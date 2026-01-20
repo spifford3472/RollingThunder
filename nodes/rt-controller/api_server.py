@@ -80,4 +80,74 @@ def create_app(cfg: Dict[str, Any]) -> Flask:
             }
         ), 200
 
+    @app.get("/nodes")
+    def nodes_list():
+        """
+        Read-only view of node presence derived by rt-node-presence-ingestor.
+        Keys: <namespace>:nodes:<node_id> (hash)
+        """
+        try:
+            pattern = _k(prefix, "nodes", "*")
+            out_nodes = []
+
+            # scan_iter returns str when decode_responses=True, else bytes
+            for key in r.scan_iter(match=pattern):
+                ks = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else str(key)
+
+                # node_id is the last segment after the final ':'
+                node_id = ks.split(":")[-1]
+
+                h = r.hgetall(ks)  # allow key as str
+                if not h:
+                    continue
+
+                def get_s(name: str) -> Optional[str]:
+                    v = h.get(name)
+                    if v is None:
+                        return None
+                    return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+
+                def get_i(name: str) -> Optional[int]:
+                    s = get_s(name)
+                    if s is None or s == "":
+                        return None
+                    try:
+                        return int(s)
+                    except Exception:
+                        return None
+
+                def get_b(name: str) -> Optional[bool]:
+                    s = get_s(name)
+                    if s is None:
+                        return None
+                    s = s.strip().lower()
+                    if s in ("true", "1", "yes", "y"):
+                        return True
+                    if s in ("false", "0", "no", "n"):
+                        return False
+                    return None
+
+                node_obj: Dict[str, Any] = {
+                    "id": get_s("id") or node_id,
+                    "role": get_s("role") or "unknown",
+                    "status": get_s("status") or "unknown",
+                    "age_sec": get_i("age_sec"),
+                    "ip": get_s("ip"),
+                    "hostname": get_s("hostname"),
+                    "ui_render_ok": get_b("ui_render_ok"),
+                    "last_seen_ts": get_s("last_seen_ts"),
+                    "last_seen_ms": get_i("last_seen_ms"),
+                }
+
+                out_nodes.append(node_obj)
+
+            # Stable ordering for UI
+            out_nodes.sort(key=lambda x: (x.get("role") or "", x.get("id") or ""))
+
+            return jsonify({"ok": True, "namespace": prefix, "nodes": out_nodes}), 200
+
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 503
+
+
     return app
