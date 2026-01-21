@@ -18,6 +18,10 @@
     pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c9d1d9; }
     .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
     .kv div { padding: 2px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #223043; vertical-align: top; }
+    th { color: #9fb0c0; font-weight: 700; }
+    .small { font-size: 12px; color: #9fb0c0; }
   </style>
 </head>
 <body>
@@ -35,6 +39,11 @@
         <div style="margin-top:12px;">
           <span id="status" class="pill bad">BOOTING</span>
         </div>
+      </div>
+
+      <div class="card">
+        <p class="title">Nodes</p>
+        <div id="nodes" class="muted">No nodes yet.</div>
       </div>
 
       <div class="card">
@@ -58,6 +67,7 @@
     lastErr: document.getElementById("lastErr"),
     status: document.getElementById("status"),
     payload: document.getElementById("payload"),
+    nodes: document.getElementById("nodes"),
   };
 
   el.endpoint.textContent = url;
@@ -83,6 +93,66 @@
     }
   }
 
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"
+    }[c]));
+  }
+
+  function pill(ok, label) {
+    const cls = ok ? "pill ok" : "pill bad";
+    return `<span class="${cls}">${esc(label)}</span>`;
+  }
+
+  function renderNodes(data) {
+    // Accept either: { nodes: {...} } or { data: { nodes: {...} } } depending on which endpoint you hit
+    const nodes = data?.nodes || data?.data?.nodes;
+    if (!nodes || typeof nodes !== "object") {
+      el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
+      return;
+    }
+
+    const ids = Object.keys(nodes).sort();
+    if (ids.length === 0) {
+      el.nodes.innerHTML = `<div class="muted">No nodes reported.</div>`;
+      return;
+    }
+
+    const rows = ids.map((id) => {
+      const n = nodes[id] || {};
+      const status = String(n.status || "").toLowerCase();
+      const online = status === "online" || status === "alive" || status === "up";
+      const age = n.age_sec ?? n.last_seen_age_sec ?? n.age ?? "";
+      const ip = n.ip || (n.net && n.net.ip) || "";
+      const role = n.role || "";
+      const host = n.hostname || "";
+
+      return `
+        <tr>
+          <td><div><strong>${esc(id)}</strong></div><div class="small">${esc(role)} ${host ? "— " + esc(host) : ""}</div></td>
+          <td>${pill(online, online ? "ONLINE" : (status || "OFFLINE"))}</td>
+          <td>${esc(ip)}</td>
+          <td>${esc(age)}</td>
+        </tr>
+      `;
+    }).join("");
+
+    el.nodes.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Status</th>
+            <th>IP</th>
+            <th>Age (sec)</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+
   async function tick() {
     el.now.textContent = new Date().toLocaleString();
 
@@ -96,10 +166,13 @@
       el.lastErr.textContent = lastErr;
 
       el.payload.textContent = JSON.stringify(data, null, 2);
+      renderNodes(data);
+
       setStatus(true, "ONLINE");
     } catch (e) {
       lastErr = `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
       el.lastErr.textContent = lastErr;
+      el.nodes.innerHTML = `<div class="muted">No data (offline).</div>`;
       setStatus(false, "OFFLINE");
     }
   }
