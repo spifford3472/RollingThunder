@@ -159,6 +159,18 @@ sudo systemctl restart <service>
 
 Skipping daemon-reload is considered a deployment error.
 ---
+
+## SSH Key-Based Deployment (Recommended)
+
+RollingThunder deployment should be performed using a dedicated SSH key from the dev machine
+to avoid password prompts and to support deterministic scripts.
+
+### Create a dedicated deploy key (dev machine)
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_rt_deploy -C "rollingthunder-deploy"
+ssh-copy-id -i ~/.ssh/id_ed25519_rt_deploy.pub spiff@rt-controller
+
 ## 5. Deployment Scripts (Preferred Mechanism) ##
 
 Manual deployment is acceptable during early development,
