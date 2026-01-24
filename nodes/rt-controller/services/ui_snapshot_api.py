@@ -89,11 +89,6 @@ def _coerce_scalar(s: Any) -> Any:
     if low in ("true", "false"):
         return low == "true"
 
-    # common 0/1 flags
-    if v == "0":
-        return False
-    if v == "1":
-        return True
 
     # int/float
     if _INT_RE.match(v):

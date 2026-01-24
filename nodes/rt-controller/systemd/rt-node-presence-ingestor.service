@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/rollingthunder/rt-controller/node_presence_ingestor.py
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py
 Restart=always
 RestartSec=2
 

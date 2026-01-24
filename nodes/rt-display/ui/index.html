@@ -105,34 +105,66 @@
   }
 
   function renderNodes(data) {
-    // Accept either: { nodes: {...} } or { data: { nodes: {...} } } depending on which endpoint you hit
-    const nodes = data?.nodes || data?.data?.nodes;
-    if (!nodes || typeof nodes !== "object") {
+    // Accept:
+    //  A) { nodes: {...} } or { data: { nodes: {...} } } (map)
+    //  B) { data: { nodes: [ ... ] } } (array)  <-- your current payload
+    const raw = data?.nodes ?? data?.data?.nodes;
+
+    if (!raw) {
       el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
       return;
     }
 
-    const ids = Object.keys(nodes).sort();
-    if (ids.length === 0) {
+    let list = [];
+
+    if (Array.isArray(raw)) {
+      // array of node objects
+      list = raw.filter(Boolean);
+    } else if (typeof raw === "object") {
+      // map keyed by node id
+      const ids = Object.keys(raw).sort();
+      list = ids.map((id) => ({ id, ...(raw[id] || {}) }));
+    } else {
+      el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
+      return;
+    }
+
+    if (list.length === 0) {
       el.nodes.innerHTML = `<div class="muted">No nodes reported.</div>`;
       return;
     }
 
-    const rows = ids.map((id) => {
-      const n = nodes[id] || {};
-      const status = String(n.status || "").toLowerCase();
-      const online = status === "online" || status === "alive" || status === "up";
+    // Stable sort by id
+    list.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
+
+    const rows = list.map((n) => {
+      const id = n.id || n.node_id || "";
+      const statusRaw = String(n.status || "").toLowerCase();
+      const online = statusRaw === "online" || statusRaw === "alive" || statusRaw === "up";
       const age = n.age_sec ?? n.last_seen_age_sec ?? n.age ?? "";
       const ip = n.ip || (n.net && n.net.ip) || "";
       const role = n.role || "";
       const host = n.hostname || "";
+      const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
+
+      const statusLabel = online ? "ONLINE" : (statusRaw || "OFFLINE");
+      const renderLabel =
+        (renderOk === true) ? "UI OK" :
+        (renderOk === false) ? "UI ?" :
+        "";
 
       return `
         <tr>
-          <td><div><strong>${esc(id)}</strong></div><div class="small">${esc(role)} ${host ? "— " + esc(host) : ""}</div></td>
-          <td>${pill(online, online ? "ONLINE" : (status || "OFFLINE"))}</td>
-          <td>${esc(ip)}</td>
-          <td>${esc(age)}</td>
+          <td>
+            <div><strong>${esc(id)}</strong></div>
+            <div class="small">${esc(role)}${host ? " — " + esc(host) : ""}</div>
+          </td>
+          <td>
+            ${pill(online, statusLabel)}
+            ${renderLabel ? `<div class="small" style="margin-top:4px;">${esc(renderLabel)}</div>` : ""}
+          </td>
+          <td>${esc(ip || "-")}</td>
+          <td>${esc(age === "" ? "-" : age)}</td>
         </tr>
       `;
     }).join("");
@@ -153,16 +185,18 @@
   }
 
 
+
   async function tick() {
     el.now.textContent = new Date().toLocaleString();
 
     try {
-      const resp = await fetchWithTimeout(url, Math.min(1500, pollMs));
+      const resp = await fetchWithTimeout(url, Math.max(2000, Math.min(4000, pollMs + 500)));
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
 
       lastOk = new Date().toLocaleTimeString();
       el.lastOk.textContent = lastOk;
+      lastErr = "-";
       el.lastErr.textContent = lastErr;
 
       el.payload.textContent = JSON.stringify(data, null, 2);
