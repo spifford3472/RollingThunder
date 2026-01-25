@@ -24,6 +24,7 @@ import json
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timezone
 
 import redis
 import threading
@@ -51,9 +52,17 @@ TOPIC_PREFIX = os.environ.get("RT_PRESENCE_TOPIC_PREFIX", "rt/presence")
 NODE_KEY_PREFIX = os.environ.get("RT_KEY_NODE_PREFIX", "rt:nodes:")
 
 # Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
-TTL_SEC = float(os.environ.get("RT_PRESENCE_TTL_SEC", "10.0"))
+#REMOVE
+#TTL_SEC = float(os.environ.get("RT_PRESENCE_TTL_SEC", "10.0"))
 SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
 
+STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
+OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
+#REMOVE
+#RECOVERY_STABLE_SEC = float(os.environ.get("RT_PRESENCE_RECOVERY_STABLE_SEC", "6.0"))
+
+def now_iso_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -105,8 +114,8 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     hostname = msg.get("hostname")
     hostname_s = safe_str(hostname, 80) if isinstance(hostname, str) else ""
 
-    ts = msg.get("timestamp")
-    ts_s = safe_str(ts, 40) if isinstance(ts, str) else ""
+    node_ts = msg.get("timestamp")
+    node_ts_s = safe_str(node_ts, 40) if isinstance(node_ts, str) else ""
 
     # Controller-derived fields:
     ms = now_ms()
@@ -115,10 +124,14 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
         "id": node_id.strip(),
         "role": role_s,
         "status": "online",
+        "age_sec": "0",
         "last_seen_ms": str(ms),
-        "last_seen_ts": ts_s,          # node-reported timestamp (informational)
-        "last_update_ms": str(ms),     # controller update time
+        "last_seen_ts": now_iso_utc(),  # controller timestamp (authoritative)
+        "node_ts": node_ts_s,           # node timestamp (informational)
+        "last_update_ms": str(ms),
     }
+
+
     if hostname_s:
         mapping["hostname"] = hostname_s
     if ip:
@@ -132,14 +145,14 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     return node_id.strip(), mapping
 
 
-def mark_offline_if_stale(r: redis.Redis, key: str, ttl_ms: int) -> None:
+def update_presence_status(r: redis.Redis, key: str, stale_after_ms: int, offline_after_ms: int) -> None:
     """
-    If a node hash is older than TTL, mark offline and set age_sec.
+    Compute age_sec and controller-derived status for the node hash:
+      - online  (age <= stale_after)
+      - stale   (stale_after < age <= offline_after)
+      - offline (age > offline_after)
     """
     try:
-        if r.type(key) != "hash":
-            return
-
         h = r.hgetall(key)
         last_seen_ms = h.get("last_seen_ms")
         if not last_seen_ms:
@@ -150,24 +163,22 @@ def mark_offline_if_stale(r: redis.Redis, key: str, ttl_ms: int) -> None:
         except Exception:
             return
 
-        age_ms = now_ms() - last_seen_i
+        ms_now = now_ms()
+        age_ms = ms_now - last_seen_i
         age_sec = max(0, int(age_ms / 1000))
 
-        mapping: Dict[str, str] = {
-            "age_sec": str(age_sec),
-            "last_update_ms": str(now_ms()),
-        }
-
-        if age_ms > ttl_ms:
-            # Only flip if not already offline (reduces churn)
-            if (h.get("status") or "").strip() != "offline":
-                mapping["status"] = "offline"
+        if age_ms <= stale_after_ms:
+            status = "online"
+        elif age_ms <= offline_after_ms:
+            status = "stale"
         else:
-            # Keep online when within TTL (but don't force status if unknown)
-            if (h.get("status") or "").strip() in ("", "unknown", "offline"):
-                mapping["status"] = "online"
+            status = "offline"
 
-        r.hset(key, mapping=mapping)
+        r.hset(key, mapping={
+            "status": status,
+            "age_sec": str(age_sec),
+            "last_update_ms": str(ms_now),
+        })
 
     except Exception:
         return
@@ -194,10 +205,9 @@ def main() -> int:
     except Exception as e:
         print(f"[presence_ingestor] WARN: Redis ping failed at startup: {type(e).__name__}: {e}")
 
-    ttl_ms = int(TTL_SEC * 1000)
+    stale_after_ms = int(STALE_AFTER_SEC * 1000)
+    offline_after_ms = int(OFFLINE_AFTER_SEC * 1000)
 
-    # Shared state for sweeper
-    last_sweep = 0.0
 
     def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int) -> None:
         if rc == 0:
@@ -208,7 +218,6 @@ def main() -> int:
             print(f"[presence_ingestor] MQTT connect failed rc={rc}")
 
     def on_message(client: mqtt.Client, userdata: Any, msg_in: Any) -> None:
-        nonlocal last_sweep
 
         # Parse message
         payload, perr = parse_json(msg_in.payload)
@@ -256,7 +265,7 @@ def main() -> int:
         while True:
             try:
                 for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
-                    mark_offline_if_stale(r, k, ttl_ms)
+                    update_presence_status(r, k, stale_after_ms, offline_after_ms)
             except Exception:
                 pass
             time.sleep(SWEEP_SEC)

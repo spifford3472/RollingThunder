@@ -24,6 +24,8 @@ Environment=RT_KEY_NODE_PREFIX=rt:nodes:
 Environment=RT_PRESENCE_TTL_SEC=10
 Environment=RT_PRESENCE_SWEEP_SEC=2
 Environment=PYTHONUNBUFFERED=1
+Environment=RT_PRESENCE_STALE_AFTER_SEC=12
+Environment=RT_PRESENCE_OFFLINE_AFTER_SEC=30
 
 
 [Install]
