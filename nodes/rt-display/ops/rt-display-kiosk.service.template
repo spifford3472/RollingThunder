@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=spiff
 Environment=DISPLAY=:0
-ExecStart=/usr/local/bin/rt-display-kiosk.sh
+ExecStart=/opt/rollingthunder/nodes/rt-display/ops/rt-display-kiosk.sh
 Restart=always
 RestartSec=2
 

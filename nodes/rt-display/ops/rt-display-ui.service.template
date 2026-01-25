@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=spiff
-WorkingDirectory=/opt/rollingthunder/display/ui
+WorkingDirectory=/opt/rollingthunder/nodes/rt-display/ui
 ExecStart=/usr/bin/python3 -m http.server 8619 --bind 0.0.0.0
 Restart=always
 RestartSec=1

@@ -160,6 +160,26 @@ sudo systemctl restart <service>
 
 Skipping daemon-reload is considered a deployment error.
 
+### Rule 4 — Env files are install-if-missing (do not overwrite) ###
+
+Files under `/etc/rollingthunder/*.env` are **operator-owned configuration**.
+Deployment scripts MUST:
+
+- **install the template only if the env file does not exist**
+- never overwrite an existing env file automatically
+
+Rationale:
+- these files contain node-specific settings and local overrides
+- overwriting them can silently break a working node
+
+If a template changes and the operator wants the new version:
+- deploy scripts may optionally write a `.new` alongside the existing file (future enhancement)
+- operator performs the merge intentionally
+
+
+
+
+
 ---
 ## 5. Runtime Environment Files (Authoritative) ##
 
