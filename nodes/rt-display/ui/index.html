@@ -22,6 +22,9 @@
     th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #223043; vertical-align: top; }
     th { color: #9fb0c0; font-weight: 700; }
     .small { font-size: 12px; color: #9fb0c0; }
+    .warn { background: rgba(210, 153, 34, 0.18); border-color: rgba(210, 153, 34, 0.55); }
+    tr.sev-bad td { background: rgba(248, 81, 73, 0.06); }
+    tr.sev-warn td { background: rgba(210, 153, 34, 0.06); }
   </style>
 </head>
 <body>
@@ -99,10 +102,77 @@
     }[c]));
   }
 
-  function pill(ok, label) {
-    const cls = ok ? "pill ok" : "pill bad";
+  function pill(sev, label) {
+    sev = (sev || "").toString().trim();
+    const cls =
+      sev === "ok" ? "pill ok" :
+      sev === "warn" ? "pill warn" :
+      "pill bad";
     return `<span class="${cls}">${esc(label)}</span>`;
   }
+
+  function classifyNode(n) {
+    const id = n.id || n.node_id || "";
+    const roleRaw = (n.role || "").toString();
+    const role = roleRaw.toLowerCase();
+    const host = n.hostname || "";
+    const ip = n.ip || (n.net && n.net.ip) || "";
+
+    const ageRaw = n.age_sec ?? n.last_seen_age_sec ?? n.age;
+    const ageNum = Number(ageRaw);
+    const age = Number.isFinite(ageNum) ? Math.max(0, Math.floor(ageNum)) : "";
+
+    const statusRaw = String(n.status || "").toLowerCase().trim();
+
+    let sev =
+      statusRaw === "online" ? "ok" :
+      statusRaw === "stale"  ? "warn" :
+      statusRaw === "offline"? "bad" :
+      (statusRaw === "up" || statusRaw === "alive") ? "ok" :
+      "warn";
+
+    const isLegacyOnline = (statusRaw === "Up" || statusRaw === "alive");
+
+    const statusLabel =
+      statusRaw === "online" ? "Online" :
+      statusRaw === "stale"  ? `Stale (${age === "" ? "?" : age}s)` :
+      statusRaw === "offline"? `Offline (${age === "" ? "?" : age}s)` :
+      isLegacyOnline ? "Online" :
+      (statusRaw ? statusRaw.toUpperCase() : "UNKNOWN");
+
+
+    const badges = [];
+
+    const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
+    if (role === "display" && (statusRaw === "online" || statusRaw === "stale" || !statusRaw)) {
+      if (renderOk === true) badges.push({ sev: "ok", label: "UI OK" });
+      else if (renderOk === false) {
+        badges.push({ sev: "warn", label: "UI degraded" });
+        if (sev === "ok") sev = "warn";
+      } else {
+        badges.push({ sev: "warn", label: "UI unknown" });
+      }
+    }
+
+    const pubErr = (n.publisher_error ?? "").toString().trim();
+    if (pubErr) {
+      badges.push({ sev: "warn", label: "publisher_error" });
+      if (sev === "ok") sev = "warn";
+    }
+
+    return { id, role: roleRaw, host, ip, age, sev, statusLabel, badges };
+  }
+
+function pill(sev, label) {
+  sev = (sev || "").toString().trim();
+  const cls =
+    sev === "ok" ? "pill ok" :
+    sev === "warn" ? "pill warn" :
+    "pill bad";
+  return `<span class="${cls}">${esc(label)}</span>`;
+}
+
+
 
   function renderNodes(data) {
     // Accept:
@@ -138,33 +208,28 @@
     list.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
 
     const rows = list.map((n) => {
-      const id = n.id || n.node_id || "";
-      const statusRaw = String(n.status || "").toLowerCase();
-      const online = statusRaw === "online" || statusRaw === "alive" || statusRaw === "up";
-      const age = n.age_sec ?? n.last_seen_age_sec ?? n.age ?? "";
-      const ip = n.ip || (n.net && n.net.ip) || "";
-      const role = n.role || "";
-      const host = n.hostname || "";
-      const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
+      const m = classifyNode(n);
 
-      const statusLabel = online ? "ONLINE" : (statusRaw || "OFFLINE");
-      const renderLabel =
-        (renderOk === true) ? "UI OK" :
-        (renderOk === false) ? "UI ?" :
-        "";
+      const badgeHtml = m.badges.length
+        ? `<div class="small" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+            ${m.badges.map(b => pill(b.sev, b.label)).join("")}
+           </div>`
+        : "";
+
+        const sevClass = (m.sev === "ok" || m.sev === "warn" || m.sev === "bad") ? m.sev : "warn";
 
       return `
-        <tr>
+        <tr class="sev-${sevClass}">
           <td>
-            <div><strong>${esc(id)}</strong></div>
-            <div class="small">${esc(role)}${host ? " — " + esc(host) : ""}</div>
+            <div><strong>${esc(m.id)}</strong></div>
+            <div class="small">${esc(m.role)}${m.host ? " — " + esc(m.host) : ""}</div>
           </td>
           <td>
-            ${pill(online, statusLabel)}
-            ${renderLabel ? `<div class="small" style="margin-top:4px;">${esc(renderLabel)}</div>` : ""}
+            ${pill(m.sev, m.statusLabel)}
+            ${badgeHtml}
           </td>
-          <td>${esc(ip || "-")}</td>
-          <td>${esc(age === "" ? "-" : age)}</td>
+          <td>${esc(m.ip || "-")}</td>
+          <td>${esc(m.age === "" ? "-" : m.age)}</td>
         </tr>
       `;
     }).join("");

@@ -51,7 +51,7 @@ def run_redis_heartbeat(
         ip = _host_ip_best_effort()
         hb = {
             "last_seen_ms": now_ms,
-            "status": "up",
+            "status": "Online",
             "hostname": socket.gethostname(),
         }
         if ip:
