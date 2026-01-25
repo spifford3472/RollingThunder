@@ -32,6 +32,7 @@ Files that:
 - start automatically
 - run unattended
 - affect system-wide behavior
+- Always-on Python services run under /opt/rollingthunder/.venv/bin/python
 ***Must be owned by*** root.
 
 These include:
@@ -158,9 +159,71 @@ sudo systemctl restart <service>
 ```
 
 Skipping daemon-reload is considered a deployment error.
+
+---
+## 5. Runtime Environment Files (Authoritative) ##
+
+RollingThunder uses `.env`-style files under:
+   /etc/rollingthunder/
+
+to hold **node-local operational configuration**.
+
+Examples:
+- Redis host overrides
+- MQTT broker location
+- unit-to-service mappings
+- safety or rate-limit tuning
+
+These files are **root-owned** and affect always-on services.
+
 ---
 
-## SSH Key-Based Deployment (Recommended)
+### Rule — Install If Missing (Default)
+
+Deployment scripts **must not blindly overwrite** existing environment files in
+`/etc/rollingthunder/`.
+
+Instead:
+
+- The repository contains `*.env.template` files as defaults and documentation
+- Deployment installs an env file **only if it does not already exist**
+- Existing env files are preserved verbatim
+
+This behavior is **mandatory** for all deployment scripts unless explicitly overridden.
+
+---
+
+### Rationale
+
+Environment files may legitimately diverge per node.
+
+Blind overwrites:
+- erase node-specific configuration
+- silently change runtime behavior
+- violate the appliance model
+
+Preserving env files ensures:
+- stable upgrades
+- predictable reboots
+- safe iteration without configuration loss
+
+---
+
+### Intentional Overrides (Explicit Only)
+
+If an environment file must be replaced, it must be done **intentionally**:
+
+- manual edit on the node (root-owned), **or**
+- a deployment script using an explicit override mode (e.g. `--force-env`)
+
+Silent overwrites are considered a **deployment bug**.
+
+---
+
+
+---
+
+## 6. SSH Key-Based Deployment (Recommended)
 
 RollingThunder deployment should be performed using a dedicated SSH key from the dev machine
 to avoid password prompts and to support deterministic scripts.
@@ -193,7 +256,7 @@ These scripts serve as:
 - documentation
 - enforcement of architectural intent
 ---
-## 6. Security & Reliability Rationale ##
+## 7. Security & Reliability Rationale ##
 
 This model ensures:
 - accidental shell mistakes cannot rewrite boot services
@@ -204,7 +267,7 @@ This model ensures:
 This is not overengineering.
 This is how ***reliable systems stay reliable***.
 ---
-## 7. When This Document Must Be Updated ##
+## 8. When This Document Must Be Updated ##
 
 Update this document when:
 - a new always-on service is added
