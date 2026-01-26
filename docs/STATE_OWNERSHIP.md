@@ -16,7 +16,7 @@
 - **rt-controller heartbeat / controller health loop**
   - Owns: `last_seen_ms`, `last_update_ms` (when it writes), `hostname`, `ip`, `publisher_error` (when it is the source), and any controller-self liveness metadata.
   - May write: `id`, `role` (stable identity fields)
-  - Should NOT fight over: `status` (see below)
+  - heartbeat must not set status
 
 - **rt-node-presence-ingestor**
   - Owns: ingestion/normalization of *remote node presence* messages into `rt:nodes:<remote_node_id>`
@@ -26,7 +26,8 @@
 **Conventions**
 - `status` values:
   - `online` = observed recently (fresh presence/heartbeat)
-  - `offline` = stale/expired (set by a single owner, if implemented)
+  - `offline` = expired (set by a single owner, if implemented)
+  - `stale` = stale
 - `age_sec`:
   - derived value (seconds since last_seen/last_update); should be owned by whichever component computes it.
 
