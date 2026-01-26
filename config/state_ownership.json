@@ -1,0 +1,45 @@
+{
+  "schema_version": "state.ownership.v1",
+  "keys": [
+    {
+      "pattern": "rt:nodes:*",
+      "fields": {
+        "id": ["state_publisher", "node_presence_ingestor", "heartbeat"],
+        "role": ["state_publisher", "node_presence_ingestor", "heartbeat"],
+
+        "status": ["node_presence_ingestor"],
+        "age_sec": ["node_presence_ingestor"],
+
+        "last_seen_ms": ["node_presence_ingestor", "heartbeat"],
+        "last_update_ms": ["node_presence_ingestor", "heartbeat"],
+
+        "hostname": ["state_publisher", "node_presence_ingestor", "heartbeat"],
+        "ip": ["state_publisher", "node_presence_ingestor", "heartbeat"],
+
+        "publisher_error": ["node_presence_ingestor", "heartbeat"]
+      },
+      "notes": "Phase 14: node_presence_ingestor owns TTL + status derivation. Heartbeat MUST NOT set status."
+    },
+    {
+      "pattern": "rt:system:health",
+      "fields": { "*": ["heartbeat"] }
+    },
+    {
+      "pattern": "rt:system:info",
+      "fields": { "*": ["state_publisher", "heartbeat"] }
+    },
+    {
+      "pattern": "rt:services:*",
+      "fields": {
+        "id": ["state_publisher"],
+        "scope": ["state_publisher"],
+        "ownerNode": ["state_publisher"],
+        "startPolicy": ["state_publisher"],
+        "stopPolicy": ["state_publisher"],
+
+        "state": ["service_state_publisher"],
+        "last_update_ms": ["service_state_publisher"]
+      }
+    }
+  ]
+}
