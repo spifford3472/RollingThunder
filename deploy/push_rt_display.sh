@@ -97,9 +97,11 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "
   exit 0
 "
 
+
 require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
 echo "[smoke] UI server health.json on :8619 (retry)"
 curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8619/health.json" 5 1.5
+
 
 echo "[smoke] show health.json (non-fatal, if curl exists)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "

@@ -150,6 +150,9 @@ This ensures:
 - correct ownership
 - explicit privilege escalation
 
+Rule — Env files are install-if-missing (never overwritten by deploy scripts).
+Files under /etc/rollingthunder/*.env are treated as machine-local configuration and must not be blindly replaced by deployment. Deployment scripts may install a template only if the destination file does not exist. Updates to existing env files are a manual, explicit step (or a dedicated “config migration” tool), never an automatic deploy side effect.
+
 ### Rule 3 — systemd must always be reloaded after unit changes ###
 
 After modifying /etc/systemd/system/*.service:

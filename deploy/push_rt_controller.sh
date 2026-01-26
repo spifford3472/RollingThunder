@@ -17,11 +17,17 @@ UI_SNAPSHOT_SRC="${REPO_ROOT}/nodes/rt-controller/services/ui_snapshot_api.py"
 STATE_PUB_SRC="${REPO_ROOT}/nodes/rt-controller/services/service_state_publisher.py"
 PRES_INGEST_SRC="${REPO_ROOT}/nodes/rt-controller/services/node_presence_ingestor.py"
 STATE_ENV_SRC="${REPO_ROOT}/nodes/rt-controller/ops/service_state_publisher.env.template"
+HEARTBEAT_SRC="${REPO_ROOT}/nodes/rt-controller/heartbeat.py"
+STATEPUBLISHER_SRC="${REPO_ROOT}/nodes/rt-controller/state_publisher.py"
+
 
 UI_SNAPSHOT_DST="/opt/rollingthunder/services/ui_snapshot_api.py"
 STATE_PUB_DST="/opt/rollingthunder/services/service_state_publisher.py"
 PRES_INGEST_DST="/opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py"
 STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
+HEARTBEAT_DST="/opt/rollingthunder/nodes/rt-controller/heartbeat.py"
+STATEPUBLISHER_DST="/opt/rollingthunder/nodes/rt-controller/state_publisher.py"
+
 
 UNITS=(
   "rollingthunder-controller.service"
@@ -40,9 +46,23 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   mkdir -p /opt/rollingthunder/nodes/rt-controller
 "
 
+fail_missing "${PRES_INGEST_SRC}"
+fail_missing "${HEARTBEAT_SRC}"
+fail_missing "${UI_SNAPSHOT_SRC}"
+fail_missing "${STATE_PUB_SRC}"
+fail_missing "${STATE_ENV_SRC}"
+
+
+
 # spiff-owned node code
 echo "[push] node_presence_ingestor.py (spiff-owned) -> ${PRES_INGEST_DST}"
 scp "${PRES_INGEST_SRC}" "${TARGET_USER}@${TARGET_HOST}:${PRES_INGEST_DST}"
+
+echo "[push] heartbeat.py (spiff-owned) -> ${HEARTBEAT_DST}"
+scp "${HEARTBEAT_SRC}" "${TARGET_USER}@${TARGET_HOST}:${HEARTBEAT_DST}"
+
+echo "[push] state_publisher.py (spiff-owned) -> ${STATEPUBLISHER_DST}"
+scp "${STATEPUBLISHER_SRC}" "${TARGET_USER}@${TARGET_HOST}:${STATEPUBLISHER_DST}"
 
 # root-owned executables
 push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${UI_SNAPSHOT_SRC}" "${UI_SNAPSHOT_DST}" "755"
@@ -62,17 +82,29 @@ echo "[push] systemd daemon-reload + enable + restart"
 ssh "${TARGET_USER}@${TARGET_HOST}" "
   set -e
   sudo systemctl daemon-reload
-  sudo systemctl enable ${UNITS[*]}
-  sudo systemctl restart ${UNITS[*]}
+  sudo systemctl enable "${UNITS[@]}"
+  sudo systemctl restart "${UNITS[@]}"
 "
 
 require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
 curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
+
+
 
 echo "[smoke] redis ping"
 ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli ping || true"
 
 echo "[smoke] presence key rt:nodes:rt-display"
 ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli HGETALL rt:nodes:rt-display || true"
+
+echo "[smoke] presence key rt:nodes:rt-controller (3 samples)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "
+  for i in 1 2 3; do
+    echo \"sample=\$i\"
+    redis-cli HMGET rt:nodes:rt-controller status age_sec last_seen_ms last_update_ms
+    sleep 0.8
+  done
+" || true
+
 
 echo "[push] Done."
