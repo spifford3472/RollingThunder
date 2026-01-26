@@ -36,6 +36,11 @@ remote_mkdirs() {
   ' -- "$@"
 }
 
+fail_missing_dir() {
+  local p="$1"
+  [[ -d "${p}" ]] || die "[error] missing dir: ${p}"
+}
+
 push_root_file() {
   local host="$1" user="$2" src="$3" dst="$4" mode="$5"
   local tmp="/tmp/rt.$(basename "$dst").$(date +%s).$$"
