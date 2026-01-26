@@ -43,3 +43,35 @@ def test_presence_ingestor_can_write_status():
     guarded = RedisWriteGuard(r, reg, writer_id="node_presence_ingestor")
 
     guarded.hset("rt:nodes:rt-radio", mapping={"status": "stale", "age_sec": 12})
+
+def test_registry_schema_sanity():
+    raw = json.loads(Path("config/state_ownership.json").read_text())
+    assert raw["schema_version"] == "state.ownership.v1"
+    assert isinstance(raw["keys"], list) and raw["keys"]
+
+def test_state_publisher_cannot_write_runtime_service_state():
+    r = FakeRedis()
+    reg = load_registry()
+    guarded = RedisWriteGuard(r, reg, writer_id="state_publisher")
+
+    with pytest.raises(AssertionError):
+        guarded.hset("rt:services:logging", mapping={"state": "running"})
+
+def test_state_publisher_cannot_write_runtime_service_state():
+    r = FakeRedis()
+    reg = load_registry()
+    guarded = RedisWriteGuard(r, reg, writer_id="state_publisher")
+
+    with pytest.raises(AssertionError):
+        guarded.hset("rt:services:logging", mapping={"state": "running"})
+
+
+def test_service_state_publisher_cannot_write_static_service_metadata():
+    r = FakeRedis()
+    reg = load_registry()
+    guarded = RedisWriteGuard(r, reg, writer_id="service_state_publisher")
+
+    with pytest.raises(AssertionError):
+        guarded.hset("rt:services:logging", mapping={"scope": "always_on"})
+
+
