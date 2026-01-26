@@ -52,14 +52,13 @@ TOPIC_PREFIX = os.environ.get("RT_PRESENCE_TOPIC_PREFIX", "rt/presence")
 NODE_KEY_PREFIX = os.environ.get("RT_KEY_NODE_PREFIX", "rt:nodes:")
 
 # Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
-#REMOVE
-#TTL_SEC = float(os.environ.get("RT_PRESENCE_TTL_SEC", "10.0"))
 SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
 
 STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
 OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
-#REMOVE
-#RECOVERY_STABLE_SEC = float(os.environ.get("RT_PRESENCE_RECOVERY_STABLE_SEC", "6.0"))
+CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
+
+
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -226,6 +225,14 @@ def main() -> int:
             return
 
         node_id, mapping = derive_node_fields(payload)
+        # Do not let the presence ingestor own rt-controller's status.
+        if node_id == CONTROLLER_NODE_ID:
+            mapping.pop("status", None)
+            mapping.pop("age_sec", None)
+            return
+            # Optional: also avoid touching these if you want *zero* overlap:
+            # mapping.pop("last_update_ms", None)
+
         if not node_id:
             return
 
@@ -265,6 +272,8 @@ def main() -> int:
         while True:
             try:
                 for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
+                    if k == f"{NODE_KEY_PREFIX}{CONTROLLER_NODE_ID}":
+                        continue
                     update_presence_status(r, k, stale_after_ms, offline_after_ms)
             except Exception:
                 pass

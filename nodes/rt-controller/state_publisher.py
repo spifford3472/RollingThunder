@@ -1,10 +1,9 @@
 # nodes/rt-controller/state_publisher.py
 from __future__ import annotations
 
-import time
 import socket
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+import time
+from typing import Any, Dict
 
 import redis
 
@@ -14,10 +13,6 @@ class StatePublishError(RuntimeError):
 
 
 def _ns(cfg: Dict[str, Any]) -> str:
-    """
-    Authoritative namespace from globals.state.namespace.
-    SCHEMA_VALIDATION guarantees it exists and is non-empty.
-    """
     return str(((cfg.get("globals") or {}).get("state") or {}).get("namespace") or "rt").strip()
 
 
@@ -29,6 +24,14 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _ip_best_effort() -> str:
+    try:
+        hostname = socket.gethostname()
+        return socket.gethostbyname(hostname)
+    except Exception:
+        return ""
+
+
 def publish_initial_state(
     r: redis.Redis,
     cfg: Dict[str, Any],
@@ -38,16 +41,11 @@ def publish_initial_state(
     redis_connected: bool = True,
     boot_ms: int,
 ) -> None:
-    """
-    Publish a deterministic initial snapshot to Redis.
-
-    This is intentionally:
-    - write-only (no reads)
-    - idempotent (safe to run repeatedly)
-    - minimal (no runtime loops)
-    """
     prefix = _ns(cfg)
     hostname = socket.gethostname()
+    now_ms = _now_ms()
+    ip = _ip_best_effort()
+
     schema = cfg.get("schema") or {}
     schema_id = str(schema.get("id") or "")
     schema_version = str(schema.get("version") or "")
@@ -59,55 +57,50 @@ def publish_initial_state(
     try:
         pipe = r.pipeline(transaction=False)
 
-        # ----------------------------
         # rt:system:*
-        # ----------------------------
         pipe.hset(
             _k(prefix, "system", "info"),
             mapping={
                 "node_id": node_id,
                 "hostname": hostname,
-                "boot_ms": boot_ms,
+                "boot_ms": str(boot_ms),
                 "schema_id": schema_id,
                 "schema_version": schema_version,
-                "pages_count": len(pages),
-                "panels_count": len(panels),
-                "services_count": len(services),
+                "pages_count": str(len(pages)),
+                "panels_count": str(len(panels)),
+                "services_count": str(len(services)),
                 "redis_connected": "1" if redis_connected else "0",
                 "mqtt_connected": "1" if mqtt_connected else "0",
             },
         )
-        pipe.set(_k(prefix, "system", "boot_ms"), boot_ms)
+        pipe.set(_k(prefix, "system", "boot_ms"), str(boot_ms))
 
-        # Handy indices (not required, but makes state browsable)
         pipe.sadd(_k(prefix, "system", "nodes"), node_id)
-        pipe.sadd(_k(prefix, "system", "services"), *sorted(services.keys())) if services else None
+        if services:
+            pipe.sadd(_k(prefix, "system", "services"), *sorted(services.keys()))
 
-        # ----------------------------
         # rt:nodes:*
-        # ----------------------------
-        # Minimal node record; health fields can be expanded later
         pipe.hset(
             _k(prefix, "nodes", node_id),
             mapping={
-                "node_id": node_id,
-                "hostname": hostname,
+                "id": node_id,
                 "role": "controller",
-                "boot_ms": boot_ms,
-                "status": "up",
+                "status": "online",
+                "boot_ms": str(boot_ms),
+                "hostname": hostname,
+                "ip": ip,
+                "last_seen_ms": str(now_ms),
+                "last_update_ms": str(now_ms),
+                "publisher_error": "",
             },
         )
 
-        # ----------------------------
         # rt:services:*
-        # ----------------------------
-        # One hash per service, plus an index set already added above.
         for sid in sorted(services.keys()):
             sobj = services.get(sid)
             if not isinstance(sobj, dict):
                 continue
 
-            # Keep this minimal and stable (don’t dump full objects yet)
             scope = sobj.get("scope")
             owner = sobj.get("ownerNode")
 
@@ -123,8 +116,8 @@ def publish_initial_state(
                     "ownerNode": str(owner) if owner is not None else "",
                     "startPolicy": str(start_policy) if start_policy is not None else "",
                     "stopPolicy": str(stop_policy) if stop_policy is not None else "",
-                    "state": "unknown",   # runtime manager will set later
-                    "last_update_ms": boot_ms,
+                    "state": "unknown",
+                    "last_update_ms": str(boot_ms),
                 },
             )
 

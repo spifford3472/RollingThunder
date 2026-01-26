@@ -48,11 +48,19 @@ def run_redis_heartbeat(
         now_ms = int(time.time() * 1000)
 
         # Node heartbeat (existing behavior)
+            # NOTE:
+            # Do NOT emit 'status' here.
+            # Status is controller-derived and canonicalized centrally.
         ip = _host_ip_best_effort()
         hb = {
+            "id": "rt-controller",
+            "role": "controller",
+            "age_sec": 0,
             "last_seen_ms": now_ms,
-            "status": "Online",
+            "last_update_ms": now_ms,
             "hostname": socket.gethostname(),
+            "ip": ip,
+            "publisher_error": "",
         }
         if ip:
             hb["ip"] = ip
