@@ -1,305 +1,84 @@
-# RollingThunder — Deployment Model (Authoritative) #
+# RollingThunder — Deployment Cookbook #
 
-This document defines ***how code is deployed*** to RollingThunder nodes and ***why***
-certain files are owned by ```root``` versus the normal operating user (```spiff```).
+This document is a **command reference only.**
+All rules, ownership boundaries, and guarantees are defined in:
+```
+docs/DEPLOYMENT_MODEL.md
+```
 
-It exists to prevent:
-- accidental overwrites
-- privilege confusion
-- brittle manual deployment
-- architectural drift between repo layout and runtime layout
-
-If behavior changes but this document is not updated, the change is considered incomplete.
-
-## 1. Deployment Philosophy ##
-RollingThunder is an ***appliance-style system***, not a general-purpose workstation.
-
-That means:
-- always-on services must be protected from accidental modification
-- boot behavior must be deterministic
-- deployment steps must be repeatable and explicit
-
-Convenience is secondary to ***stability and safety***.
-
+If behavior differs from the model, the model wins.
 ---
-## 2. Ownership Model (Non-Negotiable) ##
+## Common Conventions ##
+- Deployment is performed from the **dev machine**
+- Default SSH user: `spiff`
+- Targets are appliance nodes (`rt-controller`, `rt-display`)
+- All scripts support DRY_RUN=1
 
-RollingThunder uses a ***two-tier ownership model**:
-
-### 2.1 Root-Owned (Protected) ###
-
-Files that:
-- start automatically
-- run unattended
-- affect system-wide behavior
-- Always-on Python services run under /opt/rollingthunder/.venv/bin/python
-***Must be owned by*** root.
-
-These include:
-***systemd unit files***
+## Dry Run (Always Recommended First) ##
+Shows exactly what would change, without modifying the target.
 ```
-/etc/systemd/system/*.service
+DRY_RUN=1 deploy/push_rt_controller.sh
+DRY_RUN=1 deploy/push_rt_display.sh
 ```
 
-Reason:
-- defines boot-time behavior
-- modifying units is a privilege boundary
-- required by systemd security model
-
-***Always-on service executables***
-```
-/opt/rollingthunder/services/
-```
-
-Examples:
-- ui_snapshot_api.py
-- service_state_publisher.py
-- node_presence_ingestor.py (when promoted to always-on)
-- future NOAA, Meshtastic, watchdog services
-
-Reason:
-- prevents accidental edits
-- avoids partial writes during deploy
-- stabilizes unattended operation
-
-### 2.2 User-Owned (spiff) ###
-
-Files that:
-- are iterated on frequently
-- do not define boot behavior directly
-- are safe to edit live
-
-***Should be owned by*** spiff.
-
-These include:
-```
-/opt/rollingthunder/nodes/
-├── rt-controller/
-├── rt-display/
-```
-
-As well as:
-```
-/opt/rollingthunder/config/
- /opt/rollingthunder/tools/
- UI HTML / JS assets
-```
-
-Reason:
-- faster iteration
-- lower risk
-- breakage is visible and recoverable
+Use this to:
+- verify changed files are detected
+- confirm no unexpected deletions
+- visualize deployment drift
 ---
-## 3. Repository Layout vs Runtime Layout ##
-### 3.1 Repository (Logical Ownership) ###
-
-The repo is organized by ***node and responsibility***:
-
-```
-nodes/
-├── rt-controller/
-│   ├── services/
-│   │   └── ui_snapshot_api.py
-│   ├── systemd/
-│   └── ...
-```
-
-This expresses ***ownership and intent***, not execution context.
-
-## 3.2 Runtime (Operational Simplicity) ##
-
-At runtime, always-on services are centralized:
-```
-/opt/rollingthunder/
-├── services/        # root-owned executables
-├── nodes/           # spiff-owned node logic
-├── config/
-├── tools/
-```
-
-This separation is intentional:
-- repo layout optimizes for understanding
-- runtime layout optimizes for stability
-They are not required to mirror each other.
----
-## 4. Deployment Rules (Authoritative) ##
-### Rule 1 — Never SCP directly into root-owned paths ###
-
-This is ***not allowed***:
-```
-scp file.py user@host:/opt/rollingthunder/services/file.py   ❌
-```
-
-Reason:
-- bypasses ownership boundary
-- risks partial writes
-- defeats appliance protections
-
-### Rule 2 — Root-owned files must be staged via /tmp ###
-
-Correct pattern:
-```
-scp file.py user@host:/tmp/file.py
-ssh user@host "sudo mv /tmp/file.py /opt/rollingthunder/services/file.py"
-ssh user@host "sudo chown root:root /opt/rollingthunder/services/file.py"
-ssh user@host "sudo chmod 755 /opt/rollingthunder/services/file.py"
-```
-
-This ensures:
-- atomic replacement
-- correct ownership
-- explicit privilege escalation
-
-Rule — Env files are install-if-missing (never overwritten by deploy scripts).
-Files under /etc/rollingthunder/*.env are treated as machine-local configuration and must not be blindly replaced by deployment. Deployment scripts may install a template only if the destination file does not exist. Updates to existing env files are a manual, explicit step (or a dedicated “config migration” tool), never an automatic deploy side effect.
-
-### Rule 3 — systemd must always be reloaded after unit changes ###
-
-After modifying /etc/systemd/system/*.service:
-```
-sudo systemctl daemon-reload
-sudo systemctl restart <service>
-```
-
-Skipping daemon-reload is considered a deployment error.
-
-### Rule 4 — Env files are install-if-missing (do not overwrite) ###
-
-Files under `/etc/rollingthunder/*.env` are **operator-owned configuration**.
-Deployment scripts MUST:
-
-- **install the template only if the env file does not exist**
-- never overwrite an existing env file automatically
-
-Rationale:
-- these files contain node-specific settings and local overrides
-- overwriting them can silently break a working node
-
-If a template changes and the operator wants the new version:
-- deploy scripts may optionally write a `.new` alongside the existing file (future enhancement)
-- operator performs the merge intentionally
-
-
-
-
-
----
-## 5. Runtime Environment Files (Authoritative) ##
-
-RollingThunder uses `.env`-style files under:
-   /etc/rollingthunder/
-
-to hold **node-local operational configuration**.
-
-Examples:
-- Redis host overrides
-- MQTT broker location
-- unit-to-service mappings
-- safety or rate-limit tuning
-
-These files are **root-owned** and affect always-on services.
-
----
-
-### Rule — Install If Missing (Default)
-
-Deployment scripts **must not blindly overwrite** existing environment files in
-`/etc/rollingthunder/`.
-
-Instead:
-
-- The repository contains `*.env.template` files as defaults and documentation
-- Deployment installs an env file **only if it does not already exist**
-- Existing env files are preserved verbatim
-
-This behavior is **mandatory** for all deployment scripts unless explicitly overridden.
-
----
-
-### Rationale
-
-Environment files may legitimately diverge per node.
-
-Blind overwrites:
-- erase node-specific configuration
-- silently change runtime behavior
-- violate the appliance model
-
-Preserving env files ensures:
-- stable upgrades
-- predictable reboots
-- safe iteration without configuration loss
-
----
-
-### Intentional Overrides (Explicit Only)
-
-If an environment file must be replaced, it must be done **intentionally**:
-
-- manual edit on the node (root-owned), **or**
-- a deployment script using an explicit override mode (e.g. `--force-env`)
-
-Silent overwrites are considered a **deployment bug**.
-
----
-
-
----
-
-## 6. SSH Key-Based Deployment (Recommended)
-
-RollingThunder deployment should be performed using a dedicated SSH key from the dev machine
-to avoid password prompts and to support deterministic scripts.
-
-### Create a dedicated deploy key (dev machine)
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_rt_deploy -C "rollingthunder-deploy"
-ssh-copy-id -i ~/.ssh/id_ed25519_rt_deploy.pub spiff@rt-controller
-
-## 5. Deployment Scripts (Preferred Mechanism) ##
-
-Manual deployment is acceptable during early development,
-but ***deployment scripts are the preferred and future-proof mechanism***.
-
-Scripts should:
-- encode ownership rules
-- handle /tmp staging automatically
-- restart only affected services
-- optionally perform smoke checks
-
-Example scripts:
+## Deploy rt-controller ##
 ```
 deploy/push_rt_controller.sh
+```
+
+Dry run:
+```
+DRY_RUN=1 deploy/push_rt_controller.sh
+```
+
+Deploy to a non-default host:
+```
+deploy/push_rt_controller.sh rt-controller
+```
+---
+## Deploy rt-display ##
+```
 deploy/push_rt_display.sh
 ```
 
-These scripts serve as:
-- automation
-- documentation
-- enforcement of architectural intent
+Dry run:
+```
+DRY_RUN=1 deploy/push_rt_display.sh
+```
+
+Deploy to a non-default host:
+```
+deploy/push_rt_display.sh rt-display
+```
 ---
-## 7. Security & Reliability Rationale ##
-
-This model ensures:
-- accidental shell mistakes cannot rewrite boot services
-- compromised user account cannot silently alter appliance behavior
-- services behave the same after reboot as before
-- future contributors understand why boundaries exist
-
-This is not overengineering.
-This is how ***reliable systems stay reliable***.
+## Verify Deployment State on Target ##
+Check deployed commit hash:
+```
+ssh spiff@<node> "cat /opt/rollingthunder/.deploy/DEPLOYED_COMMIT"
+```
 ---
-## 8. When This Document Must Be Updated ##
+## Common Troubleshooting ##
+**Service didn’t update**
+1. Run `DRY_RUN=1` and confirm the file appears in rsync output
+2. Verify correct ownership path (`/opt/rollingthunder/services` vs `/nodes`)
+3. Restart the affected service explicitly if needed
 
-Update this document when:
-- a new always-on service is added
-- ownership rules change
-- runtime layout changes
-- deployment process changes materially
-
-If a future reader cannot answer:
-   “Why is this file owned by root?”
-then the documentation is incomplete.
+**systemd unit changes not taking effect**
+```
+ssh spiff@<node> "sudo systemctl daemon-reload"
+```
 ---
-***End of Deployment Model***
+## Never Do This ##
+
+❌ SCP directly into root-owned paths
+❌ Edit `/etc/systemd/system/*.service` without redeploying
+❌ Overwrite `/etc/rollingthunder/*.env` via deploy scripts
+
+If unsure, stop and read `DEPLOYMENT_MODEL.md`.
+---
+End of Deployment Cookbook
