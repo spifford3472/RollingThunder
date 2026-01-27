@@ -1,0 +1,12 @@
+[Unit]
+Description=RollingThunder Deploy Report Publisher (MQTT, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=spiff
+Environment=RT_NODE_ROLE=display
+# If hostname lookup for rt-controller fails, uncomment and set IP:
+# Environment=RT_MQTT_HOST=192.168.8.134
+ExecStart=/opt/rollingthunder/tools/publish_deploy_report.sh
