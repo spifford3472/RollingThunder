@@ -51,6 +51,11 @@ MQTT_KEEPALIVE = int(os.environ.get("RT_MQTT_KEEPALIVE", "30"))
 TOPIC_PREFIX = os.environ.get("RT_PRESENCE_TOPIC_PREFIX", "rt/presence")
 NODE_KEY_PREFIX = os.environ.get("RT_KEY_NODE_PREFIX", "rt:nodes:")
 
+DEPLOY_TOPIC_PREFIX = os.environ.get("RT_DEPLOY_TOPIC_PREFIX", "rt/deploy/report")
+DEPLOY_KEY_PREFIX = os.environ.get("RT_KEY_DEPLOY_REPORT_PREFIX", "rt:deploy:report:")
+DEPLOY_TTL_SEC = float(os.environ.get("RT_DEPLOY_TTL_SEC", "300"))
+
+
 # Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
 SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
 
@@ -58,7 +63,24 @@ STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
 OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
 CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
 
+def is_deploy_report(msg: Dict[str, Any]) -> bool:
+    return msg.get("schema") == "deploy.report.v1"
 
+def store_deploy_report(r: redis.Redis, report: Dict[str, Any]) -> None:
+    node_id = report.get("node_id")
+    if not isinstance(node_id, str) or not node_id.strip():
+        return
+
+    key = f"{DEPLOY_KEY_PREFIX}{node_id.strip()}"
+    # Compact encoding; bounded by nature (we control what publisher sends)
+    payload = json.dumps(report, separators=(",", ":"), ensure_ascii=False)
+
+    r.set(key, payload)
+    # TTL so we can detect staleness
+    try:
+        r.expire(key, int(DEPLOY_TTL_SEC))
+    except Exception:
+        pass
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -210,28 +232,35 @@ def main() -> int:
 
     def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int) -> None:
         if rc == 0:
-            topic = f"{TOPIC_PREFIX}/+"
-            client.subscribe(topic, qos=0)
-            print(f"[presence_ingestor] MQTT connected; subscribed {topic}")
+            presence_topic = f"{TOPIC_PREFIX}/+"
+            deploy_topic = f"{DEPLOY_TOPIC_PREFIX}/+"
+            client.subscribe(presence_topic, qos=0)
+            client.subscribe(deploy_topic, qos=0)
+            print(f"[presence_ingestor] MQTT connected; subscribed {presence_topic} and {deploy_topic}")
         else:
             print(f"[presence_ingestor] MQTT connect failed rc={rc}")
 
-    def on_message(client: mqtt.Client, userdata: Any, msg_in: Any) -> None:
 
-        # Parse message
+    def on_message(client: mqtt.Client, userdata: Any, msg_in: Any) -> None:
         payload, perr = parse_json(msg_in.payload)
         if payload is None:
-            # No spam: only record errors if we can infer node_id from topic
             return
 
+        # 1) Deploy report path (MQTT -> Redis string key)
+        if is_deploy_report(payload):
+            try:
+                store_deploy_report(r, payload)
+            except Exception:
+                pass
+            return
+
+        # 2) Presence path (existing logic)
         node_id, mapping = derive_node_fields(payload)
-        # Do not let the presence ingestor own rt-controller's status.
+
         if node_id == CONTROLLER_NODE_ID:
             mapping.pop("status", None)
             mapping.pop("age_sec", None)
             return
-            # Optional: also avoid touching these if you want *zero* overlap:
-            # mapping.pop("last_update_ms", None)
 
         if not node_id:
             return

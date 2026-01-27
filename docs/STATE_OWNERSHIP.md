@@ -50,6 +50,17 @@
   - Static: `id`, `scope`, `ownerNode`, `startPolicy`, `stopPolicy`
   - Runtime: `state`, `last_update_ms`
 
+### `rt:deploy:report:<node_id>` ###
+**Primary purpose:** per-node deploy/runtime report used by drift visualizer.
+
+**Authoritative writers**
+- **rt-controller deploy_reporter** (for `rt-controller` only): writes `rt:deploy:report:rt-controller`
+- **rt-node-presence-ingestor** (for non-controller nodes): ingests MQTT deploy reports and writes `rt:deploy:report:<remote_node_id>`
+
+**Notes**
+- Value is a JSON string (schema `deploy.report.v1`)
+- TTL is enforced to allow “stale report” detection
+
 ## Debugging: identify writers quickly ##
 
 ### Redis monitor patterns ###

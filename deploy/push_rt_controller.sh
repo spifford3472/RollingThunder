@@ -37,6 +37,9 @@ UNITS=(
   "rt-ui-snapshot-api.service"
   "rt-service-state-publisher.service"
   "rt-node-presence-ingestor.service"
+  #Deploy Report Publisher (cntrollr -> Redis)
+  "rt-deploy-report-controller.service"
+  "rt-deploy-report-controller.timer"
 )
 
 # Build a safely-escaped unit string for remote shell usage
@@ -165,6 +168,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
       sleep 0.8
     done
   " || true
+
+  echo "[smoke] deploy report key rt:deploy:report:rt-controller"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli GET rt:deploy:report:rt-controller | head -c 200 && echo || true"
+
 else
   echo "[dry] skipping smoke checks"
 fi
