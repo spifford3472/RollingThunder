@@ -31,6 +31,11 @@ REDIS_TIMEOUT = float(os.environ.get("RT_REDIS_TIMEOUT_SEC", "0.35"))
 
 SNAPSHOT_PATHS = ("/api/v1/ui/snapshot", "/api/v1/ui/snapshot/")
 NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
+DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
+
+KEY_DEPLOY_PREFIX = os.environ.get("RT_KEY_DEPLOY_PREFIX", "rt:deploy:report:")
+DEPLOY_MAX_AGE_SEC = int(os.environ.get("RT_DEPLOY_MAX_AGE_SEC", "30"))
+DEPLOY_COMMIT_FILE = os.environ.get("RT_DEPLOYED_COMMIT_FILE", "/opt/rollingthunder/.deploy/DEPLOYED_COMMIT")
 
 # Observed base keys
 KEY_SYSTEM_HEALTH = os.environ.get("RT_KEY_SYSTEM_HEALTH", "rt:system:health")
@@ -136,6 +141,19 @@ def _hgetall_parsed(r: redis.Redis, key: str) -> Dict[str, Any]:
         out[k] = _truncate(parsed)
     return out
 
+def _load_deploy_report(r: redis.Redis, node_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Deploy reports are stored as JSON strings at:
+      rt:deploy:report:<node_id>
+    """
+    key = f"{KEY_DEPLOY_PREFIX}{node_id}"
+    raw = r.get(key)
+    if not raw:
+        return None
+    parsed = _try_parse_json(raw)
+    if isinstance(parsed, dict):
+        return parsed
+    return None
 
 def _service_summary_fields(h: Dict[str, Any]) -> Dict[str, Any]:
     keep = ("id", "scope", "ownerNode", "startPolicy", "stopPolicy", "state", "last_update_ms")
@@ -206,6 +224,100 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+    def _handle_deploy(self) -> None:
+        payload: Dict[str, Any] = {
+            "source": "rt-controller",
+            "endpoint": "/api/v1/ui/deploy",
+            "ts": now_iso_utc(),
+            "ok": False,
+            "data": {"expected": {}, "nodes": []},
+            "errors": [],
+        }
+
+        try:
+            r = self._redis()
+
+            # expected commit (controller-local stamp)
+            expected_commit = "unknown"
+            try:
+                if os.path.exists(DEPLOY_COMMIT_FILE):
+                    with open(DEPLOY_COMMIT_FILE, "r", encoding="utf-8") as f:
+                        expected_commit = f.read().strip()
+            except Exception:
+                pass
+
+            payload["data"]["expected"] = {"deployed_commit": expected_commit}
+
+            nodes_out = []
+            for key in r.scan_iter(match=f"{KEY_NODE_PREFIX}*"):
+                if r.type(key) != "hash":
+                    continue
+                h = _hgetall_parsed(r, key)
+                node_id = str(h.get("id") or str(key).split(":")[-1])
+
+                report = _load_deploy_report(r, node_id)
+
+                deploy_obj: Dict[str, Any] = {
+                    "deployed_commit": None,
+                    "git_head": None,
+                    "dirty": None,
+                    "report_age_sec": None,
+                    "units": {},
+                }
+
+                reasons = []
+                if report is None:
+                    reasons.append("missing_deploy_report")
+                else:
+                    deploy_obj["deployed_commit"] = report.get("deployed_commit")
+                    deploy_obj["git_head"] = report.get("git_head")
+                    deploy_obj["dirty"] = report.get("dirty")
+                    deploy_obj["units"] = report.get("units") or {}
+
+                    ts_ms = report.get("ts_ms")
+                    if isinstance(ts_ms, int):
+                        age = max(0, int((now_ms() - ts_ms) / 1000))
+                        deploy_obj["report_age_sec"] = age
+                        if age > DEPLOY_MAX_AGE_SEC:
+                            reasons.append("deploy_report_stale")
+
+                    rep_commit = report.get("deployed_commit")
+                    if (
+                        expected_commit != "unknown"
+                        and isinstance(rep_commit, str)
+                        and rep_commit
+                        and rep_commit != expected_commit
+                    ):
+                        reasons.append("deployed_commit_mismatch")
+
+                # Drift state
+                if not reasons:
+                    drift_state = "ok"
+                elif "deployed_commit_mismatch" in reasons:
+                    drift_state = "bad"
+                else:
+                    drift_state = "warn"
+
+                nodes_out.append({
+                    "id": node_id,
+                    "role": h.get("role"),
+                    "status": h.get("status"),
+                    "age_sec": h.get("age_sec"),
+                    "deploy": deploy_obj,
+                    "drift": {"state": drift_state, "reasons": reasons},
+                })
+
+            nodes_out.sort(key=lambda x: str(x.get("id") or ""))
+            payload["data"]["nodes"] = nodes_out
+            payload["ok"] = True
+
+        except Exception as e:
+            payload["errors"].append(f"deploy_failed: {type(e).__name__}: {e}")
+
+        self._write_json(200, payload)
+
 
     def _handle_nodes(self) -> None:
         payload: Dict[str, Any] = {
@@ -315,6 +427,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
         if self.path in NODES_PATHS:
             return self._handle_nodes()
+
+        if self.path in DEPLOY_PATHS:
+            return self._handle_deploy()
 
         self.send_response(404)
         self._cors()
