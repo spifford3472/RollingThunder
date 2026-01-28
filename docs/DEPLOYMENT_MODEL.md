@@ -266,6 +266,85 @@ This enables:
 - fast correlation between runtime behavior and source state
 - postmortem debugging
 - confidence that the target matches expectations
+
+### 10.1 Deploy Drift Reporting (Authoritative) ###
+RollingThunder includes a ***read-only drift visualizer*** that reports what code/config is actually running on each node and flags mismatches against the repo’s expected deployment.
+
+This exists to prevent:
+- “it works on that Pi” mysteries
+- silent partial deploys
+- unit file drift
+- root-owned executable drift
+
+### 10.1.1 Node Deploy Report (Publisher → MQTT) ###
+Each node may publish a bounded deploy report on MQTT:
+- Topic:
+```
+rt/deploy/report/<node_id>
+```
+
+- Payload schema:
+```
+schema: "deploy.report.v1"
+```
+
+- Required fields:
+   - `node_id` (string)
+   - `role` (string)
+   - `ts_ms` (number; publisher timestamp)
+   - `deployed_commit` (string; from /opt/rollingthunder/.deploy/DEPLOYED_COMMIT)
+   - `git_head` (string|null) (optional; if node has a git checkout)
+   - `dirty` (boolean|null) (optional)
+   - `units` (object) — map of unit_name -> "sha256:<hex>" for installed unit files
+      - Example key: `"rt-ui-snapshot-api.service": "sha256:...."`
+
+Notes:
+- Reports are bounded (no unbounded logs, no large file dumps).
+- Reports are read-only and informational (no control actions).
+
+### 10.1.2 Controller Ingestion (MQTT → Redis) ###
+The controller ingests deploy reports and stores them in Redis as strings:
+- Key:
+```
+rt:deploy:report:<node_id>
+```
+
+- Value:
+```
+JSON string of the deploy report payload (schema deploy.report.v1)
+```
+Ownership:
+- ***Only the controller*** writes rt:deploy:report:*.
+
+### 10.1.3 UI Exposure (Read-Only HTTP) ###
+The controller exposes a read-only API endpoint for the UI:
+- Endpoint:
+```
+/api/v1/ui/deploy
+```
+
+The payload includes:
+- The controller’s expected deployed commit (what the repo believes should be deployed)
+- Per-node deploy report (latest)
+- A derived drift classification:
+   - `state: ok|warn|bad`
+   - `reasons: [ ... ]` (e.g., `deployed_commit_mismatch, report_stale, unit_hash_mismatch`)
+
+The UI must not compute drift on its own; it only renders controller-provided drift output.
+
+### 10.1.4 Drift Signals (Authoritative) ###
+Drift is evaluated from:
+- deployed_commit mismatch vs expected
+- stale/missing report (report_age_sec beyond threshold)
+- unit file hash mismatches for relevant units
+- optional: root-owned executable hash mismatches (if reported)
+
+### 10.1.5 Deployment Interaction ###
+Deployment scripts must ensure:
+- `/opt/rollingthunder/.deploy/DEPLOYED_COMMIT` is updated after a successful deploy
+- deploy report publishers are installed/enabled where applicable
+- DRY_RUN does not write stamps, restart services, or publish reports
+
 ---
 ## 11. SSH Key-Based Deployment (Recommended) ##
 
@@ -316,6 +395,7 @@ Update this document when:
 - deployment process changes materially
 - DRY_RUN semantics change
 - deletion behavior changes
+- drift reporting schema/keys/endpoints change materially
 
 If a future reader cannot answer:
     “What exactly does deployment guarantee, and why are these boundaries here?”
