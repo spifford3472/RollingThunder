@@ -7,7 +7,7 @@
     "top": ["topbar_core"],
     "middle": [
       ["alerts_overlay"],
-      ["node_health_summary"]
+      ["node_health_summary", "deploy_drift_summary"]
     ],
     "bottom": []
   },
