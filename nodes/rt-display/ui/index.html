@@ -26,6 +26,13 @@
     th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #223043; vertical-align: top; }
     th { color: #9fb0c0; font-weight: 700; }
     .small { font-size: 12px; color: #9fb0c0; }
+
+    .drift-table { width: 100%; border-collapse: collapse; }
+    .drift-table th, .drift-table td { padding: 6px 8px; border-bottom: 1px solid #3333; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .drift-ok   .state { font-weight: 700; }
+    .drift-warn .state { font-weight: 700; }
+    .drift-bad  .state { font-weight: 800; }
   </style>
 </head>
 <body>
@@ -51,6 +58,16 @@
       </div>
 
       <div class="card">
+        <p class="title">Deploy / Drift</p>
+        <div class="kv" style="margin-bottom:8px;">
+          <div class="muted">Endpoint</div><div id="deployEndpoint" class="mono"></div>
+          <div class="muted">Last success</div><div id="deployLastOk"></div>
+          <div class="muted">Last error</div><div id="deployLastErr"></div>
+        </div>
+        <div id="deploy" class="muted">No deploy report yet.</div>
+      </div>
+
+      <div class="card">
         <p class="title">Payload</p>
         <pre id="payload">{}</pre>
       </div>
@@ -62,6 +79,9 @@
   const params = new URLSearchParams(location.search);
   const url = params.get("url") || "./health.json";
   const pollMs = Math.max(250, Number(params.get("ms") || 1000));
+  const deployUrl = params.get("deployUrl") || "http://rt-controller:8625/api/v1/ui/deploy";
+  const deployMs = Math.max(500, Number(params.get("deployMs") || 2000));
+
 
   const el = {
     endpoint: document.getElementById("endpoint"),
@@ -72,10 +92,18 @@
     status: document.getElementById("status"),
     payload: document.getElementById("payload"),
     nodes: document.getElementById("nodes"),
+    deployEndpoint: document.getElementById("deployEndpoint"),
+    deployLastOk: document.getElementById("deployLastOk"),
+    deployLastErr: document.getElementById("deployLastErr"),
+    deploy: document.getElementById("deploy"),
   };
 
   el.endpoint.textContent = url;
   el.interval.textContent = `${pollMs} ms`;
+  
+  el.deployEndpoint.textContent = deployUrl;
+  el.deployLastOk.textContent = "-";
+  el.deployLastErr.textContent = "-";
 
   let lastOk = "-";
   let lastErr = "-";
@@ -277,6 +305,76 @@
     `;
   }
 
+  function renderDeploy(payload) {
+    const nodes = payload?.data?.nodes || [];
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      el.deploy.innerHTML = `<div class="muted">No deploy reports yet.</div>`;
+      return;
+    }
+
+    // stable by id
+    nodes.sort((a,b) => String(a.id||"").localeCompare(String(b.id||"")));
+
+    const rows = nodes.map(n => {
+      const d = n.deploy || {};
+      const drift = n.drift || {};
+      const state = (drift.state || "warn").toString();
+      const reasons = Array.isArray(drift.reasons) ? drift.reasons.join(", ") : "";
+      const commit = d.deployed_commit || "-";
+      const age = (d.report_age_sec ?? "-");
+
+      const trClass =
+        state === "ok" ? "drift-ok" :
+        state === "warn" ? "drift-warn" :
+        "drift-bad";
+
+      return `
+        <tr class="${trClass}">
+          <td class="mono">${esc(n.id || "-")}</td>
+          <td>${esc(n.role || "-")}</td>
+          <td class="mono">${esc(commit)}</td>
+          <td>${esc(age)}s</td>
+          <td class="state">${esc(state)}</td>
+          <td>${esc(reasons || "")}</td>
+        </tr>
+      `;
+    }).join("");
+
+    el.deploy.innerHTML = `
+      <table class="drift-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Role</th>
+            <th>Commit</th>
+            <th>Age</th>
+            <th>Drift</th>
+            <th>Reasons</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  async function tickDeploy() {
+    try {
+      const resp = await fetchWithTimeout(deployUrl, Math.max(2000, deployMs + 800));
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+
+      el.deployLastOk.textContent = new Date().toLocaleTimeString();
+      el.deployLastErr.textContent = "-";
+      renderDeploy(data);
+    } catch (e) {
+      el.deployLastErr.textContent =
+        `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
+      // keep last good table if we have one; only show message if empty
+      if (!el.deploy.innerHTML || el.deploy.innerHTML.includes("No deploy")) {
+        el.deploy.innerHTML = `<div class="muted">Deploy data unavailable.</div>`;
+      }
+    }
+  }
 
 
   async function tick() {
@@ -306,6 +404,7 @@
 
   tick();
   setInterval(tick, pollMs);
+  setInterval(tickDeploy, deployMs);
 })();
 </script>
 </body>

@@ -1,0 +1,15 @@
+{
+  "id": "deploy_drift_summary",
+  "type": "deploy_drift_summary",
+  "focusable": false,
+
+  "refresh": { "mode": "poll", "intervalMs": 2000 },
+
+  "bindings": [
+    { "id": "deploy", "source": "api", "url": "http://rt-controller:8625/api/v1/ui/deploy" }
+  ],
+
+  "meta": {
+    "purpose": "Read-only deploy/drift visualizer (commit + drift state per node)."
+  }
+}
