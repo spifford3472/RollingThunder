@@ -13,3 +13,12 @@
 .rt-topbar-right { display:flex; align-items:center; gap:10px; }
 .rt-topbar-dt { color:#9fb0c0; display:flex; gap:10px; font-variant-numeric:tabular-nums; }
 .rt-topbar-time { color:#e6edf3; font-family:ui-monospace, Menlo, monospace; }
+
+/* alerts_overlay */
+.rt-alerts { display:flex; flex-direction:column; gap:8px; }
+.rt-alert { padding:10px 12px; border:1px solid #223043; border-radius:10px; background:#0f1623; }
+.rt-alert-title { font-weight:800; }
+.rt-alert-meta { margin-top:2px; font-size:12px; color:#9fb0c0; }
+.rt-alert-ok { border-color: rgba(46,160,67,0.55); background: rgba(46,160,67,0.10); }
+.rt-alert-warn { border-color: rgba(219,158,52,0.55); background: rgba(219,158,52,0.10); }
+.rt-alert-bad { border-color: rgba(248,81,73,0.60); background: rgba(248,81,73,0.10); }

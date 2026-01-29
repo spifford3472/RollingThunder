@@ -1,25 +1,48 @@
+import { renderPanelError } from "./renderers/panel_error.js";
 import { renderDeployDriftSummary } from "./renderers/deploy_drift_summary.js";
 import { renderTopbarCore } from "./renderers/topbar_core.js";
-import { renderPanelError } from "./renderers/panel_error.js";
+import { renderAlertsOverlay } from "./renderers/alerts_overlay.js";
 
+/**
+ * createRendererRegistry()
+ * Returns a Map of panel.type -> renderer(container, panel, data).
+ * Runtime uses this to look up renderers. Unknown types fall back to panel_error.
+ */
 export function createRendererRegistry() {
+  /** @type {Map<string, Function>} */
   const map = new Map();
 
-  map.set("topbar_core", (container, panel, data) => {
-    renderTopbarCore(container, panel, data);
-  });
+  // Core
+  map.set("topbar_core", (container, panel, data) =>
+    renderTopbarCore(container, panel, data)
+  );
 
-  map.set("deploy_drift_summary", (container, panel, data) => {
-    renderDeployDriftSummary(container, panel, data);
-  });
+  // Panels
+  map.set("deploy_drift_summary", (container, panel, data) =>
+    renderDeployDriftSummary(container, panel, data)
+  );
 
-  // Temporary stub until you wire node_health_summary renderer
-  map.set("node_health_summary", (container) => {
-    renderPanelError(container, {
-      title: "node_health_summary",
-      detail: "Renderer not wired yet (stub).",
-    });
-  });
+  map.set("alerts_overlay", (container, panel, data) =>
+    renderAlertsOverlay(container, panel, data)
+  );
 
-  return { get: (t) => map.get(t) };
+  // Optional aliases (if config uses shorter type strings)
+  map.set("topbar", (container, panel, data) =>
+    renderTopbarCore(container, panel, data)
+  );
+  map.set("alerts", (container, panel, data) =>
+    renderAlertsOverlay(container, panel, data)
+  );
+
+  return map;
+}
+
+/**
+ * Convenience: return a renderer function for a panel type.
+ * Keeps call sites simple if some code prefers direct lookup.
+ */
+export function getRenderer(panelType) {
+  const type = String(panelType || "").trim();
+  const reg = createRendererRegistry();
+  return reg.get(type) || ((container, panel, data) => renderPanelError(container, panel, data));
 }
