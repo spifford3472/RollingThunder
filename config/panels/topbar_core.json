@@ -1,9 +1,11 @@
 {
   "id": "topbar_core",
-  "type": "topbar",
+  "type": "topbar_core",
   "focusable": false,
 
-  "refresh": { "mode": "poll", "intervalMs": 500 },
+  "refresh": { "mode": "poll", "intervalMs": 1000 },
+
+  "refresh": { "mode": "poll", "intervalMs": 1000 },
 
   "bindings": [
     {"id": "clock", "source": "state", "key": "rt:gps:time" },

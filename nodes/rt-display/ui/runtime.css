@@ -4,3 +4,12 @@
 .rt-mid { flex: 1 1 auto; align-items: stretch; }
 .rt-col { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .rt-slot { background: #111826; border: 1px solid #223043; border-radius: 12px; padding: 12px; min-width: 0; }
+
+/* topbar_core */
+.rt-topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.rt-topbar-left { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.rt-topbar-brand { font-weight:900; letter-spacing:0.2px; }
+.rt-topbar-page { color:#9fb0c0; font-family:ui-monospace, Menlo, monospace; }
+.rt-topbar-right { display:flex; align-items:center; gap:10px; }
+.rt-topbar-dt { color:#9fb0c0; display:flex; gap:10px; font-variant-numeric:tabular-nums; }
+.rt-topbar-time { color:#e6edf3; font-family:ui-monospace, Menlo, monospace; }
