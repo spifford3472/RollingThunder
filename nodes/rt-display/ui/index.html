@@ -77,334 +77,321 @@
 <script>
 (function () {
   const params = new URLSearchParams(location.search);
-  const url = params.get("url") || "./health.json";
-  const pollMs = Math.max(250, Number(params.get("ms") || 1000));
-  const deployUrl = params.get("deployUrl") || "http://rt-controller:8625/api/v1/ui/deploy";
-  const deployMs = Math.max(500, Number(params.get("deployMs") || 2000));
+  const runtimeOn = params.get("runtime") === "1";
 
+  if (runtimeOn) {
+    // Load the config-driven runtime (ES module)
+    const s = document.createElement("script");
+    s.type = "module";
+    s.src = "./runtime.js";
+    s.onerror = () => {
+      console.error("Failed to load runtime.js; falling back to legacy UI");
+      legacyBoot();
+    };
+    document.title += " (runtime)";
+    document.head.appendChild(s);
+    window.__rt_runtime_loaded = false;
 
-  const el = {
-    endpoint: document.getElementById("endpoint"),
-    interval: document.getElementById("interval"),
-    now: document.getElementById("now"),
-    lastOk: document.getElementById("lastOk"),
-    lastErr: document.getElementById("lastErr"),
-    status: document.getElementById("status"),
-    payload: document.getElementById("payload"),
-    nodes: document.getElementById("nodes"),
-    deployEndpoint: document.getElementById("deployEndpoint"),
-    deployLastOk: document.getElementById("deployLastOk"),
-    deployLastErr: document.getElementById("deployLastErr"),
-    deploy: document.getElementById("deploy"),
-  };
-
-  el.endpoint.textContent = url;
-  el.interval.textContent = `${pollMs} ms`;
-  
-  el.deployEndpoint.textContent = deployUrl;
-  el.deployLastOk.textContent = "-";
-  el.deployLastErr.textContent = "-";
-
-  let lastOk = "-";
-  let lastErr = "-";
-
-  function setStatus(ok, label) {
-    el.status.textContent = label;
-    el.status.classList.toggle("ok", ok);
-    el.status.classList.toggle("bad", !ok);
+    // If runtime doesn't mark itself loaded quickly, fall back to legacy.
+    setTimeout(() => {
+      if (!window.__rt_runtime_loaded) {
+        console.error("runtime.js did not signal ready; falling back to legacy UI");
+        legacyBoot();
+      }
+    }, 1200);    
+    return;
   }
 
-  async function fetchWithTimeout(resource, timeoutMs) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const resp = await fetch(resource, { signal: controller.signal, cache: "no-store" });
-      return resp;
-    } finally {
-      clearTimeout(t);
-    }
-  }
+  legacyBoot();
 
-  function esc(s) {
-    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"
-    }[c]));
-  }
+  function legacyBoot() {
+    // === YOUR EXISTING LEGACY CODE, UNCHANGED, STARTS HERE ===
+    const params = new URLSearchParams(location.search);
+    const url = params.get("url") || "./health.json";
+    const pollMs = Math.max(250, Number(params.get("ms") || 1000));
+    const deployUrl = params.get("deployUrl") || "http://rt-controller:8625/api/v1/ui/deploy";
+    const deployMs = Math.max(500, Number(params.get("deployMs") || 2000));
 
-  function classifyNode(n) {
-    const id = n.id || n.node_id || "";
-    const roleRaw = (n.role || "").toString();
-    const role = roleRaw.toLowerCase();
-    const host = n.hostname || "";
-    const ip = n.ip || (n.net && n.net.ip) || "";
+    const el = {
+      endpoint: document.getElementById("endpoint"),
+      interval: document.getElementById("interval"),
+      now: document.getElementById("now"),
+      lastOk: document.getElementById("lastOk"),
+      lastErr: document.getElementById("lastErr"),
+      status: document.getElementById("status"),
+      payload: document.getElementById("payload"),
+      nodes: document.getElementById("nodes"),
+      deployEndpoint: document.getElementById("deployEndpoint"),
+      deployLastOk: document.getElementById("deployLastOk"),
+      deployLastErr: document.getElementById("deployLastErr"),
+      deploy: document.getElementById("deploy"),
+    };
 
-    const ageRaw = n.age_sec ?? n.last_seen_age_sec ?? n.age;
-    const ageNum = Number(ageRaw);
-    const age = Number.isFinite(ageNum) ? Math.max(0, Math.floor(ageNum)) : "";
+    el.endpoint.textContent = url;
+    el.interval.textContent = `${pollMs} ms`;
 
-    const statusRaw = String(n.status || "").toLowerCase().trim();
-    let status = statusRaw;
+    el.deployEndpoint.textContent = deployUrl;
+    el.deployLastOk.textContent = "-";
+    el.deployLastErr.textContent = "-";
 
-    if (!isCanonicalStatus(status)) {
-      status = "stale";
-    }
+    let lastOk = "-";
+    let lastErr = "-";
 
-    let sev =
-      status === "online" ? "ok" :
-      status === "stale"  ? "warn" :
-      "bad";
-
-    const statusLabel =
-      status === "online" ? "Online" :
-      status === "stale"  ? `Stale (${age === "" ? "?" : age}s)` :
-      `Offline (${age === "" ? "?" : age}s)`;
-
-    const badges = [];
-
-    if (statusRaw && statusRaw !== status) {
-      badges.push({ sev: "warn", label: `unknown_status:${statusRaw}` });
-      if (sev === "ok") sev = "warn";
+    function setStatus(ok, label) {
+      el.status.textContent = label;
+      el.status.classList.toggle("ok", ok);
+      el.status.classList.toggle("bad", !ok);
     }
 
-    // ui_render_ok only meaningful for display nodes (and only degrades)
-    const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
-    if (role === "display" && (status === "online" || status === "stale" || !statusRaw)) {
-      if (renderOk === true) badges.push({ sev: "ok", label: "UI OK" });
-      else if (renderOk === false) {
-        badges.push({ sev: "warn", label: "UI degraded" });
+    async function fetchWithTimeout(resource, timeoutMs) {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const resp = await fetch(resource, { signal: controller.signal, cache: "no-store" });
+        return resp;
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"
+      }[c]));
+    }
+
+    function classifyNode(n) {
+      const id = n.id || n.node_id || "";
+      const roleRaw = (n.role || "").toString();
+      const role = roleRaw.toLowerCase();
+      const host = n.hostname || "";
+      const ip = n.ip || (n.net && n.net.ip) || "";
+
+      const ageRaw = n.age_sec ?? n.last_seen_age_sec ?? n.age;
+      const ageNum = Number(ageRaw);
+      const age = Number.isFinite(ageNum) ? Math.max(0, Math.floor(ageNum)) : "";
+
+      const statusRaw = String(n.status || "").toLowerCase().trim();
+      let status = statusRaw;
+
+      if (!isCanonicalStatus(status)) {
+        status = "stale";
+      }
+
+      let sev =
+        status === "online" ? "ok" :
+        status === "stale"  ? "warn" :
+        "bad";
+
+      const statusLabel =
+        status === "online" ? "Online" :
+        status === "stale"  ? `Stale (${age === "" ? "?" : age}s)` :
+        `Offline (${age === "" ? "?" : age}s)`;
+
+      const badges = [];
+
+      if (statusRaw && statusRaw !== status) {
+        badges.push({ sev: "warn", label: `unknown_status:${statusRaw}` });
         if (sev === "ok") sev = "warn";
+      }
+
+      const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
+      if (role === "display" && (status === "online" || status === "stale" || !statusRaw)) {
+        if (renderOk === true) badges.push({ sev: "ok", label: "UI OK" });
+        else if (renderOk === false) {
+          badges.push({ sev: "warn", label: "UI degraded" });
+          if (sev === "ok") sev = "warn";
+        } else {
+          badges.push({ sev: "warn", label: "UI unknown" });
+        }
+      }
+
+      const pubErr = (n.publisher_error ?? "").toString().trim();
+      if (pubErr) {
+        badges.push({ sev: "warn", label: "publisher_error" });
+        if (sev === "ok") sev = "warn";
+      }
+
+      return { id, role: roleRaw, host, ip, age, sev, statusLabel, badges };
+    }
+
+    function pill(sev, label) {
+      sev = (sev || "").toString().trim();
+      const cls =
+        sev === "ok" ? "pill ok" :
+        sev === "warn" ? "pill warn" :
+        "pill bad";
+      return `<span class="${cls}">${esc(label)}</span>`;
+    }
+
+    function isCanonicalStatus(s) {
+      return s === "online" || s === "stale" || s === "offline";
+    }
+
+    function validateNodeShape(n) {
+      const issues = [];
+      if (!n || typeof n !== "object") return ["node_not_object"];
+      const id = n.id || n.node_id;
+      if (!id) issues.push("missing:id");
+      if (!("role" in n)) issues.push("missing:role");
+      const statusRaw = String(n.status || "").toLowerCase();
+      if (!statusRaw) issues.push("missing:status");
+      else if (!isCanonicalStatus(statusRaw)) issues.push(`bad:status:${statusRaw}`);
+      if (!("age_sec" in n)) issues.push("missing:age_sec");
+      if (!("last_seen_ms" in n)) issues.push("missing:last_seen_ms");
+      if (!("last_update_ms" in n)) issues.push("missing:last_update_ms");
+      return issues;
+    }
+
+    function renderNodes(data) {
+      const raw = data?.nodes ?? data?.data?.nodes;
+      if (!raw) { el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`; return; }
+
+      let list = [];
+      if (Array.isArray(raw)) list = raw.filter(Boolean);
+      else if (typeof raw === "object") {
+        const ids = Object.keys(raw).sort();
+        list = ids.map((id) => ({ id, ...(raw[id] || {}) }));
       } else {
-        badges.push({ sev: "warn", label: "UI unknown" });
-      }
-    }
-
-    const pubErr = (n.publisher_error ?? "").toString().trim();
-    if (pubErr) {
-      badges.push({ sev: "warn", label: "publisher_error" });
-      if (sev === "ok") sev = "warn";
-    }
-
-    return { id, role: roleRaw, host, ip, age, sev, statusLabel, badges };
-  }
-
-
-  function pill(sev, label) {
-    sev = (sev || "").toString().trim();
-    const cls =
-      sev === "ok" ? "pill ok" :
-      sev === "warn" ? "pill warn" :
-      "pill bad";
-    return `<span class="${cls}">${esc(label)}</span>`;
-  }
-
-  function isCanonicalStatus(s) {
-    return s === "online" || s === "stale" || s === "offline";
-  }
-
-  function validateNodeShape(n) {
-    // returns array of strings describing issues (empty => ok)
-    const issues = [];
-    if (!n || typeof n !== "object") return ["node_not_object"];
-
-    const id = n.id || n.node_id;
-    if (!id) issues.push("missing:id");
-
-    if (!("role" in n)) issues.push("missing:role");
-
-    const statusRaw = String(n.status || "").toLowerCase();
-    if (!statusRaw) issues.push("missing:status");
-    else if (!isCanonicalStatus(statusRaw)) issues.push(`bad:status:${statusRaw}`);
-
-    if (!("age_sec" in n)) issues.push("missing:age_sec");
-    if (!("last_seen_ms" in n)) issues.push("missing:last_seen_ms");
-    if (!("last_update_ms" in n)) issues.push("missing:last_update_ms");
-
-    return issues;
-  }
-
-  function renderNodes(data) {
-    // Accept:
-    //  A) { nodes: {...} } or { data: { nodes: {...} } } (map)
-    //  B) { data: { nodes: [ ... ] } } (array)  <-- your current payload
-    const raw = data?.nodes ?? data?.data?.nodes;
-
-    if (!raw) {
-      el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
-      return;
-    }
-
-    let list = [];
-
-    if (Array.isArray(raw)) {
-      // array of node objects
-      list = raw.filter(Boolean);
-    } else if (typeof raw === "object") {
-      // map keyed by node id
-      const ids = Object.keys(raw).sort();
-      list = ids.map((id) => ({ id, ...(raw[id] || {}) }));
-    } else {
-      el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
-      return;
-    }
-
-    if (list.length === 0) {
-      el.nodes.innerHTML = `<div class="muted">No nodes reported.</div>`;
-      return;
-    }
-
-    // Stable sort by id
-    list.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
-
-    const rows = list.map((n) => {
-      const issues = validateNodeShape(n);
-      const m = classifyNode(n);
-
-      if (issues.length) {
-        m.badges.push({ sev: "warn", label: "SCHEMA VIOLATION" });
-        m.badges.push({ sev: "warn", label: issues.slice(0, 2).join(",") });
-        if (m.sev === "ok") m.sev = "warn";
+        el.nodes.innerHTML = `<div class="muted">Not a nodes payload.</div>`;
+        return;
       }
 
-      const badgeHtml = m.badges.length
-        ? `<div class="small" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
-            ${m.badges.map(b => pill(b.sev, b.label)).join("")}
-          </div>`
-        : "";
+      if (list.length === 0) { el.nodes.innerHTML = `<div class="muted">No nodes reported.</div>`; return; }
+      list.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
 
-      const sevClass = (m.sev === "ok" || m.sev === "warn" || m.sev === "bad") ? m.sev : "warn";
+      const rows = list.map((n) => {
+        const issues = validateNodeShape(n);
+        const m = classifyNode(n);
+        if (issues.length) {
+          m.badges.push({ sev: "warn", label: "SCHEMA VIOLATION" });
+          m.badges.push({ sev: "warn", label: issues.slice(0, 2).join(",") });
+          if (m.sev === "ok") m.sev = "warn";
+        }
 
-      return `
-        <tr class="sev-${sevClass}">
-          <td>
-            <div><strong>${esc(m.id)}</strong></div>
-            <div class="small">${esc(m.role)}${m.host ? " — " + esc(m.host) : ""}</div>
-          </td>
-          <td>
-            ${pill(m.sev, m.statusLabel)}
-            ${badgeHtml}
-          </td>
-          <td>${esc(m.ip || "-")}</td>
-          <td>${esc(m.age === "" ? "-" : m.age)}</td>
-        </tr>
-      `;
-    }).join("");
+        const badgeHtml = m.badges.length
+          ? `<div class="small" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+              ${m.badges.map(b => pill(b.sev, b.label)).join("")}
+            </div>`
+          : "";
 
+        const sevClass = (m.sev === "ok" || m.sev === "warn" || m.sev === "bad") ? m.sev : "warn";
 
-    el.nodes.innerHTML = `
-      <table>
-        <thead>
-          <tr>
-            <th>Node</th>
-            <th>Status</th>
-            <th>IP</th>
-            <th>Age (sec)</th>
+        return `
+          <tr class="sev-${sevClass}">
+            <td>
+              <div><strong>${esc(m.id)}</strong></div>
+              <div class="small">${esc(m.role)}${m.host ? " — " + esc(m.host) : ""}</div>
+            </td>
+            <td>
+              ${pill(m.sev, m.statusLabel)}
+              ${badgeHtml}
+            </td>
+            <td>${esc(m.ip || "-")}</td>
+            <td>${esc(m.age === "" ? "-" : m.age)}</td>
           </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
-  }
+        `;
+      }).join("");
 
-  function renderDeploy(payload) {
-    const nodes = payload?.data?.nodes || [];
-    if (!Array.isArray(nodes) || nodes.length === 0) {
-      el.deploy.innerHTML = `<div class="muted">No deploy reports yet.</div>`;
-      return;
+      el.nodes.innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Node</th><th>Status</th><th>IP</th><th>Age (sec)</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
     }
 
-    // stable by id
-    nodes.sort((a,b) => String(a.id||"").localeCompare(String(b.id||"")));
+    function renderDeploy(payload) {
+      const nodes = payload?.data?.nodes || [];
+      if (!Array.isArray(nodes) || nodes.length === 0) {
+        el.deploy.innerHTML = `<div class="muted">No deploy reports yet.</div>`;
+        return;
+      }
 
-    const rows = nodes.map(n => {
-      const d = n.deploy || {};
-      const drift = n.drift || {};
-      const state = (drift.state || "warn").toString();
-      const reasons = Array.isArray(drift.reasons) ? drift.reasons.join(", ") : "";
-      const commit = d.deployed_commit || "-";
-      const age = (d.report_age_sec ?? "-");
+      nodes.sort((a,b) => String(a.id||"").localeCompare(String(b.id||"")));
 
-      const trClass =
-        state === "ok" ? "drift-ok" :
-        state === "warn" ? "drift-warn" :
-        "drift-bad";
+      const rows = nodes.map(n => {
+        const d = n.deploy || {};
+        const drift = n.drift || {};
+        const state = (drift.state || "warn").toString();
+        const reasons = Array.isArray(drift.reasons) ? drift.reasons.join(", ") : "";
+        const commit = d.deployed_commit || "-";
+        const age = (d.report_age_sec ?? "-");
 
-      return `
-        <tr class="${trClass}">
-          <td class="mono">${esc(n.id || "-")}</td>
-          <td>${esc(n.role || "-")}</td>
-          <td class="mono">${esc(commit)}</td>
-          <td>${esc(age)}s</td>
-          <td class="state">${esc(state)}</td>
-          <td>${esc(reasons || "")}</td>
-        </tr>
-      `;
-    }).join("");
+        const trClass =
+          state === "ok" ? "drift-ok" :
+          state === "warn" ? "drift-warn" :
+          "drift-bad";
 
-    el.deploy.innerHTML = `
-      <table class="drift-table">
-        <thead>
-          <tr>
-            <th>Node</th>
-            <th>Role</th>
-            <th>Commit</th>
-            <th>Age</th>
-            <th>Drift</th>
-            <th>Reasons</th>
+        return `
+          <tr class="${trClass}">
+            <td class="mono">${esc(n.id || "-")}</td>
+            <td>${esc(n.role || "-")}</td>
+            <td class="mono">${esc(commit)}</td>
+            <td>${esc(age)}s</td>
+            <td class="state">${esc(state)}</td>
+            <td>${esc(reasons || "")}</td>
           </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
-  }
+        `;
+      }).join("");
 
-  async function tickDeploy() {
-    try {
-      const resp = await fetchWithTimeout(deployUrl, Math.max(2000, deployMs + 800));
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
+      el.deploy.innerHTML = `
+        <table class="drift-table">
+          <thead>
+            <tr><th>Node</th><th>Role</th><th>Commit</th><th>Age</th><th>Drift</th><th>Reasons</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
 
-      el.deployLastOk.textContent = new Date().toLocaleTimeString();
-      el.deployLastErr.textContent = "-";
-      renderDeploy(data);
-    } catch (e) {
-      el.deployLastErr.textContent =
-        `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
-      // keep last good table if we have one; only show message if empty
-      if (!el.deploy.innerHTML || el.deploy.innerHTML.includes("No deploy")) {
-        el.deploy.innerHTML = `<div class="muted">Deploy data unavailable.</div>`;
+    async function tickDeploy() {
+      try {
+        const resp = await fetchWithTimeout(deployUrl, Math.max(2000, deployMs + 800));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        el.deployLastOk.textContent = new Date().toLocaleTimeString();
+        el.deployLastErr.textContent = "-";
+        renderDeploy(data);
+      } catch (e) {
+        el.deployLastErr.textContent =
+          `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
+        if (!el.deploy.innerHTML || el.deploy.innerHTML.includes("No deploy")) {
+          el.deploy.innerHTML = `<div class="muted">Deploy data unavailable.</div>`;
+        }
       }
     }
-  }
 
+    async function tick() {
+      el.now.textContent = new Date().toLocaleString();
+      try {
+        const resp = await fetchWithTimeout(url, Math.max(2000, Math.min(4000, pollMs + 500)));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
 
-  async function tick() {
-    el.now.textContent = new Date().toLocaleString();
+        lastOk = new Date().toLocaleTimeString();
+        el.lastOk.textContent = lastOk;
+        lastErr = "-";
+        el.lastErr.textContent = lastErr;
 
-    try {
-      const resp = await fetchWithTimeout(url, Math.max(2000, Math.min(4000, pollMs + 500)));
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-
-      lastOk = new Date().toLocaleTimeString();
-      el.lastOk.textContent = lastOk;
-      lastErr = "-";
-      el.lastErr.textContent = lastErr;
-
-      el.payload.textContent = JSON.stringify(data, null, 2);
-      renderNodes(data);
-
-      setStatus(true, "ONLINE");
-    } catch (e) {
-      lastErr = `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
-      el.lastErr.textContent = lastErr;
-      el.nodes.innerHTML = `<div class="muted">No data (offline).</div>`;
-      setStatus(false, "OFFLINE");
+        el.payload.textContent = JSON.stringify(data, null, 2);
+        renderNodes(data);
+        setStatus(true, "ONLINE");
+      } catch (e) {
+        lastErr = `${new Date().toLocaleTimeString()} — ${e.name || "Error"}: ${e.message || e}`;
+        el.lastErr.textContent = lastErr;
+        el.nodes.innerHTML = `<div class="muted">No data (offline).</div>`;
+        setStatus(false, "OFFLINE");
+      }
     }
-  }
 
-  tick();
-  setInterval(tick, pollMs);
-  setInterval(tickDeploy, deployMs);
+    tick();
+    setInterval(tick, pollMs);
+    setInterval(tickDeploy, deployMs);
+    // === YOUR EXISTING LEGACY CODE, UNCHANGED, ENDS HERE ===
+  }
 })();
 </script>
 </body>
