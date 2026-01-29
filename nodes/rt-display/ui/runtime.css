@@ -1,0 +1,6 @@
+.rt-app { height: 100vh; display: flex; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; }
+.rt-region { display: flex; gap: 12px; }
+.rt-top, .rt-bot { flex-wrap: wrap; }
+.rt-mid { flex: 1 1 auto; align-items: stretch; }
+.rt-col { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rt-slot { background: #111826; border: 1px solid #223043; border-radius: 12px; padding: 12px; min-width: 0; }
