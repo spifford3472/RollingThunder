@@ -52,6 +52,10 @@ MAX_SERVICES = int(os.environ.get("RT_MAX_SERVICES", "50"))
 # Derived health freshness threshold (seconds)
 HEALTH_STALE_SEC = int(os.environ.get("RT_HEALTH_STALE_SEC", "30"))
 
+MAX_STATE_KEYS = int(os.environ.get("RT_MAX_STATE_KEYS", "200"))
+MAX_KEY_LEN = int(os.environ.get("RT_MAX_STATE_KEY_LEN", "256"))
+MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
+
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
@@ -312,10 +316,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         )
         r.ping()
         return r
-
-    MAX_STATE_KEYS = int(os.environ.get("RT_MAX_STATE_KEYS", "200"))
-    MAX_KEY_LEN = int(os.environ.get("RT_MAX_STATE_KEY_LEN", "256"))
-    MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
 
     def _key_allowed(k: Any) -> bool:
         if not isinstance(k, str):
