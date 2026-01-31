@@ -200,17 +200,16 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         return
 
     def _handle_state_batch(self) -> None:
-        if not self._key_allowed(k):
-            payload: Dict[str, Any] = {
-                "source": "rt-controller",
-                "endpoint": "/api/v1/ui/state/batch",
-                "ts": now_iso_utc(),
-                "ok": False,
-                "data": {"values": {}},
-                "errors": [],
-                "schema_version": "ui.state.batch.v1",
-                "server_time_ms": now_ms(),
-            }
+        payload: Dict[str, Any] = {
+            "source": "rt-controller",
+            "endpoint": "/api/v1/ui/state/batch",
+            "ts": now_iso_utc(),
+            "ok": False,
+            "data": {"values": {}},
+            "errors": [],
+            "schema_version": "ui.state.batch.v1",
+            "server_time_ms": now_ms(),
+        }
 
         body = self._read_json_body()
         if body.get("_error"):
@@ -222,48 +221,42 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             payload["errors"].append("bad_request: keys_must_be_list")
             return self._write_json(400, payload)
 
-        # bound
         keys = keys[:MAX_STATE_KEYS]
 
         try:
             r = self._redis()
-
             out: Dict[str, Any] = {}
+
             for k in keys:
-                # Always stringify the dict key so response is stable JSON
                 ks = str(k)
 
-                if not _key_allowed(k):
+                if not self._key_allowed(k):
                     out[ks] = {"ok": False, "encoding": "none", "value": None}
                     continue
 
                 try:
-                    t = r.type(k)
-                    # decode_responses=True => type() returns str already, but be safe
-                    t = str(t)
+                    t = str(r.type(k))
 
                     if t == "none":
-                        out[k] = {"ok": False, "encoding": "none", "value": None}
+                        out[ks] = {"ok": False, "encoding": "none", "value": None}
 
                     elif t == "string":
                         s = r.get(k)
                         if s is None:
-                            out[k] = {"ok": False, "encoding": "none", "value": None}
+                            out[ks] = {"ok": False, "encoding": "none", "value": None}
                         else:
                             parsed = _try_parse_json(s)
-                            # _try_parse_json returns dict/list/str
                             if isinstance(parsed, str):
                                 parsed = _coerce_scalar(parsed)
-                                out[k] = {"ok": True, "encoding": "text", "value": _truncate(parsed)}
+                                out[ks] = {"ok": True, "encoding": "text", "value": _truncate(parsed)}
                             else:
-                                out[k] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
+                                out[ks] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
 
                     elif t == "hash":
-                        out[k] = {"ok": True, "encoding": "hash", "value": _hgetall_parsed(r, k)}
+                        out[ks] = {"ok": True, "encoding": "hash", "value": _hgetall_parsed(r, k)}
 
                     else:
-                        # Keep minimal: do not expand scope to sets/lists/zsets
-                        out[k] = {"ok": False, "encoding": t, "value": None}
+                        out[ks] = {"ok": False, "encoding": t, "value": None}
 
                 except Exception:
                     out[ks] = {"ok": False, "encoding": "error", "value": None}
@@ -275,6 +268,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             payload["errors"].append(f"state_batch_failed: {type(e).__name__}: {e}")
 
         return self._write_json(200, payload)
+    
 
     def _read_json_body(self) -> Dict[str, Any]:
         try:
@@ -318,12 +312,12 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         r.ping()
         return r
 
-    def _key_allowed(k: Any) -> bool:
+    def _key_allowed(self, k: Any) -> bool:
         if not isinstance(k, str):
             return False
         if len(k) == 0 or len(k) > MAX_KEY_LEN:
             return False
-        return k.startswith("rt:")  # keep it strict and deterministic
+        return k.startswith("rt:")
 
 
     def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
