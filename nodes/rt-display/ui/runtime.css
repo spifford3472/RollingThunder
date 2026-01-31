@@ -22,3 +22,15 @@
 .rt-alert-ok { border-color: rgba(46,160,67,0.55); background: rgba(46,160,67,0.10); }
 .rt-alert-warn { border-color: rgba(219,158,52,0.55); background: rgba(219,158,52,0.10); }
 .rt-alert-bad { border-color: rgba(248,81,73,0.60); background: rgba(248,81,73,0.10); }
+
+.rt-panel { padding: 14px 16px; }
+.rt-title { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+.rt-muted { color: #9fb0c0; font-size: 13px; }
+.rt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.rt-kv { display:grid; grid-template-columns: 90px 1fr; gap: 6px 10px; font-size: 13px; }
+
+.rt-pill { display:inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid #223043; }
+.rt-pill.ok   { background: rgba(46,160,67,0.18); border-color: rgba(46,160,67,0.55); }
+.rt-pill.warn { background: rgba(219,158,52,0.18); border-color: rgba(219,158,52,0.55); }
+.rt-pill.bad  { background: rgba(248,81,73,0.18); border-color: rgba(248,81,73,0.55); }

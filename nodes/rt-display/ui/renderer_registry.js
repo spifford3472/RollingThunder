@@ -3,6 +3,8 @@ import { renderDeployDriftSummary } from "./renderers/deploy_drift_summary.js";
 import { renderTopbarCore } from "./renderers/topbar_core.js";
 import { renderAlertsOverlay } from "./renderers/alerts_overlay.js";
 import { renderNodeHealthSummary } from "./renderers/node_health_summary.js";
+import { renderRadioStatus } from "./renderers/radio_status.js";
+
 
 /**
  * createRendererRegistry()
@@ -41,6 +43,10 @@ export function createRendererRegistry() {
   map.set("node_health", (container, panel, data) =>
     renderNodeHealthSummary(container, panel, data)
   );
+
+  map.set("radio_status", (container, panel, data) =>
+  renderRadioStatus(container, panel, data)
+);
 
   return map;
 }
