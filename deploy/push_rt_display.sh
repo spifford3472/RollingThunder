@@ -107,6 +107,15 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${CONFIG_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_CONFIG}/"
 
+echo "[push] Link UI config -> /opt/rollingthunder/config (deterministic)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    ln -sfn '${RT_CONFIG}' '${RT_UI}/config'
+  "
+else
+  echo "[dry] would ln -sfn '${RT_CONFIG}' '${RT_UI}/config'"
+fi
+
 echo "[push] Sync UI dir -> ${RT_UI}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
