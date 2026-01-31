@@ -24,6 +24,7 @@ SYSTEMD_DIR="${NODE_DIR}/systemd"
 UI_DIR="${NODE_DIR}/ui"
 SVC_DIR="${NODE_DIR}/services"
 TOOLS_DIR="${NODE_DIR}/tools"
+CONFIG_DIR="${REPO_ROOT}/config"
 
 # runtime destinations (spiff-owned)
 RT_ROOT="/opt/rollingthunder"
@@ -32,6 +33,7 @@ RT_UI="${RT_NODE}/ui"
 RT_SVC="${RT_NODE}/services"
 RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
+RT_CONFIG="${RT_ROOT}/config"
 
 UNIT_DST_DIR="/etc/systemd/system"
 
@@ -54,6 +56,9 @@ fail_missing_dir "${SVC_DIR}"
 fail_missing_dir "${OPS_DIR}"
 fail_missing_dir "${SYSTEMD_DIR}"
 fail_missing_dir "${TOOLS_DIR}"
+fail_missing_dir "${CONFIG_DIR}"
+
+
 
 # These must exist because we install them as root-owned units
 fail_missing "${SYSTEMD_DIR}/rt-display-presence.service"
@@ -63,6 +68,7 @@ fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.timer"
+fail_missing "${CONFIG_DIR}/app.json"
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(
@@ -74,7 +80,8 @@ RSYNC_EXCLUDES=(
 )
 
 echo "[push] Ensure runtime dirs exist (spiff-owned)"
-ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; mkdir -p '${RT_UI}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; mkdir -p '${RT_UI}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_CONFIG}' '${RT_ROOT}/.deploy'"
+
 
 
 echo "[push] Ensure venv exists + deps"
@@ -94,6 +101,12 @@ fi
 
 # ---- USER-OWNED SYNC (ui + services + ops) ----
 # This is the key change: sync directories, not individual files.
+
+echo "[push] Sync config dir -> ${RT_CONFIG}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${CONFIG_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_CONFIG}/"
+
 echo "[push] Sync UI dir -> ${RT_UI}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
