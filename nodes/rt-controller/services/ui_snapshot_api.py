@@ -200,16 +200,17 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         return
 
     def _handle_state_batch(self) -> None:
-        payload: Dict[str, Any] = {
-            "source": "rt-controller",
-            "endpoint": "/api/v1/ui/state/batch",
-            "ts": now_iso_utc(),
-            "ok": False,
-            "data": {"values": {}},
-            "errors": [],
-            "schema_version": "ui.state.batch.v1",
-            "server_time_ms": now_ms(),
-        }
+        if not self._key_allowed(k):
+            payload: Dict[str, Any] = {
+                "source": "rt-controller",
+                "endpoint": "/api/v1/ui/state/batch",
+                "ts": now_iso_utc(),
+                "ok": False,
+                "data": {"values": {}},
+                "errors": [],
+                "schema_version": "ui.state.batch.v1",
+                "server_time_ms": now_ms(),
+            }
 
         body = self._read_json_body()
         if body.get("_error"):
