@@ -16,6 +16,9 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] Explore collapsing node_health_summary rows on small screens
 - [ ] Add subtle animation for alert appearance (non-distracting)
 - [ ] Add weather to topbar, specifically temperature in F and C (F/C)
+- [ ] Top bar stretch entire width of top larger font
+- [ ] Alerts at bottom of page?
+- [ ] Nodes and deploy/drift next to each other in middle
 
 ## 2) Hardware / Physical Controls (Beta-plus)
 - [ ] Build physical control panel (buttons + rotary encoder)

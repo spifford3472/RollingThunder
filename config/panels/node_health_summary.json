@@ -6,10 +6,10 @@
   "refresh": { "mode": "poll", "intervalMs": 1000 },
 
   "bindings": [
-    {"id": "nodes", "source": "state", "key": "rt:nodes:health" },
+    {"id": "nodes", "source": "api", "url": "./dev/nodes_health.json" },
     {"id": "controller", "source": "state", "key": "rt:node:rt-controller" },
-    {"radio": "alerts", "source": "state", "key": "rt:node:rt-radio" },
-    {"display": "alerts", "source": "state", "key": "rt:node:rt-display" },
+    {"id":"radio","source":"state","key":"rt:node:rt-radio"},
+    {"id":"display","source":"state","key":"rt:node:rt-display"},
     {"id": "wpsd", "source": "state", "key": "rt:node:rt-wpsd" }
   ],
 

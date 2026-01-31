@@ -25,10 +25,13 @@ All must be true.
 Each must exist, render, and refresh without errors.
 
 ***Home Page***
-- [ ] topbar_core
-- [ ] alerts_overlay
-- [ ] node_health_summary
-- [ ] deploy_drift_summary
+- ✅ topbar_core
+- ✅ alerts_overlay
+- ✅ node_health_summary
+- ✅ deploy_drift_summary
+- ✅ Home page renders node health from live bindings
+- ✅ No legacy fallback
+- ✅ No console errors
 
 ***Other Planned Pages (as already designed)***
 - [ ] All planned pages load via config
