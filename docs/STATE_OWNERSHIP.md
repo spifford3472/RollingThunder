@@ -83,3 +83,6 @@ If two components write the same field with different meanings, fix it:
 - pick a single owner
 - document it here
 - enforce it in code (don’t “helpfully” rewrite fields you don’t own)
+
+---
+**End of STATE_OWNERSHIP.md Document**

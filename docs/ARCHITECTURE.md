@@ -523,3 +523,5 @@ the entry is incomplete.
 **End of Architecture Versioning Section**
 
 
+---
+**End of ARCHITECTURE.md Document**
