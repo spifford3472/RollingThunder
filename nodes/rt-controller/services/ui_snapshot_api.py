@@ -32,6 +32,8 @@ REDIS_TIMEOUT = float(os.environ.get("RT_REDIS_TIMEOUT_SEC", "0.35"))
 SNAPSHOT_PATHS = ("/api/v1/ui/snapshot", "/api/v1/ui/snapshot/")
 NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
 DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
+STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
+
 
 KEY_DEPLOY_PREFIX = os.environ.get("RT_KEY_DEPLOY_PREFIX", "rt:deploy:report:")
 DEPLOY_MAX_AGE_SEC = int(os.environ.get("RT_DEPLOY_MAX_AGE_SEC", "30"))
@@ -193,9 +195,104 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    def _handle_state_batch(self) -> None:
+        payload: Dict[str, Any] = {
+            "source": "rt-controller",
+            "endpoint": "/api/v1/ui/state/batch",
+            "ts": now_iso_utc(),
+            "ok": False,
+            "data": {"values": {}},
+            "errors": [],
+            "schema_version": "ui.state.batch.v1",
+            "server_time_ms": now_ms(),
+        }
+
+        body = self._read_json_body()
+        if body.get("_error"):
+            payload["errors"].append(f"bad_request: {body['_error']}")
+            return self._write_json(400, payload)
+
+        keys = body.get("keys", [])
+        if not isinstance(keys, list):
+            payload["errors"].append("bad_request: keys_must_be_list")
+            return self._write_json(400, payload)
+
+        # bound
+        keys = keys[:MAX_STATE_KEYS]
+
+        try:
+            r = self._redis()
+
+            out: Dict[str, Any] = {}
+            for k in keys:
+                # Always stringify the dict key so response is stable JSON
+                ks = str(k)
+
+                if not _key_allowed(k):
+                    out[ks] = {"ok": False, "encoding": "none", "value": None}
+                    continue
+
+                try:
+                    t = r.type(k)
+                    # decode_responses=True => type() returns str already, but be safe
+                    t = str(t)
+
+                    if t == "none":
+                        out[k] = {"ok": False, "encoding": "none", "value": None}
+
+                    elif t == "string":
+                        s = r.get(k)
+                        if s is None:
+                            out[k] = {"ok": False, "encoding": "none", "value": None}
+                        else:
+                            parsed = _try_parse_json(s)
+                            # _try_parse_json returns dict/list/str
+                            if isinstance(parsed, str):
+                                parsed = _coerce_scalar(parsed)
+                                out[k] = {"ok": True, "encoding": "text", "value": _truncate(parsed)}
+                            else:
+                                out[k] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
+
+                    elif t == "hash":
+                        out[k] = {"ok": True, "encoding": "hash", "value": _hgetall_parsed(r, k)}
+
+                    else:
+                        # Keep minimal: do not expand scope to sets/lists/zsets
+                        out[k] = {"ok": False, "encoding": t, "value": None}
+
+                except Exception:
+                    out[ks] = {"ok": False, "encoding": "error", "value": None}
+
+            payload["data"]["values"] = out
+            payload["ok"] = True
+
+        except Exception as e:
+            payload["errors"].append(f"state_batch_failed: {type(e).__name__}: {e}")
+
+        return self._write_json(200, payload)
+
+    def _read_json_body(self) -> Dict[str, Any]:
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            clen = 0
+
+        if clen <= 0:
+            return {}
+        if clen > MAX_BODY_BYTES:
+            # bounded behavior
+            return {"_error": "body_too_large"}
+
+        raw = self.rfile.read(clen)
+        try:
+            obj = json.loads(raw.decode("utf-8", errors="replace"))
+            return obj if isinstance(obj, dict) else {"_error": "json_not_object"}
+        except Exception:
+            return {"_error": "json_parse_error"}
+
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def do_OPTIONS(self) -> None:
@@ -215,6 +312,18 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         )
         r.ping()
         return r
+
+    MAX_STATE_KEYS = int(os.environ.get("RT_MAX_STATE_KEYS", "200"))
+    MAX_KEY_LEN = int(os.environ.get("RT_MAX_STATE_KEY_LEN", "256"))
+    MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
+
+    def _key_allowed(k: Any) -> bool:
+        if not isinstance(k, str):
+            return False
+        if len(k) == 0 or len(k) > MAX_KEY_LEN:
+            return False
+        return k.startswith("rt:")  # keep it strict and deterministic
+
 
     def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
@@ -355,7 +464,8 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 nodes.append(node_obj)
 
             # stable order
-            nodes.sort(key=lambda x: (str(x.get("role") or ""), str(x.get("id") or "")))
+            nodes.sort(key=lambda x: str(x.get("id") or ""))
+
 
             payload["data"]["nodes"] = nodes
             payload["ok"] = True
@@ -421,6 +531,16 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
         self._write_json(200, payload)
 
+    def do_POST(self) -> None:
+        if self.path in STATE_BATCH_PATHS:
+            return self._handle_state_batch()
+
+        self.send_response(404)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"error":"not_found"}')
+
     def do_GET(self) -> None:
         if self.path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
@@ -436,79 +556,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"error":"not_found"}')
-
-
-
-
-        payload: Dict[str, Any] = {
-            "source": "rt-controller",
-            "endpoint": "/api/v1/ui/snapshot",
-            "ts": now_iso_utc(),
-            "ok": False,
-            "data": {},
-            "errors": [],
-        }
-
-        try:
-            r = redis.Redis(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                db=REDIS_DB,
-                password=REDIS_PASSWORD,
-                decode_responses=True,
-                socket_timeout=REDIS_TIMEOUT,
-                socket_connect_timeout=REDIS_TIMEOUT,
-            )
-            r.ping()
-
-            # System health + derived ok
-            system_health = _hgetall_parsed(r, KEY_SYSTEM_HEALTH)
-            system_health = _derive_system_ok(system_health)
-
-            # Nodes
-            nodes: Dict[str, Any] = {}
-            try:
-                node_ids = sorted(list(r.smembers(KEY_SYSTEM_NODES)))
-            except Exception:
-                node_ids = []
-
-            for nid in node_ids:
-                nk = f"{KEY_NODE_PREFIX}{nid}"
-                if r.exists(nk):
-                    nodes[nid] = _hgetall_parsed(r, nk)
-
-            # Services
-            services: Dict[str, Any] = {}
-            count = 0
-            for key in r.scan_iter(match=f"{KEY_SERVICE_PREFIX}*"):
-                if count >= MAX_SERVICES:
-                    break
-                if r.type(key) != "hash":
-                    continue
-                h = _hgetall_parsed(r, key)
-                sid = str(h.get("id") or key.split(":", 2)[-1])
-                services[sid] = _service_summary_fields(h)
-                count += 1
-
-            payload["data"] = {
-                "system": {
-                    "health": system_health,
-                    "nodes": nodes,
-                },
-                "services": services,
-            }
-            payload["ok"] = True
-
-        except Exception as e:
-            payload["errors"].append(f"snapshot_failed: {type(e).__name__}: {e}")
-
-        body = json.dumps(payload, indent=2).encode("utf-8")
-        self.send_response(200)
-        self._cors()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
 
 def main() -> None:
