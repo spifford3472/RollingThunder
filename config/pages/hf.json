@@ -8,7 +8,7 @@
     "middle": [
       ["hf_status"]
     ],
-    "bottom": []
+    "bottom": ["alerts_overlay"]
   },
 
   "requires": ["redis_state", "mqtt_bus"],
