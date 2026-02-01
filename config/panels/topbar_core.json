@@ -5,12 +5,12 @@
 
   "refresh": { "mode": "poll", "intervalMs": 1000 },
 
-
   "bindings": [
-    {"id": "clock", "source": "state", "key": "rt:gps:time" },
-    {"id": "gps_fix", "source": "state", "key": "rt:gps:fix" },
-    {"gps_speed": "nodes", "source": "state", "key": "rt:gps:speed" },
-    {"active_alerts": "nodes", "source": "state", "key": "rt:alerts:active" }
+    { "id": "clock", "source": "state", "key": "rt:gps:time" },
+    { "id": "gps_fix", "source": "state", "key": "rt:gps:fix" },
+    { "id": "gps_speed", "source": "state", "key": "rt:gps:speed" },
+    { "id": "active_alerts", "source": "state", "key": "rt:alerts:active" },
+    { "id": "sys_health", "source": "state", "key": "rt:system:health" }
   ],
 
   "meta": {
