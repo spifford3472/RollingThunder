@@ -40,6 +40,7 @@ UNITS=(
   #Deploy Report Publisher (cntrollr -> Redis)
   "rt-deploy-report-controller.service"
   "rt-deploy-report-controller.timer"
+  "rt-gps-state-publisher.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
@@ -61,6 +62,8 @@ ls -la "${NODE_SRC_DIR}" || true
 
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
+fail_missing "${SVC_DIR}/gps_state_publisher.py"
+fail_missing "${SYSTEMD_DIR}/rt-gps-state-publisher.service"
 fail_missing "${STATE_ENV_SRC}"
 
 # Common rsync excludes
