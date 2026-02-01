@@ -33,6 +33,7 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] Auto-restart kiosk on crash
 - [ ] Watchdog / health indicator LED
 - [ ] “safe mode” boot page
+- [ ] Add a internet "Keep-Alive function" so hotspot does not go to sleep
 
 ## 5) Stretch Ideas / R&D
 - [ ] ...
