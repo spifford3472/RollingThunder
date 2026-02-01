@@ -19,6 +19,7 @@ echo "[push] Target: ${TARGET_USER}@${TARGET_HOST}"
 echo "[push] Repo:   ${REPO_ROOT}"
 
 UNIT_DIR="${REPO_ROOT}/deploy/nodes/rt-controller/systemd"
++GPS_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-gps-state-publisher.service"
 
 # --- Source roots (authoritative) ---
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
@@ -63,6 +64,7 @@ ls -la "${NODE_SRC_DIR}" || true
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing "${STATE_ENV_SRC}"
+fail_missing "${GPS_UNIT_SRC}"
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(
@@ -120,8 +122,13 @@ fi
 if [[ "${DRY_RUN}" != "1" ]]; then
   for u in "${UNITS[@]}"; do
     src="${UNIT_DIR}/${u}"
-    fail_missing "${src}"
-    push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${src}" "/etc/systemd/system/${u}" "644"
+    if [[ "${u}" == "rt-gps-state-publisher.service" ]]; then
+      push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${GPS_UNIT_SRC}" "/etc/systemd/system/${u}" "644"
+    else
+      src="${UNIT_DIR}/${u}"
+      fail_missing "${src}"
+      push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${src}" "/etc/systemd/system/${u}" "644"
+    fi
   done
 else
   echo "[dry] would push systemd unit files to /etc/systemd/system/"
