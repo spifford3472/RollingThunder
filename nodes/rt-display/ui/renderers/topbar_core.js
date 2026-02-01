@@ -3,16 +3,6 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
 }[c]));
 
 function classifyTopbar(data) {
-  return {
-    systemHealth: "ok" | "warn" | "bad",
-    timeSource: "gps" | "system",
-    gpsFix: true | false,
-    tempF: number | null,
-    tempC: number | null,
-  };
-}
-
-function classifyTopbar(data) {
   const sys = data?.sys_health || null;
 
   const ok = !!sys?.ok;
