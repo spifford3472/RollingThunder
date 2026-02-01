@@ -20,8 +20,11 @@ export function renderTopbarCore(container, panel, data) {
   const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const dateStr = now.toLocaleDateString([], { weekday: "short", month: "short", day: "2-digit" });
 
-  const sysHealth = data?.sys_health ?? null;
-  const sysStr = sysHealth === null ? "state:null" : "state:ok";
+  //const sysHealth = data?.sys_health ?? null;
+  //const sysStr = sysHealth === null ? "state:null" : "state:ok";
+  const sysHealth = data?.sys_health;
+  const sysOk = sysHealth ? "state:ok" : "state:null";
+
 
 
   container.innerHTML = `
@@ -36,10 +39,8 @@ export function renderTopbarCore(container, panel, data) {
           <span class="rt-topbar-date">${esc(dateStr)}</span>
           <span class="rt-topbar-time">${esc(timeStr)}</span>
         </div>
-        <div class="rt-topbar-meta" style="margin-left:12px; opacity:0.9; font-size:12px;">
-          <span>fix:${gpsFixStr}</span>
-          <span style="margin-left:8px;">spd:${gpsSpeedStr}</span>
-          <span style="margin-left:8px;">alerts:${alertsStr}</span>
+        <div style="margin-left:12px; font-size:12px; opacity:0.85;">
+          ${esc(sysOk)}
         </div>
       </div>
     </div>
