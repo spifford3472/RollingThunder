@@ -29,22 +29,21 @@ async function postJson(url, bodyObj, timeoutMs = 2500) {
 }
 
 export function createBindingStore() {
-  // ---- State batching internals (single endpoint, read-only) ----
   const STATE_ENDPOINT = "/api/v1/ui/state/batch";
 
-  // Small TTL cache: keeps UI behavior stable under frequent refresh
+  // Tiny TTL cache prevents request storms during frequent re-render/refresh.
   const CACHE_TTL_MS = 250;
 
-  // key -> { ts:number, value:any } where value is already "final" (either actual value or null)
+  // key -> { ts:number, value:any|null }
   const cache = new Map();
 
-  // Micro-batching: collect keys requested within the same tick
+  // Micro-batch state keys requested in the same tick.
   let pendingKeys = new Set();
   let flushTimer = null;
 
-  // All resolves in-flight for current batch wait on this
-  let inFlightFlushPromise = null;
-  let inFlightFlushResolve = null;
+  // Promise that resolves when the current scheduled flush completes.
+  let flushPromise = null;
+  let flushResolve = null;
 
   function getCached(key) {
     const hit = cache.get(key);
@@ -60,27 +59,32 @@ export function createBindingStore() {
     cache.set(key, { ts: Date.now(), value: valueOrNull });
   }
 
+  function ensureFlushPromise() {
+    if (flushPromise) return flushPromise;
+    flushPromise = new Promise((resolve) => {
+      flushResolve = resolve;
+    });
+    return flushPromise;
+  }
+
   async function flushPending() {
     const keys = Array.from(pendingKeys);
     pendingKeys = new Set();
 
-    // Reset flush controls early to allow next batch while this one runs
-    const resolveFlush = inFlightFlushResolve;
-    inFlightFlushPromise = null;
-    inFlightFlushResolve = null;
+    // Clear the promise early so new requests can schedule the next batch
+    const done = flushResolve;
+    flushPromise = null;
+    flushResolve = null;
 
     if (keys.length === 0) {
-      resolveFlush && resolveFlush();
+      done && done();
       return;
     }
 
     try {
       const resp = await postJson(
         STATE_ENDPOINT,
-        {
-          schema_version: "ui.state.batch.v1",
-          keys,
-        },
+        { schema_version: "ui.state.batch.v1", keys: Array.from(new Set(keys)) },
         2500
       );
 
@@ -93,34 +97,23 @@ export function createBindingStore() {
         putCached(k, val);
       }
     } catch (e) {
-      // Preserve existing behavior: on any failure, treat all as null
+      // Preserve legacy UI behavior: failures yield null, never throw.
       for (const k of keys) {
         putCached(k, null);
       }
     } finally {
-      resolveFlush && resolveFlush();
+      done && done();
     }
   }
 
   function scheduleFlush() {
     if (flushTimer !== null) return;
-
-    // One flush at end of current event loop tick
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushPending();
     }, 0);
   }
 
-  function ensureFlushPromise() {
-    if (inFlightFlushPromise) return inFlightFlushPromise;
-    inFlightFlushPromise = new Promise((resolve) => {
-      inFlightFlushResolve = resolve;
-    });
-    return inFlightFlushPromise;
-  }
-
-  // ---- Public API ----
   return {
     async resolve(binding) {
       const src = String(binding?.source || "").toLowerCase();
@@ -136,7 +129,6 @@ export function createBindingStore() {
         const cached = getCached(key);
         if (cached !== undefined) return cached;
 
-        // Queue for batch and await the flush that includes it
         pendingKeys.add(key);
         const p = ensureFlushPromise();
         scheduleFlush();
@@ -147,6 +139,6 @@ export function createBindingStore() {
       }
 
       return null;
-    },
+    }
   };
 }
