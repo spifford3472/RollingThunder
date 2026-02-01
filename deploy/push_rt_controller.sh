@@ -62,8 +62,8 @@ ls -la "${NODE_SRC_DIR}" || true
 
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
-fail_missing "${SVC_DIR}/gps_state_publisher.py"
-fail_missing "${SYSTEMD_DIR}/rt-gps-state-publisher.service"
+fail_missing "${SERVICES_DST_DIR}/gps_state_publisher.py"
+fail_missing "${OPS_SRC_DIR}/rt-gps-state-publisher.service"
 fail_missing "${STATE_ENV_SRC}"
 
 # Common rsync excludes
