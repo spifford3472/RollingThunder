@@ -28,93 +28,36 @@ async function postJson(url, bodyObj, timeoutMs = 2500) {
   }
 }
 
-export function createBindingStore() {
-  const STATE_ENDPOINT = "/api/v1/ui/state/batch";
+export function createBindingStore(opts = {}) {
+  // Default to controller hostname that rt-display can resolve.
+  const stateBatchUrl =
+    opts.stateBatchUrl ||
+    "http://rt-controller:8625/api/v1/ui/state/batch";
 
-  // Tiny TTL cache prevents request storms during frequent re-render/refresh.
-  const CACHE_TTL_MS = 250;
+  // Tiny cache to keep one render pass from firing N POSTs.
+  // Cleared each time resolveAll() is called (if your UI has it),
+  // otherwise it still helps across rapid successive resolves.
+  let cache = new Map();
 
-  // key -> { ts:number, value:any|null }
-  const cache = new Map();
+  async function stateBatch(keys) {
+    const uniq = Array.from(new Set(keys.filter(Boolean).map(String)));
+    if (uniq.length === 0) return {};
 
-  // Micro-batch state keys requested in the same tick.
-  let pendingKeys = new Set();
-  let flushTimer = null;
-
-  // Promise that resolves when the current scheduled flush completes.
-  let flushPromise = null;
-  let flushResolve = null;
-
-  function getCached(key) {
-    const hit = cache.get(key);
-    if (!hit) return undefined;
-    if ((Date.now() - hit.ts) > CACHE_TTL_MS) {
-      cache.delete(key);
-      return undefined;
+    const resp = await postJson(stateBatchUrl, { keys: uniq });
+    if (!resp || resp.ok !== true || !resp.data || !resp.data.values) {
+      return {};
     }
-    return hit.value;
-  }
-
-  function putCached(key, valueOrNull) {
-    cache.set(key, { ts: Date.now(), value: valueOrNull });
-  }
-
-  function ensureFlushPromise() {
-    if (flushPromise) return flushPromise;
-    flushPromise = new Promise((resolve) => {
-      flushResolve = resolve;
-    });
-    return flushPromise;
-  }
-
-  async function flushPending() {
-    const keys = Array.from(pendingKeys);
-    pendingKeys = new Set();
-
-    // Clear the promise early so new requests can schedule the next batch
-    const done = flushResolve;
-    flushPromise = null;
-    flushResolve = null;
-
-    if (keys.length === 0) {
-      done && done();
-      return;
-    }
-
-    try {
-      const resp = await postJson(
-        STATE_ENDPOINT,
-        { schema_version: "ui.state.batch.v1", keys: Array.from(new Set(keys)) },
-        2500
-      );
-
-      // Controller contract: resp.data.values[key] = { ok, encoding, value }
-      const values = resp?.data?.values || {};
-
-      for (const k of keys) {
-        const entry = values[k];
-        const val = (entry && entry.ok) ? entry.value : null;
-        putCached(k, val);
-      }
-    } catch (e) {
-      // Preserve legacy UI behavior: failures yield null, never throw.
-      for (const k of keys) {
-        putCached(k, null);
-      }
-    } finally {
-      done && done();
-    }
-  }
-
-  function scheduleFlush() {
-    if (flushTimer !== null) return;
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      flushPending();
-    }, 0);
+    return resp.data.values; // map: key -> { ok, encoding, value }
   }
 
   return {
+    // Optional hook your UI can call at the start of each refresh cycle
+    // to prevent stale cache surprises.
+    beginCycle() {
+      cache = new Map();
+    },
+
+    // The original single-binding resolver.
     async resolve(binding) {
       const src = String(binding?.source || "").toLowerCase();
 
@@ -123,22 +66,59 @@ export function createBindingStore() {
       }
 
       if (src === "state") {
-        const key = binding?.key;
+        const key = String(binding?.key || "");
         if (!key) return null;
 
-        const cached = getCached(key);
-        if (cached !== undefined) return cached;
+        if (cache.has(key)) return cache.get(key);
 
-        pendingKeys.add(key);
-        const p = ensureFlushPromise();
-        scheduleFlush();
-        await p;
+        // Batch-of-1 fallback (still uses the batch endpoint)
+        const values = await stateBatch([key]);
+        const entry = values[key];
+        const val = entry && entry.ok ? entry.value : null;
 
-        const after = getCached(key);
-        return after === undefined ? null : after;
+        cache.set(key, val);
+        return val;
       }
 
       return null;
-    }
+    },
+
+    // A convenience method if your UI can resolve many bindings at once.
+    // If you don't use it yet, you can ignore it safely.
+    async resolveMany(bindings) {
+      const stateKeys = [];
+      const out = [];
+
+      // First pass: collect keys and mark non-state results
+      for (const b of bindings) {
+        const src = String(b?.source || "").toLowerCase();
+        if (src === "state") {
+          const k = String(b?.key || "");
+          out.push({ _stateKey: k });
+          if (k && !cache.has(k)) stateKeys.push(k);
+        } else if (src === "api") {
+          out.push(await fetchJson(b.url));
+        } else {
+          out.push(null);
+        }
+      }
+
+      // Batch read missing keys
+      if (stateKeys.length) {
+        const values = await stateBatch(stateKeys);
+        for (const k of stateKeys) {
+          const entry = values[k];
+          cache.set(k, entry && entry.ok ? entry.value : null);
+        }
+      }
+
+      // Second pass: fill state results
+      return out.map((v) => {
+        if (v && v._stateKey !== undefined) {
+          return cache.get(v._stateKey) ?? null;
+        }
+        return v;
+      });
+    },
   };
 }
