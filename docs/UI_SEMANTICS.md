@@ -159,6 +159,58 @@ The UI renderer MUST follow these rules:
    - Missing optional fields are rendered as `-` or omitted
    - Rendering must never throw due to missing fields
 
+
+### Topbar Core — Semantic Contract (Authoritative)
+
+**Purpose**
+The Topbar is always visible and read-only. It provides immediate situational awareness: identity/context, authoritative time, and high-level status signals. It must remain calm, predictable, and non-interactive.
+
+**Layout**
+The Topbar is split into three fixed regions:
+
+1) **Left: Identity & Context**
+- Shows the RollingThunder brand (graphic/logo) as the primary anchor.
+- Shows the current page name below the brand in smaller text.
+- No state-based color changes or alerts in this section.
+
+2) **Middle: UTC Time Authority**
+- Shows **UTC time** in 24-hour format as the primary element.
+- Shows **UTC date** below in smaller text.
+- The middle region is the primary “time readout” and should not be cluttered with status logic.
+
+3) **Right: Status Cluster & Temperature**
+The right region contains three icon indicators and temperature text.
+Indicators must be **shape-first** (color is secondary).
+
+**Indicators (shape-first, not color-first)**
+A) **System Health**
+- ✅ = healthy
+- ❌ = unhealthy
+- ⚠️ = degraded or stale
+Derived from: `rt:system:health.ok` and `rt:system:health.stale`.
+
+B) **Time Source**
+- GPS time icon when time is derived from GPS
+- Clock/system icon when time is derived from local system time
+Derived from: presence of `rt:gps:time` (GPS) vs null/missing (system).
+
+C) **GPS Fix**
+- Fix-present icon when `rt:gps:fix === true`
+- No-fix icon otherwise
+
+**Temperature (text)**
+Below the icons, show temperature in both units:
+`<temp_f>°F / <temp_c>°C`
+Derived from: `rt:environment:temp_f` and `rt:environment:temp_c` (or equivalent).
+
+**Accessibility Rule (Non-Negotiable)**
+User is red/green colorblind. Therefore:
+- **Shape conveys meaning.**
+- Color may reinforce meaning but must never be the only signal.
+- Use distinct shapes (✅ / ❌ / ⚠️) as the primary cue.
+
+
+
 ---
 
 ## 7. Schema Versioning ##
@@ -184,6 +236,7 @@ The UI MUST NOT:
 - Introduce new status values
 
 If something is unclear, the UI should display uncertainty, not confidence.
+
 
 ## 9. When This Document Must Be Updated ##
 Update this document if:
