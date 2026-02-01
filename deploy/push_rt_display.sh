@@ -107,19 +107,28 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${CONFIG_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_CONFIG}/"
 
-echo "[push] Link UI config -> /opt/rollingthunder/config (deterministic)"
-if [[ "${DRY_RUN}" != "1" ]]; then
-  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
-    ln -sfn '${RT_CONFIG}' '${RT_UI}/config'
-  "
-else
-  echo "[dry] would ln -sfn '${RT_CONFIG}' '${RT_UI}/config'"
-fi
-
 echo "[push] Sync UI dir -> ${RT_UI}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${UI_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_UI}/"
+
+echo "[push] Link UI config -> ${RT_CONFIG} (deterministic)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    ln -sfn '${RT_CONFIG}' '${RT_UI}/config'
+  "
+  echo "[push] Verify UI config link + app.json readable"
+  if [[ "${DRY_RUN}" != "1" ]]; then
+    ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+      test -L '${RT_UI}/config' || (echo '[error] ui/config is not a symlink' && exit 1)
+      test -f '${RT_UI}/config/app.json' || (echo '[error] ui/config/app.json missing' && exit 1)
+    "
+  else
+    echo "[dry] would verify symlink and app.json"
+  fi
+else
+  echo "[dry] would ln -sfn '${RT_CONFIG}' '${RT_UI}/config'"
+fi
 
 echo "[push] Sync services dir -> ${RT_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
