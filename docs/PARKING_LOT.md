@@ -28,6 +28,9 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 ## 3) Thermal / Power (Beta-plus)
 - [ ] Add temp sensors + fan controller (Pi cooling)
 - [ ] Define thermal policy (thresholds, hysteresis, fail-safe)
+- [ ] Power down Raspberry Pis that overheat
+- [ ] Potentially add computer controlled fans
+- [ ] Can we build something to power on a Raspberry Pi when temp drops?  Does this make sense
 
 ## 4) Operational Hardening (Beta-plus)
 - [ ] Auto-restart kiosk on crash
