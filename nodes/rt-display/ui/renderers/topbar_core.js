@@ -98,31 +98,38 @@ export function renderTopbarCore(container, panel, data) {
   const tempC = data?.temp?.c ?? "--";
 
   container.innerHTML = `
-    <div class="rt-topbar" style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px;">
+    <div class="rt-topbar"
+        style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:6px 10px;">
+
       <!-- Left -->
-      <div class="rt-topbar-left" style="display:flex; flex-direction:column; gap:2px;">
+      <div class="rt-topbar-left"
+          style="min-width:170px; display:flex; flex-direction:column; gap:2px;">
         <div class="rt-topbar-brand" style="font-weight:700;">RollingThunder</div>
         <div class="rt-topbar-page" style="font-size:12px; opacity:0.85;">${esc(page)}</div>
       </div>
 
       <!-- Middle -->
-      <div class="rt-topbar-mid" style="text-align:center; display:flex; flex-direction:column; gap:2px;">
+      <div class="rt-topbar-mid"
+          style="flex:1; text-align:center; display:flex; flex-direction:column; gap:2px;">
         <div style="font-weight:700; font-size:18px; letter-spacing:0.5px;">${esc(utcTime)}</div>
         <div style="font-size:12px; opacity:0.85;">${esc(utcDate)}</div>
       </div>
 
       <!-- Right -->
-      <div class="rt-topbar-right" style="display:flex; align-items:flex-end; gap:12px;">
-        <div style="display:flex; gap:10px; align-items:flex-end;">
+      <div class="rt-topbar-right"
+          style="min-width:210px; display:flex; justify-content:flex-end; align-items:flex-end; gap:12px;">
+        <div style="display:flex; gap:10px; align-items:flex-end; white-space:nowrap;">
           ${iconBadge({ symbol: sysSymbol, label: sysLabel })}
           ${iconBadge({ symbol: timeSymbol, label: timeLabel })}
           ${iconBadge({ symbol: gpsSymbol, label: gpsLabel })}
         </div>
-        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:70px;">
+
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:70px; white-space:nowrap;">
           <div style="font-weight:700;">${esc(tempF)}°F</div>
           <div style="font-size:12px; opacity:0.85;">${esc(tempC)}°C</div>
         </div>
       </div>
     </div>
   `;
+
 }
