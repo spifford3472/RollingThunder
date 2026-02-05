@@ -100,13 +100,25 @@ export function renderTopbarCore(container, panel, data) {
   }
 
   // 3) GPS fix: ✓ when has_fix, ✗ when not
-  let gpsSymbol = "●";
-  let gpsLabel = "GPS ?";
-  if (fix && typeof fix.has_fix !== "undefined") {
-    gpsSymbol = fix.has_fix ? "✓" : "✗";
-    const sats = typeof fix.sats === "number" ? fix.sats : null;
-    gpsLabel = fix.has_fix ? `GPS ${sats ?? ""}`.trim() : `NO FIX ${sats ?? ""}`.trim();
-  }
+  const gpsSymbol = triState(fix?.has_fix, {
+    ok: "✓",
+    bad: "✗",
+    unknown: "●",
+  });
+
+  const sats =
+    typeof fix?.sats === "number" ? fix.sats :
+    (typeof fix?.sats === "string" && fix.sats.trim() !== "" && !Number.isNaN(Number(fix.sats)))
+      ? Number(fix.sats)
+      : null;
+
+  const gpsLabel =
+    fix?.has_fix === true
+      ? `GPS ${sats ?? ""}`.trim()
+      : fix?.has_fix === false
+        ? `NO FIX ${sats ?? ""}`.trim()
+        : "GPS ?";
+
 
   // ---- Temp (placeholder for now; you said we haven’t written it yet)
   const tempF = data?.temp?.f ?? "--";
