@@ -7,114 +7,121 @@ const esc = (s) =>
     "'": "&#39;",
   }[c]));
 
-function iconTri(state /* "ok" | "bad" | "unk" */) {
-  if (state === "ok") return { glyph: "✅", label: "OK" };
-  if (state === "bad") return { glyph: "✖", label: "BAD" };
-  return { glyph: "●", label: "UNK" };
+/** Parse ISO string safely. Returns Date or null. */
+function parseIso(iso) {
+  if (!iso || typeof iso !== "string") return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function boolish(v) {
-  // Accept true/false, 1/0, "true"/"false"
-  if (v === true || v === 1) return true;
-  if (v === false || v === 0) return false;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    if (s === "true" || s === "1" || s === "yes" || s === "ok") return true;
-    if (s === "false" || s === "0" || s === "no") return false;
-  }
-  return null;
+function fmtUtcTime(d) {
+  // 24h UTC HH:MM:SS
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}Z`;
 }
 
-function getPageName() {
-  const params = new URLSearchParams(location.search);
-  return params.get("page") || "home";
+function fmtUtcDate(d) {
+  // YYYY-MM-DD
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * shape-first icon: check, x, or dot
+ * - symbol conveys state even if colors are hard to distinguish
+ */
+function iconBadge({ symbol, label }) {
+  return `
+    <div class="rt-topbar-icon" title="${esc(label)}"
+         style="display:flex; flex-direction:column; align-items:center; gap:2px;">
+      <div style="font-size:18px; line-height:18px;">${esc(symbol)}</div>
+      <div style="font-size:10px; opacity:0.85;">${esc(label)}</div>
+    </div>
+  `;
 }
 
 export function renderTopbarCore(container, panel, data) {
-  // --- Left section ---
-  const page = getPageName();
+  const params = new URLSearchParams(location.search);
+  const page = params.get("page") || "home";
 
-  // --- Middle section: always show UTC ---
-  const now = new Date();
-  const utcTime = now.toLocaleTimeString("en-GB", {
-    timeZone: "UTC",
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  const utcDate = now.toLocaleDateString("en-GB", {
-    timeZone: "UTC",
-    weekday: "short",
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  });
+  const sys = data?.sys_health || null;
+  const clock = data?.clock || null;
+  const fix = data?.gps_fix || null;
 
-  // --- Right section: icons ---
-  // 1) System health: prefer sys_health.ok else infer from redis_ok/mqtt_ok
-  const sh = data?.sys_health || null;
-  let sysState = "unk";
-  if (sh && typeof sh === "object") {
-    const ok = boolish(sh.ok);
-    if (ok !== null) sysState = ok ? "ok" : "bad";
-    else {
-      const r = boolish(sh.redis_ok);
-      const m = boolish(sh.mqtt_ok);
-      if (r !== null && m !== null) sysState = (r && m) ? "ok" : "bad";
+  // ---- Middle: UTC time/date (prefer gps_state_publisher’s utc_iso; fall back to browser UTC)
+  const dt = parseIso(clock?.utc_iso) || new Date();
+  const utcTime = fmtUtcTime(dt);
+  const utcDate = fmtUtcDate(dt);
+
+  // ---- Right icons (shape-first)
+  // 1) System health: ✓ if ok truthy, ✗ if explicitly false, ● if unknown
+  let sysSymbol = "●";
+  let sysLabel = "SYS ?";
+  if (sys && typeof sys.ok !== "undefined") {
+    sysSymbol = sys.ok ? "✓" : "✗";
+    sysLabel = sys.ok ? "SYS OK" : "SYS BAD";
+  }
+
+  // 2) Time source: GPS vs SYSTEM vs unknown
+  // clock.source currently "system" in your output
+  let timeSymbol = "●";
+  let timeLabel = "TIME ?";
+  if (clock && typeof clock.source === "string") {
+    const src = clock.source.toLowerCase();
+    if (src === "gps") {
+      timeSymbol = "✓";
+      timeLabel = "GPS TIME";
+    } else if (src === "system") {
+      timeSymbol = "●";
+      timeLabel = "SYS TIME";
+    } else {
+      timeSymbol = "●";
+      timeLabel = `TIME ${clock.source}`;
     }
   }
 
-  // 2) Time source: if we have rt:gps:time -> GPS, else local
-  // (Until GPS exists, this will show "LOCAL")
-  const hasGpsTime = data?.clock != null; // clock binding maps to rt:gps:time
-  const timeState = hasGpsTime ? "ok" : "unk"; // "unk" means "not available yet"
-  const timeSrcLabel = hasGpsTime ? "GPS" : "LOCAL";
+  // 3) GPS fix: ✓ when has_fix, ✗ when not
+  let gpsSymbol = "●";
+  let gpsLabel = "GPS ?";
+  if (fix && typeof fix.has_fix !== "undefined") {
+    gpsSymbol = fix.has_fix ? "✓" : "✗";
+    const sats = typeof fix.sats === "number" ? fix.sats : null;
+    gpsLabel = fix.has_fix ? `GPS ${sats ?? ""}`.trim() : `NO FIX ${sats ?? ""}`.trim();
+  }
 
-  // 3) GPS lock: use gps_fix truthiness (unknown until GPS exists)
-  // When you implement GPS later, you can refine this check.
-  const fixVal = data?.gps_fix;
-  let gpsState = "unk";
-  const fixBool = boolish(fixVal);
-  if (fixBool !== null) gpsState = fixBool ? "ok" : "bad";
-  else if (fixVal != null) gpsState = "ok"; // any non-null object/string -> assume "some fix"
-  const gpsLabel = (gpsState === "ok") ? "LOCK" : (gpsState === "bad") ? "NOFIX" : "N/A";
-
-  // Temp placeholders until you publish a real key
-  const tempF = data?.temp_f ?? null;
-  const tempC = data?.temp_c ?? null;
-  const tempLine = (tempF != null || tempC != null)
-    ? `${tempF != null ? esc(tempF) + "°F" : "--°F"} / ${tempC != null ? esc(tempC) + "°C" : "--°C"}`
-    : `--°F / --°C`;
-
-  const sysI = iconTri(sysState);
-  const timeI = iconTri(timeState);
-  const gpsI = iconTri(gpsState);
+  // ---- Temp (placeholder for now; you said we haven’t written it yet)
+  const tempF = data?.temp?.f ?? "--";
+  const tempC = data?.temp?.c ?? "--";
 
   container.innerHTML = `
-    <div class="rt-topbar rt-topbar-grid">
-      <!-- LEFT -->
-      <div class="rt-topbar-left">
-        <div class="rt-brand">
-          <div class="rt-brand-mark">RollingThunder</div>
-          <div class="rt-brand-page">${esc(page)}</div>
-        </div>
+    <div class="rt-topbar" style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px;">
+      <!-- Left -->
+      <div class="rt-topbar-left" style="display:flex; flex-direction:column; gap:2px;">
+        <div class="rt-topbar-brand" style="font-weight:700;">RollingThunder</div>
+        <div class="rt-topbar-page" style="font-size:12px; opacity:0.85;">${esc(page)}</div>
       </div>
 
-      <!-- MIDDLE -->
-      <div class="rt-topbar-mid">
-        <div class="rt-utc-time">${esc(utcTime)} <span class="rt-utc-tag">UTC</span></div>
-        <div class="rt-utc-date">${esc(utcDate)}</div>
+      <!-- Middle -->
+      <div class="rt-topbar-mid" style="text-align:center; display:flex; flex-direction:column; gap:2px;">
+        <div style="font-weight:700; font-size:18px; letter-spacing:0.5px;">${esc(utcTime)}</div>
+        <div style="font-size:12px; opacity:0.85;">${esc(utcDate)}</div>
       </div>
 
-      <!-- RIGHT -->
-      <div class="rt-topbar-right">
-        <div class="rt-icons">
-          <div class="rt-icon" title="System Health">${sysI.glyph}<span>${esc(sysI.label)}</span></div>
-          <div class="rt-icon" title="Time Source">${timeI.glyph}<span>${esc(timeSrcLabel)}</span></div>
-          <div class="rt-icon" title="GPS Fix">${gpsI.glyph}<span>${esc(gpsLabel)}</span></div>
+      <!-- Right -->
+      <div class="rt-topbar-right" style="display:flex; align-items:flex-end; gap:12px;">
+        <div style="display:flex; gap:10px; align-items:flex-end;">
+          ${iconBadge({ symbol: sysSymbol, label: sysLabel })}
+          ${iconBadge({ symbol: timeSymbol, label: timeLabel })}
+          ${iconBadge({ symbol: gpsSymbol, label: gpsLabel })}
         </div>
-        <div class="rt-temp">${tempLine}</div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:70px;">
+          <div style="font-weight:700;">${esc(tempF)}°F</div>
+          <div style="font-size:12px; opacity:0.85;">${esc(tempC)}°C</div>
+        </div>
       </div>
     </div>
   `;
