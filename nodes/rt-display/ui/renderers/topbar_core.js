@@ -14,6 +14,16 @@ function parseIso(iso) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Normalize boolean / missing state into a tri-state UI symbol.
+ * This is presentation logic only.
+ */
+function triState(val, { ok, bad, unknown }) {
+  if (val === true) return ok;
+  if (val === false) return bad;
+  return unknown;
+}
+
 function fmtUtcTime(d) {
   // 24h UTC HH:MM:SS
   const hh = String(d.getUTCHours()).padStart(2, "0");
@@ -59,12 +69,17 @@ export function renderTopbarCore(container, panel, data) {
 
   // ---- Right icons (shape-first)
   // 1) System health: ✓ if ok truthy, ✗ if explicitly false, ● if unknown
-  let sysSymbol = "●";
-  let sysLabel = "SYS ?";
-  if (sys && typeof sys.ok !== "undefined") {
-    sysSymbol = sys.ok ? "✓" : "✗";
-    sysLabel = sys.ok ? "SYS OK" : "SYS BAD";
-  }
+  const sysSymbol = triState(sys?.ok, {
+    ok: "✓",
+    bad: "✗",
+    unknown: "●",
+  });
+
+  const sysLabel =
+    sys?.ok === true ? "SYS OK" :
+    sys?.ok === false ? "SYS BAD" :
+    "SYS ?";
+
 
   // 2) Time source: GPS vs SYSTEM vs unknown
   // clock.source currently "system" in your output
