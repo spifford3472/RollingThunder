@@ -54,6 +54,20 @@ function iconBadge({ symbol, label }) {
   `;
 }
 
+function numOrNull(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+/** Returns { ageMs, stale, okTs } where okTs indicates we had a usable timestamp. */
+function freshnessFrom(obj, tsField, staleAfterMs) {
+  const ts = numOrNull(obj?.[tsField]);
+  if (ts == null) return { ageMs: null, stale: true, okTs: false };
+  const ageMs = Date.now() - ts;
+  return { ageMs, stale: ageMs > staleAfterMs, okTs: true };
+}
+
 export function renderTopbarCore(container, panel, data) {
   const params = new URLSearchParams(location.search);
   const page = params.get("page") || "home";
@@ -61,6 +75,8 @@ export function renderTopbarCore(container, panel, data) {
   const sys = data?.sys_health || null;
   const clock = data?.clock || null;
   const fix = data?.gps_fix || null;
+  const speed = data?.gps_speed || null;
+
 
   // ---- Middle: UTC time/date (prefer gps_state_publisher’s utc_iso; fall back to browser UTC)
   const dt = parseIso(clock?.utc_iso) || new Date();
@@ -80,6 +96,26 @@ export function renderTopbarCore(container, panel, data) {
     sys?.ok === false ? "SYS BAD" :
     "SYS ?";
 
+  // ---- Phase B Step 1: freshness (derived only; no visuals yet)
+  const STALE_SYS_MS = 15000;   // system health should be chatty
+  const STALE_GPS_MS = 5000;    // gps publisher tick-ish
+  const STALE_ALERTS_MS = 5000; // placeholder if/when alerts added
+
+  const sysFresh = freshnessFrom(sys, "last_seen_ms", STALE_SYS_MS); // sys health uses last_seen_ms
+  const clockFresh = freshnessFrom(clock, "last_update_ms", STALE_GPS_MS);
+  const fixFresh = freshnessFrom(fix, "last_update_ms", STALE_GPS_MS);
+  const speedFresh = freshnessFrom(speed, "last_update_ms", STALE_GPS_MS);
+
+  // Attach derived info for debugging / later steps (no rendering change required)
+  data = {
+    ...data,
+    _freshness: {
+      sys: sysFresh,
+      clock: clockFresh,
+      fix: fixFresh,
+      speed: speedFresh,
+    },
+  };
 
   // 2) Time source: GPS vs SYSTEM vs unknown
   // clock.source currently "system" in your output
