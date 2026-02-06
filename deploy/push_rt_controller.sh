@@ -42,6 +42,7 @@ UNITS=(
   "rt-deploy-report-controller.service"
   "rt-deploy-report-controller.timer"
   "rt-gps-state-publisher.service"
+  "rt-env-temp-publisher.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

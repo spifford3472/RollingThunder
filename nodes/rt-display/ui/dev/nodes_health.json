@@ -1,0 +1,47 @@
+{
+  "data": {
+    "nodes": [
+      {
+        "id": "rt-controller",
+        "role": "controller",
+        "status": "online",
+        "age_sec": 2,
+        "last_seen_ms": 0,
+        "last_update_ms": 0,
+        "hostname": "rt-controller",
+        "ip": "192.168.0.10"
+      },
+      {
+        "id": "rt-display",
+        "role": "display",
+        "status": "online",
+        "age_sec": 1,
+        "last_seen_ms": 0,
+        "last_update_ms": 0,
+        "hostname": "rt-display",
+        "ip": "192.168.0.11",
+        "ui_render_ok": true
+      },
+      {
+        "id": "rt-radio",
+        "role": "radio",
+        "status": "stale",
+        "age_sec": 42,
+        "last_seen_ms": 0,
+        "last_update_ms": 0,
+        "hostname": "rt-radio",
+        "ip": "192.168.0.12"
+      },
+      {
+        "id": "rt-wpsd",
+        "role": "external",
+        "status": "offline",
+        "age_sec": 999,
+        "last_seen_ms": 0,
+        "last_update_ms": 0,
+        "hostname": "rt-wpsd",
+        "ip": "192.168.0.13"
+      }
+    ]
+  }
+}
