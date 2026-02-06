@@ -80,6 +80,9 @@ export function renderTopbarCore(container, panel, data) {
   const fixFresh = freshnessFrom(fix, "last_update_ms", STALE_GPS_MS);
   const speedFresh = freshnessFrom(speed, "last_update_ms", STALE_GPS_MS);
 
+  const STALE_SYMBOL = "○"; // hollow circle
+
+
   // Attach derived info for debugging / later steps (no rendering change required)
   data = {
     ...data,
@@ -104,7 +107,7 @@ export function renderTopbarCore(container, panel, data) {
     sysSymbol = "●";
     sysLabel = "SYS ?";
   } else if (sysFresh?.okTs === false || sysFresh?.stale) {
-    sysSymbol = "●";
+    sysSymbol = STALE_SYMBOL;
     sysLabel = "SYS STALE";
   } else {
     // sys.ok might be 1/0 or true/false; normalize to boolean when present
@@ -129,7 +132,7 @@ export function renderTopbarCore(container, panel, data) {
     timeSymbol = "●";
     timeLabel = "TIME ?";
   } else if (clockFresh?.okTs === false || clockFresh?.stale) {
-    timeSymbol = "●";
+    timeSymbol = STALE_SYMBOL;
     timeLabel = "TIME STALE";
   } else if (typeof clock.source === "string" && clock.source.length) {
     const src = clock.source.toLowerCase();
@@ -157,7 +160,7 @@ export function renderTopbarCore(container, panel, data) {
     gpsSymbol = "●";
     gpsLabel = "GPS ?";
   } else if (fixFresh?.okTs === false || fixFresh?.stale) {
-    gpsSymbol = "●";
+    gpsSymbol = STALE_SYMBOL;
     gpsLabel = "GPS STALE";
   } else if (typeof fix.has_fix !== "undefined") {
     const hasFix = fix.has_fix === true || fix.has_fix === 1 || fix.has_fix === "true";
