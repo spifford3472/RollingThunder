@@ -62,20 +62,21 @@ def read_ds18b20_c() -> Optional[float]:
     return None
 
 
-def read_thermal_zone0_c() -> Optional[float]:
-    p = "/sys/class/thermal/thermal_zone0/temp"
+def read_thermal_zone0_c() -> float | None:
+    path = "/sys/class/thermal/thermal_zone0/temp"
     try:
-        with open(p, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
-        if not raw:
+        with open(path, "r", encoding="utf-8") as f:
+            raw_s = f.read().strip()
+        raw = int(raw_s)
+        # Pi reports millidegrees C (e.g. 20927 => 20.927C)
+        c = raw / 1000.0 if raw > 1000 else float(raw)
+        # sanity bounds for cabin-ish temps; adjust if you want
+        if c < -50.0 or c > 150.0:
             return None
-        # Usually millideg C
-        v = float(raw)
-        if v > 1000:
-            v = v / 1000.0
-        return v
+        return c
     except Exception:
         return None
+
 
 
 def read_temp_c() -> Tuple[Optional[float], str]:
@@ -109,24 +110,23 @@ def main() -> None:
     r.ping()
 
     while True:
-        c, src = read_temp_c()
-        ts = now_ms()
-
-        if c is None:
-            payload = {
-                "c": "",
-                "f": "",
-                "source": src,
-                "last_update_ms": ts,
-            }
-        else:
-            f = c_to_f(c)
-            payload = {
+        c = read_thermal_zone0_c()
+        if c is not None:
+            f = (c * 9.0 / 5.0) + 32.0
+            r.hset("rt:env:temp", mapping={
                 "c": round(c, 1),
                 "f": round(f, 1),
-                "source": src,
-                "last_update_ms": ts,
-            }
+                "source": "thermal_zone0",
+                "last_update_ms": now_ms,
+            })
+        else:
+            r.hset("rt:env:temp", mapping={
+                "c": "",
+                "f": "",
+                "source": "unknown",
+                "last_update_ms": now_ms,
+            })
+
 
         # Store as hash for ui/state/batch "hash" encoding
         r.hset(KEY_TEMP, mapping={k: str(v) for k, v in payload.items()})
