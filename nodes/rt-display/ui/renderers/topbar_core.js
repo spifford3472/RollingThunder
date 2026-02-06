@@ -160,8 +160,6 @@ export function renderTopbarCore(container, panel, data) {
   const tempF = data?.temp?.f ?? "--";
   const tempC = data?.temp?.c ?? "--";
 
-  console.log("topbar freshness", data?._freshness);
-
   container.innerHTML = `
     <div class="rt-topbar"
         style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:6px 10px;">
