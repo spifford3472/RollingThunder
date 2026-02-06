@@ -62,6 +62,40 @@ function freshnessFrom(obj, tsField, staleAfterMs) {
   return { ageMs, stale: ageMs > staleAfterMs, okTs: true };
 }
 
+function badgeFrom({
+  obj,
+  fresh,
+  okVal,          // raw “good/bad” value (can be bool/1/0/"true"/"false")
+  okLabel = "OK",
+  badLabel = "BAD",
+  staleLabel = "STALE",
+  unknownLabel = "?",
+  staleSymbol = "○",
+  unknownSymbol = "●",
+  okSymbol = "✓",
+  badSymbol = "✗",
+}) {
+  // 1) missing/unknown
+  if (!isObj(obj)) return { symbol: unknownSymbol, label: unknownLabel };
+
+  // 2) stale (includes missing timestamp)
+  if (!fresh?.okTs || fresh?.stale) return { symbol: staleSymbol, label: staleLabel };
+
+  // 3/4) fresh + known good/bad
+  const known = typeof okVal !== "undefined" && okVal !== null && okVal !== "";
+  if (!known) return { symbol: unknownSymbol, label: unknownLabel };
+
+  const ok =
+    okVal === true || okVal === 1 || okVal === "1" ||
+    okVal === "true" || okVal === "TRUE";
+
+  return ok
+    ? { symbol: okSymbol, label: okLabel }
+    : { symbol: badSymbol, label: badLabel };
+}
+
+
+
 export function renderTopbarCore(container, panel, data) {
   const params = new URLSearchParams(location.search);
   const page = params.get("page") || "home";
@@ -99,58 +133,35 @@ export function renderTopbarCore(container, panel, data) {
   const utcTime = fmtUtcTime(dt);
   const utcDate = fmtUtcDate(dt);
 
-  // ---- Right icons (shape-first)
-  let sysSymbol = "●";
-  let sysLabel = "SYS ?";
-
-  if (!isObj(sys)) {
-    sysSymbol = "●";
-    sysLabel = "SYS ?";
-  } else if (sysFresh?.okTs === false || sysFresh?.stale) {
-    sysSymbol = STALE_SYMBOL;
-    sysLabel = "SYS STALE";
-  } else {
-    // sys.ok might be 1/0 or true/false; normalize to boolean when present
-    const okVal = sys.ok;
-    const ok =
-      okVal === true || okVal === 1 || okVal === "1" || okVal === "true";
-
-    const known =
-      typeof okVal !== "undefined" && okVal !== null && okVal !== "";
-
-    sysSymbol = known ? (ok ? "✓" : "✗") : "●";
-    sysLabel = known ? (ok ? "SYS OK" : "SYS BAD") : "SYS ?";
-  }
-
+  const sysBadge = badgeFrom({
+    obj: sys,
+    fresh: sysFresh,
+    okVal: sys?.ok,
+    okLabel: "SYS OK",
+    badLabel: "SYS BAD",
+    staleLabel: "SYS STALE",
+    unknownLabel: "SYS ?",
+  });
+  const sysSymbol = sysBadge.symbol;
+  const sysLabel = sysBadge.label;
 
   // 2) Time source: GPS vs SYSTEM vs unknown
-  // clock.source currently "system" in your output
   let timeSymbol = "●";
   let timeLabel = "TIME ?";
 
   if (!isObj(clock)) {
     timeSymbol = "●";
     timeLabel = "TIME ?";
-  } else if (clockFresh?.okTs === false || clockFresh?.stale) {
-    timeSymbol = STALE_SYMBOL;
+  } else if (!clockFresh?.okTs || clockFresh?.stale) {
+    timeSymbol = "○";
     timeLabel = "TIME STALE";
-  } else if (typeof clock.source === "string" && clock.source.length) {
-    const src = clock.source.toLowerCase();
-    if (src === "gps") {
-      timeSymbol = "✓";
-      timeLabel = "GPS TIME";
-    } else if (src === "system") {
-      timeSymbol = "●";       // “not GPS” isn’t “bad”, it’s “fallback”
-      timeLabel = "SYS TIME";
-    } else {
-      timeSymbol = "●";
-      timeLabel = `TIME ${clock.source}`;
-    }
   } else {
-    timeSymbol = "●";
-    timeLabel = "TIME ?";
+    const src = typeof clock.source === "string" ? clock.source.toLowerCase() : "";
+    if (src === "gps")      { timeSymbol = "✓"; timeLabel = "GPS TIME"; }
+    else if (src === "system") { timeSymbol = "●"; timeLabel = "SYS TIME"; }
+    else if (src)          { timeSymbol = "●"; timeLabel = `TIME ${clock.source}`; }
+    else                   { timeSymbol = "●"; timeLabel = "TIME ?"; }
   }
-
 
   // 3) GPS fix: ✓ when has_fix, ✗ when not
   let gpsSymbol = "●";
@@ -159,19 +170,16 @@ export function renderTopbarCore(container, panel, data) {
   if (!isObj(fix)) {
     gpsSymbol = "●";
     gpsLabel = "GPS ?";
-  } else if (fixFresh?.okTs === false || fixFresh?.stale) {
-    gpsSymbol = STALE_SYMBOL;
+  } else if (!fixFresh?.okTs || fixFresh?.stale) {
+    gpsSymbol = "○";
     gpsLabel = "GPS STALE";
-  } else if (typeof fix.has_fix !== "undefined") {
+  } else {
     const hasFix = fix.has_fix === true || fix.has_fix === 1 || fix.has_fix === "true";
-    const sats = typeof fix.sats === "number" ? fix.sats : null;
-
+    const sats = numOrNull(fix.sats);
     gpsSymbol = hasFix ? "✓" : "✗";
     gpsLabel = hasFix ? `GPS ${sats ?? ""}`.trim() : `NO FIX ${sats ?? ""}`.trim();
-  } else {
-    gpsSymbol = "●";
-    gpsLabel = "GPS ?";
   }
+
 
 
 
