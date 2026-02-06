@@ -24,6 +24,16 @@ function triState(val, { ok, bad, unknown }) {
   return unknown;
 }
 
+function pickSymbolFromTruthy(v) {
+  if (v === true) return "✓";
+  if (v === false) return "✗";
+  return "●";
+}
+
+function isObj(v) {
+  return v && typeof v === "object";
+}
+
 function fmtUtcTime(d) {
   // 24h UTC HH:MM:SS
   const hh = String(d.getUTCHours()).padStart(2, "0");
@@ -84,17 +94,28 @@ export function renderTopbarCore(container, panel, data) {
   const utcDate = fmtUtcDate(dt);
 
   // ---- Right icons (shape-first)
-  // 1) System health: ✓ if ok truthy, ✗ if explicitly false, ● if unknown
-  const sysSymbol = triState(sys?.ok, {
-    ok: "✓",
-    bad: "✗",
-    unknown: "●",
-  });
+  let sysSymbol = "●";
+  let sysLabel = "SYS ?";
 
-  const sysLabel =
-    sys?.ok === true ? "SYS OK" :
-    sys?.ok === false ? "SYS BAD" :
-    "SYS ?";
+  if (!isObj(sys)) {
+    sysSymbol = "●";
+    sysLabel = "SYS ?";
+  } else if (sysFresh?.okTs === false || sysFresh?.stale) {
+    sysSymbol = "●";
+    sysLabel = "SYS STALE";
+  } else {
+    // sys.ok might be 1/0 or true/false; normalize to boolean when present
+    const okVal = sys.ok;
+    const ok =
+      okVal === true || okVal === 1 || okVal === "1" || okVal === "true";
+
+    const known =
+      typeof okVal !== "undefined" && okVal !== null && okVal !== "";
+
+    sysSymbol = known ? (ok ? "✓" : "✗") : "●";
+    sysLabel = known ? (ok ? "SYS OK" : "SYS BAD") : "SYS ?";
+  }
+
 
   // ---- Phase B Step 1: freshness (derived only; no visuals yet)
   const STALE_SYS_MS = 15000;   // system health should be chatty
@@ -121,39 +142,52 @@ export function renderTopbarCore(container, panel, data) {
   // clock.source currently "system" in your output
   let timeSymbol = "●";
   let timeLabel = "TIME ?";
-  if (clock && typeof clock.source === "string") {
+
+  if (!isObj(clock)) {
+    timeSymbol = "●";
+    timeLabel = "TIME ?";
+  } else if (clockFresh?.okTs === false || clockFresh?.stale) {
+    timeSymbol = "●";
+    timeLabel = "TIME STALE";
+  } else if (typeof clock.source === "string" && clock.source.length) {
     const src = clock.source.toLowerCase();
     if (src === "gps") {
       timeSymbol = "✓";
       timeLabel = "GPS TIME";
     } else if (src === "system") {
-      timeSymbol = "●";
+      timeSymbol = "●";       // “not GPS” isn’t “bad”, it’s “fallback”
       timeLabel = "SYS TIME";
     } else {
       timeSymbol = "●";
       timeLabel = `TIME ${clock.source}`;
     }
+  } else {
+    timeSymbol = "●";
+    timeLabel = "TIME ?";
   }
 
+
   // 3) GPS fix: ✓ when has_fix, ✗ when not
-  const gpsSymbol = triState(fix?.has_fix, {
-    ok: "✓",
-    bad: "✗",
-    unknown: "●",
-  });
+  let gpsSymbol = "●";
+  let gpsLabel = "GPS ?";
 
-  const sats =
-    typeof fix?.sats === "number" ? fix.sats :
-    (typeof fix?.sats === "string" && fix.sats.trim() !== "" && !Number.isNaN(Number(fix.sats)))
-      ? Number(fix.sats)
-      : null;
+  if (!isObj(fix)) {
+    gpsSymbol = "●";
+    gpsLabel = "GPS ?";
+  } else if (fixFresh?.okTs === false || fixFresh?.stale) {
+    gpsSymbol = "●";
+    gpsLabel = "GPS STALE";
+  } else if (typeof fix.has_fix !== "undefined") {
+    const hasFix = fix.has_fix === true || fix.has_fix === 1 || fix.has_fix === "true";
+    const sats = typeof fix.sats === "number" ? fix.sats : null;
 
-  const gpsLabel =
-    fix?.has_fix === true
-      ? `GPS ${sats ?? ""}`.trim()
-      : fix?.has_fix === false
-        ? `NO FIX ${sats ?? ""}`.trim()
-        : "GPS ?";
+    gpsSymbol = hasFix ? "✓" : "✗";
+    gpsLabel = hasFix ? `GPS ${sats ?? ""}`.trim() : `NO FIX ${sats ?? ""}`.trim();
+  } else {
+    gpsSymbol = "●";
+    gpsLabel = "GPS ?";
+  }
+
 
 
   // ---- Temp (placeholder for now; you said we haven’t written it yet)
