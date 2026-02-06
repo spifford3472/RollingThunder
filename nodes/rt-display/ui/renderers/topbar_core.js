@@ -14,22 +14,6 @@ function parseIso(iso) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/**
- * Normalize boolean / missing state into a tri-state UI symbol.
- * This is presentation logic only.
- */
-function triState(val, { ok, bad, unknown }) {
-  if (val === true) return ok;
-  if (val === false) return bad;
-  return unknown;
-}
-
-function pickSymbolFromTruthy(v) {
-  if (v === true) return "✓";
-  if (v === false) return "✗";
-  return "●";
-}
-
 function isObj(v) {
   return v && typeof v === "object";
 }
@@ -90,7 +74,6 @@ export function renderTopbarCore(container, panel, data) {
   // ---- Phase B Step 1: freshness (derived only; no visuals yet)
   const STALE_SYS_MS = 15000;   // system health should be chatty
   const STALE_GPS_MS = 5000;    // gps publisher tick-ish
-  const STALE_ALERTS_MS = 5000; // placeholder if/when alerts added
 
   const sysFresh = freshnessFrom(sys, "last_seen_ms", STALE_SYS_MS); // sys health uses last_seen_ms
   const clockFresh = freshnessFrom(clock, "last_update_ms", STALE_GPS_MS);
