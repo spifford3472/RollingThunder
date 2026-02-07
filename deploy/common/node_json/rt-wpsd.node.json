@@ -1,0 +1,6 @@
+{
+  "node_id": "rt-wpsd",
+  "node_role": "wpsd",
+  "hostname": "rt-wpsd",
+  "ui_capabilities": {}
+}

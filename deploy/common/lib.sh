@@ -118,5 +118,25 @@ curl_smoke_retry() {
   "
 }
 
+push_node_json() {
+  local host="$1"
+  local user="$2"
+  local src="$3"
+  local dst="/etc/rollingthunder/node.json"
+  local mode="${4:-644}"
+
+  fail_missing "${src}"
+
+  # Default: install-if-missing. Explicit override allowed.
+  local force="${FORCE_NODE_JSON:-0}"
+
+  if [[ "${force}" == "1" ]]; then
+    echo "[push] FORCE_NODE_JSON=1 -> overwriting ${dst}"
+    push_root_file "${host}" "${user}" "${src}" "${dst}" "${mode}"
+  else
+    echo "[push] ensure ${dst} exists (install-if-missing)"
+    push_root_file_if_missing "${host}" "${user}" "${src}" "${dst}" "${mode}"
+  fi
+}
 
 # ---- end lib.sh ----

@@ -1,0 +1,6 @@
+{
+  "node_id": "rt-radio",
+  "node_role": "radio",
+  "hostname": "rt-radio",
+  "ui_capabilities": {}
+}
