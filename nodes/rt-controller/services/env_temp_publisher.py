@@ -117,19 +117,22 @@ def main() -> None:
                 "c": round(c, 1),
                 "f": round(f, 1),
                 "source": "thermal_zone0",
-                "last_update_ms": now_ms,
+                "last_update_ms": now_ms(),
             })
         else:
             r.hset("rt:env:temp", mapping={
                 "c": "",
                 "f": "",
                 "source": "unknown",
-                "last_update_ms": now_ms,
+                "last_update_ms": now_ms(),
             })
+
+    # ...whatever your sleep is...
+
 
 
         # Store as hash for ui/state/batch "hash" encoding
-        r.hset(KEY_TEMP, mapping={k: str(v) for k, v in payload.items()})
+        #r.hset(KEY_TEMP, mapping={k: str(v) for k, v in payload.items()})
 
         time.sleep(INTERVAL_SEC)
 
