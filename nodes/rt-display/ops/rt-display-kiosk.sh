@@ -1,39 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# RollingThunder rt-display kiosk launcher (Option A: controller serves UI + API)
-#
-# This script launches Chromium in kiosk mode and points it at the controller-hosted UI.
-# The UI and APIs share the same origin (no CORS/proxy), so the display stays dumb and stable.
-
-# -----------------------------
-# Config (env-overridable)
-# -----------------------------
-POLL_MS="${RT_UI_POLL_MS:-1000}"
-
-CTRL_HOST="${RT_CONTROLLER_HOST:-rt-controller}"
-CTRL_PORT="${RT_CONTROLLER_PORT:-8625}"
-
-# Controller-served UI root (must exist on controller after Step A)
-UI_PATH="${RT_UI_PATH:-/ui/index.html}"
-
-# UI runtime params (your UI may ignore some; harmless to pass)
-PAGE="${RT_UI_PAGE:-home}"
-RUNTIME="${RT_UI_RUNTIME:-1}"
-
-# Cache-buster: use deployed commit if present (prevents stale JS after deploy)
-V="0"
-if [[ -r /opt/rollingthunder/.deploy/DEPLOYED_COMMIT ]]; then
-  V="$(tr -d ' \n\r\t' </opt/rollingthunder/.deploy/DEPLOYED_COMMIT | head -c 16)"
-fi
-
-START_URL="http://${CTRL_HOST}:${CTRL_PORT}${UI_PATH}?runtime=${RUNTIME}&page=${PAGE}&ms=${POLL_MS}&v=${V}"
-
-# Chromium profile (isolate kiosk from desktop profile)
-CHROME_PROFILE_DIR="${RT_CHROME_PROFILE_DIR:-/var/lib/rt-display/chromium-profile}"
-
-# Wait for X session to be ready
 export DISPLAY="${DISPLAY:-:0}"
+
+POLL_MS="${RT_UI_POLL_MS:-500}"
+CTRL_HOST="${RT_CTRL_HOST:-rt-controller}"
+CTRL_PORT="${RT_CTRL_PORT:-8625}"
+
+# Primary: controller serves UI + API
+START_URL_DEFAULT="http://${CTRL_HOST}:${CTRL_PORT}/ui/index.html?runtime=1&page=home"
+
+# Optional fallback: local display UI server (what you had before)
+FALLBACK_URL="${RT_UI_FALLBACK_URL:-http://127.0.0.1:8619/index.html?runtime=1&page=home}"
+
+START_URL="${RT_UI_START_URL:-$START_URL_DEFAULT}"
+
+CHROME_PROFILE_DIR="/var/lib/rt-display/chromium-profile"
 
 # Best-effort disable screen blanking/power management (X11)
 if command -v xset >/dev/null 2>&1; then
@@ -44,7 +26,7 @@ fi
 
 mkdir -p "$CHROME_PROFILE_DIR"
 
-# Chromium executable name varies by distro; try common ones.
+# Find chromium
 CHROMIUM_BIN=""
 for c in chromium chromium-browser google-chrome; do
   if command -v "$c" >/dev/null 2>&1; then
@@ -52,21 +34,29 @@ for c in chromium chromium-browser google-chrome; do
     break
   fi
 done
-
-# Debian/Bookworm often installs Chromium at /usr/lib/chromium/chromium
-if [[ -z "$CHROMIUM_BIN" && -x /usr/lib/chromium/chromium ]]; then
-  CHROMIUM_BIN="/usr/lib/chromium/chromium"
-fi
-
 if [[ -z "$CHROMIUM_BIN" ]]; then
-  echo "Chromium not found (expected chromium/chromium-browser/google-chrome or /usr/lib/chromium/chromium)."
+  echo "Chromium not found."
   exit 1
 fi
 
-echo "[kiosk] DISPLAY=${DISPLAY}"
-echo "[kiosk] START_URL=${START_URL}"
-echo "[kiosk] CHROMIUM_BIN=${CHROMIUM_BIN}"
-echo "[kiosk] PROFILE=${CHROME_PROFILE_DIR}"
+# Wait briefly for controller UI; fall back if unreachable
+echo "[kiosk] checking controller UI: $START_URL_DEFAULT"
+if command -v curl >/dev/null 2>&1; then
+  for _ in {1..20}; do
+    if curl -fsS --max-time 1 "${START_URL_DEFAULT}" >/dev/null 2>&1; then
+      START_URL="${START_URL_DEFAULT}"
+      break
+    fi
+    sleep 0.5
+  done
+fi
+
+if [[ "${START_URL}" != "${START_URL_DEFAULT}" ]]; then
+  echo "[kiosk] controller UI not reachable; using fallback: $FALLBACK_URL"
+  START_URL="$FALLBACK_URL"
+else
+  echo "[kiosk] using controller UI: $START_URL"
+fi
 
 exec "$CHROMIUM_BIN" \
   --kiosk \
@@ -79,10 +69,4 @@ exec "$CHROMIUM_BIN" \
   --autoplay-policy=no-user-gesture-required \
   --disable-features=CloudMessaging,PushMessaging \
   --disable-notifications \
-  --disable-pings \
-  --media-router=0 \
-  --disable-dev-shm-usage \
-  --enable-gpu-rasterization \
-  --use-angle=gles \
-  --force-renderer-accessibility \
   --app="$START_URL"
