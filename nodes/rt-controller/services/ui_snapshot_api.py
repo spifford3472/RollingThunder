@@ -9,7 +9,8 @@ Phase 12c-A:
 
 Add-on:
 - Serve static UI assets from /opt/rollingthunder/ui under /ui/*
-  (same-origin UI + API for kiosk/browser simplicity)
+- Serve static config assets from /opt/rollingthunder/config under /config/*
+  (same-origin UI + API + config for kiosk/browser simplicity)
 """
 
 from __future__ import annotations
@@ -69,6 +70,9 @@ _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
 UI_ROOT = Path(os.environ.get("RT_UI_ROOT", "/opt/rollingthunder/ui")).resolve()
 UI_PREFIX = "/ui"
+
+CFG_ROOT = Path(os.environ.get("RT_CFG_ROOT", "/opt/rollingthunder/config")).resolve()
+CFG_PREFIX = "/config"
 
 
 def now_iso_utc() -> str:
@@ -267,20 +271,20 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             return {"_error": "json_parse_error"}
 
     # ----------------------------
-    # Static UI serving: /ui/*
+    # Static serving: /ui/* and /config/*
     # ----------------------------
-    def _try_serve_static_ui(self) -> bool:
+    def _serve_static(self, url_prefix: str, fs_root: Path) -> bool:
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Normalize /ui -> /ui/
-        if path == UI_PREFIX:
-            path = UI_PREFIX + "/"
+        # Normalize /prefix -> /prefix/
+        if path == url_prefix:
+            path = url_prefix + "/"
 
-        if not path.startswith(UI_PREFIX + "/"):
+        if not path.startswith(url_prefix + "/"):
             return False
 
-        rel = path[len(UI_PREFIX) + 1 :]  # after "/ui/"
+        rel = path[len(url_prefix) + 1 :]  # after "/prefix/"
         if rel == "" or rel.endswith("/"):
             rel = rel + "index.html"
 
@@ -291,11 +295,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             self.send_error(404, "not_found")
             return True
 
-        candidate = (UI_ROOT / rel).resolve()
+        candidate = (fs_root / rel).resolve()
 
-        # Ensure candidate remains under UI_ROOT
+        # Ensure candidate remains under fs_root
         try:
-            candidate.relative_to(UI_ROOT)
+            candidate.relative_to(fs_root)
         except Exception:
             self.send_error(404, "not_found")
             return True
@@ -321,6 +325,15 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         return True
+
+    def _try_serve_static_ui_or_config(self) -> bool:
+        # /ui/*
+        if self._serve_static(UI_PREFIX, UI_ROOT):
+            return True
+        # /config/*
+        if self._serve_static(CFG_PREFIX, CFG_ROOT):
+            return True
+        return False
 
     # ----------------------------
     # API handlers
@@ -594,11 +607,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"error":"not_found"}')
 
     def do_GET(self) -> None:
-        # 1) Static UI first (same-origin UI + API)
-        if self._try_serve_static_ui():
+        # 1) Static UI/config first (same-origin UI + API)
+        if self._try_serve_static_ui_or_config():
             return
 
-        # 2) Existing API routing (unchanged semantics)
+        # 2) Existing API routing
         if self.path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
 
