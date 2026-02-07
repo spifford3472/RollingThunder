@@ -37,10 +37,11 @@ fail_missing "${UNIT_SRC}"
 
 echo "[push] Ensure runtime dirs exist"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  sudo mkdir -p /opt/rollingthunder/nodes/rt-radio /etc/rollingthunder &&
-  sudo chown root:root /etc/rollingthunder &&
+  sudo mkdir -p /opt/rollingthunder/nodes /etc/rollingthunder &&
+  sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes &&
   sudo chmod 755 /etc/rollingthunder
 "
+
 
 
 NODE_JSON_SRC="${REPO_ROOT}/deploy/common/node_json/${TARGET_HOST}.node.json"
@@ -55,6 +56,7 @@ fi
 
 echo "[push] Sync node subtree -> ${NODE_DST_DIR} (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --no-group --no-perms --omit-dir-times \
   "${RSYNC_EXCLUDES[@]}" \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
 

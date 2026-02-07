@@ -44,6 +44,7 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
 
 echo "[push] Sync node subtree -> ${NODE_DST_DIR} (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+--no-group --no-perms --omit-dir-times \
   "${RSYNC_EXCLUDES[@]}" \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
 
