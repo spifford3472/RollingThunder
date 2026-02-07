@@ -109,27 +109,30 @@ def main() -> None:
     # Fail fast if Redis isn’t reachable
     r.ping()
 
+    KEY_TEMP = "rt:env:temp"
+
     while True:
+        ts = now_ms()
         c = read_thermal_zone0_c()
+
         if c is not None:
             f = (c * 9.0 / 5.0) + 32.0
-            r.hset("rt:env:temp", mapping={
+            r.hset(KEY_TEMP, mapping={
                 "c": round(c, 1),
                 "f": round(f, 1),
                 "source": "thermal_zone0",
-                "last_update_ms": now_ms(),
+                "stale": "0",
+                "last_update_ms": ts,
             })
         else:
-            r.hset("rt:env:temp", mapping={
-                "c": "",
-                "f": "",
+            # do NOT blank c/f; just mark stale and update timestamp
+            r.hset(KEY_TEMP, mapping={
                 "source": "unknown",
-                "last_update_ms": now_ms(),
+                "stale": "1",
+                "last_update_ms": ts,
             })
 
-    # ...whatever your sleep is...
-
-
+        time.sleep(1)
 
         # Store as hash for ui/state/batch "hash" encoding
         #r.hset(KEY_TEMP, mapping={k: str(v) for k, v in payload.items()})
