@@ -160,12 +160,17 @@ export function renderTopbarCore(container, panel, data) {
     staleLabel: "SYS STALE",
     unknownLabel: "SYS ?",
   });
-  const sysSymbol = sysBadge.symbol;
-  const sysLabel = sysBadge.label;
+
+  // These get "badgeified" later, so they must be mutable:
+  let sysSymbol = sysBadge.symbol;
+  let sysLabel  = sysBadge.label;
+  let sysOpacity = 1.0;
+
 
   // 2) Time semantics (prefer GPS time when fix_type >= 1)
   let timeSymbol = "●";
   let timeLabel = "TIME ?";
+  let timeOpacity = 1.0;
 
   if (!isObj(clock)) {
     timeSymbol = "●";
@@ -197,6 +202,7 @@ export function renderTopbarCore(container, panel, data) {
   // 3) GPS fix semantics
   let gpsSymbol = "●";
   let gpsLabel = "GPS ?";
+  let gpsOpacity  = 1.0;
 
   if (!isObj(fix)) {
     gpsSymbol = "●";
