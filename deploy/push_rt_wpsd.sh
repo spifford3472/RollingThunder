@@ -37,7 +37,7 @@ fail_missing "${UNIT_SRC}"
 
 echo "[push] Ensure runtime dirs exist"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  sudo mkdir -p /opt/rollingthunder/nodes/rt-wpsd/etc/rollingthunder &&
+  sudo mkdir -p /opt/rollingthunder/nodes/rt-wpsd /etc/rollingthunder &&
   sudo chown root:root /etc/rollingthunder &&
   sudo chmod 755 /etc/rollingthunder
 "

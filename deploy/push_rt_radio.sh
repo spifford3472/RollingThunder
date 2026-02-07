@@ -37,19 +37,10 @@ fail_missing "${UNIT_SRC}"
 
 echo "[push] Ensure runtime dirs exist"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  sudo mkdir -p /opt/rollingthunder/nodes/rt-radio/etc/rollingthunder &&
+  sudo mkdir -p /opt/rollingthunder/nodes/rt-radio /etc/rollingthunder &&
   sudo chown root:root /etc/rollingthunder &&
   sudo chmod 755 /etc/rollingthunder
 "
-
-NODE_JSON_SRC="${REPO_ROOT}/deploy/common/node_json/${TARGET_HOST}.node.json"
-# or hardcode per script: rt-radio.node.json, etc.
-
-if [[ "${DRY_RUN}" != "1" ]]; then
-  push_node_json "${TARGET_HOST}" "${TARGET_USER}" "${NODE_JSON_SRC}" "644"
-else
-  echo "[dry] would ensure /etc/rollingthunder/node.json exists (or overwrite if FORCE_NODE_JSON=1)"
-fi
 
 
 NODE_JSON_SRC="${REPO_ROOT}/deploy/common/node_json/${TARGET_HOST}.node.json"
