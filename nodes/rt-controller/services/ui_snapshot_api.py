@@ -6,22 +6,25 @@ Phase 12c-A:
 - Type coercion for Redis hash values (ints/bools/floats/null) when unambiguous
 - Derived system health flag: data.system.health.ok
 - Still read-only, bounded, CORS enabled
+
+Add-on:
+- Serve static UI assets from /opt/rollingthunder/ui under /ui/*
+  (same-origin UI + API for kiosk/browser simplicity)
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import unquote, urlparse
 
 import redis
-
-from pathlib import Path
-from urllib.parse import urlparse, unquote
-import mimetypes
 
 
 HOST = os.environ.get("RT_UI_HOST", "0.0.0.0")
@@ -38,10 +41,11 @@ NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
 DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
 STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
 
-
 KEY_DEPLOY_PREFIX = os.environ.get("RT_KEY_DEPLOY_PREFIX", "rt:deploy:report:")
 DEPLOY_MAX_AGE_SEC = int(os.environ.get("RT_DEPLOY_MAX_AGE_SEC", "30"))
-DEPLOY_COMMIT_FILE = os.environ.get("RT_DEPLOYED_COMMIT_FILE", "/opt/rollingthunder/.deploy/DEPLOYED_COMMIT")
+DEPLOY_COMMIT_FILE = os.environ.get(
+    "RT_DEPLOYED_COMMIT_FILE", "/opt/rollingthunder/.deploy/DEPLOYED_COMMIT"
+)
 
 # Observed base keys
 KEY_SYSTEM_HEALTH = os.environ.get("RT_KEY_SYSTEM_HEALTH", "rt:system:health")
@@ -63,44 +67,8 @@ MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
-UI_ROOT = Path(os.getenv("RT_UI_ROOT", "/opt/rollingthunder/ui")).resolve()
-
-def try_serve_static(handler) -> bool:
-    parsed = urlparse(handler.path)
-    path = parsed.path
-
-    if path == "/ui":
-        path = "/ui/"
-    if not path.startswith("/ui/"):
-        return False
-
-    rel = path[len("/ui/"):]
-    if rel == "" or rel.endswith("/"):
-        rel = rel + "index.html"
-
-    rel = unquote(rel)
-    fs_path = (UI_ROOT / rel).resolve()
-
-    # prevent traversal
-    if not str(fs_path).startswith(str(UI_ROOT)):
-        handler.send_error(403, "forbidden")
-        return True
-
-    if not fs_path.exists() or not fs_path.is_file():
-        handler.send_error(404, "not_found")
-        return True
-
-    ctype, _ = mimetypes.guess_type(str(fs_path))
-    ctype = ctype or "application/octet-stream"
-    body = fs_path.read_bytes()
-
-    handler.send_response(200)
-    handler.send_header("Content-Type", ctype)
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "no-cache")
-    handler.end_headers()
-    handler.wfile.write(body)
-    return True
+UI_ROOT = Path(os.environ.get("RT_UI_ROOT", "/opt/rollingthunder/ui")).resolve()
+UI_PREFIX = "/ui"
 
 
 def now_iso_utc() -> str:
@@ -143,8 +111,6 @@ def _coerce_scalar(s: Any) -> Any:
     if low in ("true", "false"):
         return low == "true"
 
-
-    # int/float
     if _INT_RE.match(v):
         try:
             return int(v)
@@ -190,6 +156,7 @@ def _hgetall_parsed(r: redis.Redis, key: str) -> Dict[str, Any]:
         out[k] = _truncate(parsed)
     return out
 
+
 def _load_deploy_report(r: redis.Redis, node_id: str) -> Optional[Dict[str, Any]]:
     """
     Deploy reports are stored as JSON strings at:
@@ -203,6 +170,7 @@ def _load_deploy_report(r: redis.Redis, node_id: str) -> Optional[Dict[str, Any]
     if isinstance(parsed, dict):
         return parsed
     return None
+
 
 def _service_summary_fields(h: Dict[str, Any]) -> Dict[str, Any]:
     keep = ("id", "scope", "ownerNode", "startPolicy", "stopPolicy", "state", "last_update_ms")
@@ -229,7 +197,6 @@ def _derive_system_ok(system_health: Dict[str, Any]) -> Dict[str, Any]:
 
     ok = bool(redis_ok and mqtt_ok and (stale is False))
 
-    # Put derived fields under system_health
     system_health["ok"] = ok
     system_health["stale"] = stale
     if age_sec is not None:
@@ -242,6 +209,122 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    def _cors(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def _redis(self) -> redis.Redis:
+        r = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD,
+            decode_responses=True,
+            socket_timeout=REDIS_TIMEOUT,
+            socket_connect_timeout=REDIS_TIMEOUT,
+        )
+        r.ping()
+        return r
+
+    def _key_allowed(self, k: Any) -> bool:
+        if not isinstance(k, str):
+            return False
+        if len(k) == 0 or len(k) > MAX_KEY_LEN:
+            return False
+        return k.startswith("rt:")
+
+    def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
+        body = json.dumps(payload, indent=2).encode("utf-8")
+        self.send_response(code)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> Dict[str, Any]:
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            clen = 0
+
+        if clen <= 0:
+            return {}
+        if clen > MAX_BODY_BYTES:
+            return {"_error": "body_too_large"}
+
+        raw = self.rfile.read(clen)
+        try:
+            obj = json.loads(raw.decode("utf-8", errors="replace"))
+            return obj if isinstance(obj, dict) else {"_error": "json_not_object"}
+        except Exception:
+            return {"_error": "json_parse_error"}
+
+    # ----------------------------
+    # Static UI serving: /ui/*
+    # ----------------------------
+    def _try_serve_static_ui(self) -> bool:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Normalize /ui -> /ui/
+        if path == UI_PREFIX:
+            path = UI_PREFIX + "/"
+
+        if not path.startswith(UI_PREFIX + "/"):
+            return False
+
+        rel = path[len(UI_PREFIX) + 1 :]  # after "/ui/"
+        if rel == "" or rel.endswith("/"):
+            rel = rel + "index.html"
+
+        rel = unquote(rel)
+
+        # Block obvious traversal before touching filesystem
+        if ".." in rel or rel.startswith("/") or rel.startswith("\\"):
+            self.send_error(404, "not_found")
+            return True
+
+        candidate = (UI_ROOT / rel).resolve()
+
+        # Ensure candidate remains under UI_ROOT
+        try:
+            candidate.relative_to(UI_ROOT)
+        except Exception:
+            self.send_error(404, "not_found")
+            return True
+
+        if not candidate.exists() or not candidate.is_file():
+            self.send_error(404, "not_found")
+            return True
+
+        ctype, _ = mimetypes.guess_type(str(candidate))
+        ctype = ctype or "application/octet-stream"
+
+        try:
+            body = candidate.read_bytes()
+        except Exception:
+            self.send_error(404, "not_found")
+            return True
+
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    # ----------------------------
+    # API handlers
+    # ----------------------------
     def _handle_state_batch(self) -> None:
         payload: Dict[str, Any] = {
             "source": "rt-controller",
@@ -311,67 +394,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             payload["errors"].append(f"state_batch_failed: {type(e).__name__}: {e}")
 
         return self._write_json(200, payload)
-    
-
-    def _read_json_body(self) -> Dict[str, Any]:
-        try:
-            clen = int(self.headers.get("Content-Length", "0"))
-        except Exception:
-            clen = 0
-
-        if clen <= 0:
-            return {}
-        if clen > MAX_BODY_BYTES:
-            # bounded behavior
-            return {"_error": "body_too_large"}
-
-        raw = self.rfile.read(clen)
-        try:
-            obj = json.loads(raw.decode("utf-8", errors="replace"))
-            return obj if isinstance(obj, dict) else {"_error": "json_not_object"}
-        except Exception:
-            return {"_error": "json_parse_error"}
-
-    def _cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def do_OPTIONS(self) -> None:
-        self.send_response(204)
-        self._cors()
-        self.end_headers()
-
-    def _redis(self) -> redis.Redis:
-        r = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB,
-            password=REDIS_PASSWORD,
-            decode_responses=True,
-            socket_timeout=REDIS_TIMEOUT,
-            socket_connect_timeout=REDIS_TIMEOUT,
-        )
-        r.ping()
-        return r
-
-    def _key_allowed(self, k: Any) -> bool:
-        if not isinstance(k, str):
-            return False
-        if len(k) == 0 or len(k) > MAX_KEY_LEN:
-            return False
-        return k.startswith("rt:")
-
-
-    def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
-        body = json.dumps(payload, indent=2).encode("utf-8")
-        self.send_response(code)
-        self._cors()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
 
     def _handle_deploy(self) -> None:
         payload: Dict[str, Any] = {
@@ -386,7 +408,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         try:
             r = self._redis()
 
-            # expected commit (controller-local stamp)
             expected_commit = "unknown"
             try:
                 if os.path.exists(DEPLOY_COMMIT_FILE):
@@ -439,7 +460,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                     ):
                         reasons.append("deployed_commit_mismatch")
 
-                # Drift state
                 if not reasons:
                     drift_state = "ok"
                 elif "deployed_commit_mismatch" in reasons:
@@ -447,14 +467,16 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 else:
                     drift_state = "warn"
 
-                nodes_out.append({
-                    "id": node_id,
-                    "role": h.get("role"),
-                    "status": h.get("status"),
-                    "age_sec": h.get("age_sec"),
-                    "deploy": deploy_obj,
-                    "drift": {"state": drift_state, "reasons": reasons},
-                })
+                nodes_out.append(
+                    {
+                        "id": node_id,
+                        "role": h.get("role"),
+                        "status": h.get("status"),
+                        "age_sec": h.get("age_sec"),
+                        "deploy": deploy_obj,
+                        "drift": {"state": drift_state, "reasons": reasons},
+                    }
+                )
 
             nodes_out.sort(key=lambda x: str(x.get("id") or ""))
             payload["data"]["nodes"] = nodes_out
@@ -464,7 +486,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             payload["errors"].append(f"deploy_failed: {type(e).__name__}: {e}")
 
         self._write_json(200, payload)
-
 
     def _handle_nodes(self) -> None:
         payload: Dict[str, Any] = {
@@ -486,7 +507,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
                 h = _hgetall_parsed(r, key)
 
-                # Bound the fields we expose (UI doesn't need everything)
                 node_obj = {
                     "id": h.get("id") or str(key).split(":")[-1],
                     "role": h.get("role"),
@@ -501,10 +521,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 }
                 nodes.append(node_obj)
 
-            # stable order
             nodes.sort(key=lambda x: str(x.get("id") or ""))
-
-
             payload["data"]["nodes"] = nodes
             payload["ok"] = True
 
@@ -526,11 +543,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         try:
             r = self._redis()
 
-            # System health + derived ok
             system_health = _hgetall_parsed(r, KEY_SYSTEM_HEALTH)
             system_health = _derive_system_ok(system_health)
 
-            # Nodes (legacy set membership; keep for now)
             nodes: Dict[str, Any] = {}
             try:
                 node_ids = sorted(list(r.smembers(KEY_SYSTEM_NODES)))
@@ -542,7 +557,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 if r.exists(nk):
                     nodes[nid] = _hgetall_parsed(r, nk)
 
-            # Services
             services: Dict[str, Any] = {}
             count = 0
             for key in r.scan_iter(match=f"{KEY_SERVICE_PREFIX}*"):
@@ -580,8 +594,8 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"error":"not_found"}')
 
     def do_GET(self) -> None:
-        # 1) Serve static UI first (same-origin UI + API)
-        if try_serve_static(self):
+        # 1) Static UI first (same-origin UI + API)
+        if self._try_serve_static_ui():
             return
 
         # 2) Existing API routing (unchanged semantics)
@@ -600,7 +614,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"error":"not_found"}')
-
 
 
 def main() -> None:
