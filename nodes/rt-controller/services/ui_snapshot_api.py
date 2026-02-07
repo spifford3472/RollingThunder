@@ -42,6 +42,8 @@ NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
 DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
 STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
 
+HEALTHZ_PATHS = ("/healthz", "/healthz/")
+
 KEY_DEPLOY_PREFIX = os.environ.get("RT_KEY_DEPLOY_PREFIX", "rt:deploy:report:")
 DEPLOY_MAX_AGE_SEC = int(os.environ.get("RT_DEPLOY_MAX_AGE_SEC", "30"))
 DEPLOY_COMMIT_FILE = os.environ.get(
@@ -98,10 +100,7 @@ def _try_parse_json(s: Optional[str]) -> Any:
 
 
 def _coerce_scalar(s: Any) -> Any:
-    """
-    Convert common Redis-string scalars to real JSON types.
-    Only acts on plain strings.
-    """
+    """Convert common Redis-string scalars to real JSON types (only plain strings)."""
     if s is None or not isinstance(s, str):
         return s
 
@@ -146,11 +145,7 @@ def _truncate(value: Any, max_chars: int = MAX_STR_CHARS) -> Any:
 
 
 def _hgetall_parsed(r: redis.Redis, key: str) -> Dict[str, Any]:
-    """
-    Read Redis hash and parse/coerce values:
-    1) JSON-ish strings -> JSON
-    2) otherwise scalar coercion (int/bool/float/null)
-    """
+    """Read Redis hash and parse/coerce values."""
     raw = r.hgetall(key)  # Dict[str,str] with decode_responses=True
     out: Dict[str, Any] = {}
     for k, v in raw.items():
@@ -162,10 +157,7 @@ def _hgetall_parsed(r: redis.Redis, key: str) -> Dict[str, Any]:
 
 
 def _load_deploy_report(r: redis.Redis, node_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Deploy reports are stored as JSON strings at:
-      rt:deploy:report:<node_id>
-    """
+    """Deploy reports stored as JSON strings at rt:deploy:report:<node_id>."""
     key = f"{KEY_DEPLOY_PREFIX}{node_id}"
     raw = r.get(key)
     if not raw:
@@ -182,13 +174,7 @@ def _service_summary_fields(h: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _derive_system_ok(system_health: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Add a derived OK flag and minimal diagnostics.
-    Uses:
-      - redis_ok (bool)
-      - mqtt_ok (bool)
-      - last_seen_ms freshness
-    """
+    """Add derived OK/stale/age_sec to system_health."""
     redis_ok = bool(system_health.get("redis_ok")) if system_health.get("redis_ok") is not None else False
     mqtt_ok = bool(system_health.get("mqtt_ok")) if system_health.get("mqtt_ok") is not None else False
 
@@ -210,12 +196,14 @@ def _derive_system_ok(system_health: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class UiSnapshotHandler(BaseHTTPRequestHandler):
+    # Keep logs quiet by default; systemd/journal can still show tracebacks if we print
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    # ---------- HTTP helpers ----------
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def do_OPTIONS(self) -> None:
@@ -223,6 +211,56 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def do_HEAD(self) -> None:
+        # Mirror GET routing but suppress body
+        self._head_only = True  # type: ignore[attr-defined]
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False  # type: ignore[attr-defined]
+
+    def _is_head(self) -> bool:
+        return bool(getattr(self, "_head_only", False))
+
+    def _safe_write(self, body: bytes) -> None:
+        if self._is_head():
+            return
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            return
+        except ConnectionResetError:
+            return
+
+    def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
+        body = json.dumps(payload, indent=2).encode("utf-8")
+        self.send_response(code)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self._safe_write(body)
+
+    def _read_json_body(self) -> Dict[str, Any]:
+        try:
+            clen = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            clen = 0
+
+        if clen <= 0:
+            return {}
+        if clen > MAX_BODY_BYTES:
+            return {"_error": "body_too_large"}
+
+        raw = self.rfile.read(clen)
+        try:
+            obj = json.loads(raw.decode("utf-8", errors="replace"))
+            return obj if isinstance(obj, dict) else {"_error": "json_not_object"}
+        except Exception:
+            return {"_error": "json_parse_error"}
+
+    # ---------- Redis ----------
     def _redis(self) -> redis.Redis:
         r = redis.Redis(
             host=REDIS_HOST,
@@ -243,37 +281,8 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             return False
         return k.startswith("rt:")
 
-    def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
-        body = json.dumps(payload, indent=2).encode("utf-8")
-        self.send_response(code)
-        self._cors()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _read_json_body(self) -> Dict[str, Any]:
-        try:
-            clen = int(self.headers.get("Content-Length", "0"))
-        except Exception:
-            clen = 0
-
-        if clen <= 0:
-            return {}
-        if clen > MAX_BODY_BYTES:
-            return {"_error": "body_too_large"}
-
-        raw = self.rfile.read(clen)
-        try:
-            obj = json.loads(raw.decode("utf-8", errors="replace"))
-            return obj if isinstance(obj, dict) else {"_error": "json_not_object"}
-        except Exception:
-            return {"_error": "json_parse_error"}
-
-    # ----------------------------
-    # Static serving: /ui/* and /config/*
-    # ----------------------------
-    def _serve_static(self, url_prefix: str, fs_root: Path) -> bool:
+    # ---------- Static serving (/ui/* and /config/*) ----------
+    def _serve_static(self, url_prefix: str, fs_root: Path, default_doc: str) -> bool:
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -286,18 +295,18 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
         rel = path[len(url_prefix) + 1 :]  # after "/prefix/"
         if rel == "" or rel.endswith("/"):
-            rel = rel + "index.html"
+            rel = rel + default_doc
 
         rel = unquote(rel)
 
-        # Block obvious traversal before touching filesystem
+        # Block traversal early
         if ".." in rel or rel.startswith("/") or rel.startswith("\\"):
             self.send_error(404, "not_found")
             return True
 
         candidate = (fs_root / rel).resolve()
 
-        # Ensure candidate remains under fs_root
+        # Ensure candidate stays under root
         try:
             candidate.relative_to(fs_root)
         except Exception:
@@ -321,23 +330,36 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
+
+        # Dev-friendly caching defaults: UI can be no-cache; config should be no-store.
+        if url_prefix == CFG_PREFIX:
+            self.send_header("Cache-Control", "no-store")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
         return True
 
     def _try_serve_static_ui_or_config(self) -> bool:
-        # /ui/*
-        if self._serve_static(UI_PREFIX, UI_ROOT):
+        # /ui/* -> index.html
+        if self._serve_static(UI_PREFIX, UI_ROOT, default_doc="index.html"):
             return True
-        # /config/*
-        if self._serve_static(CFG_PREFIX, CFG_ROOT):
+        # /config/* -> app.json (more useful than index.html)
+        if self._serve_static(CFG_PREFIX, CFG_ROOT, default_doc="app.json"):
             return True
         return False
 
-    # ----------------------------
-    # API handlers
-    # ----------------------------
+    # ---------- API handlers ----------
+    def _handle_healthz(self) -> None:
+        payload = {
+            "ok": True,
+            "ts": now_iso_utc(),
+            "server_time_ms": now_ms(),
+            "redis": {"host": REDIS_HOST, "port": REDIS_PORT, "db": REDIS_DB},
+        }
+        return self._write_json(200, payload)
+
     def _handle_state_batch(self) -> None:
         payload: Dict[str, Any] = {
             "source": "rt-controller",
@@ -498,7 +520,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         except Exception as e:
             payload["errors"].append(f"deploy_failed: {type(e).__name__}: {e}")
 
-        self._write_json(200, payload)
+        return self._write_json(200, payload)
 
     def _handle_nodes(self) -> None:
         payload: Dict[str, Any] = {
@@ -541,7 +563,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         except Exception as e:
             payload["errors"].append(f"nodes_failed: {type(e).__name__}: {e}")
 
-        self._write_json(200, payload)
+        return self._write_json(200, payload)
 
     def _handle_snapshot(self) -> None:
         payload: Dict[str, Any] = {
@@ -594,8 +616,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         except Exception as e:
             payload["errors"].append(f"snapshot_failed: {type(e).__name__}: {e}")
 
-        self._write_json(200, payload)
+        return self._write_json(200, payload)
 
+    # ---------- routing ----------
     def do_POST(self) -> None:
         if self.path in STATE_BATCH_PATHS:
             return self._handle_state_batch()
@@ -604,14 +627,18 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"error":"not_found"}')
+        self._safe_write(b'{"error":"not_found"}')
 
     def do_GET(self) -> None:
-        # 1) Static UI/config first (same-origin UI + API)
+        # 0) healthz
+        if self.path in HEALTHZ_PATHS:
+            return self._handle_healthz()
+
+        # 1) Static UI/config first (same-origin UI + API + config)
         if self._try_serve_static_ui_or_config():
             return
 
-        # 2) Existing API routing
+        # 2) API routing
         if self.path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
 
@@ -626,7 +653,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"error":"not_found"}')
+        self._safe_write(b'{"error":"not_found"}')
 
 
 def main() -> None:
