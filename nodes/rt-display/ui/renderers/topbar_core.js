@@ -145,40 +145,73 @@ export function renderTopbarCore(container, panel, data) {
   const sysSymbol = sysBadge.symbol;
   const sysLabel = sysBadge.label;
 
-  // 2) Time source: GPS vs SYSTEM vs unknown
+  // 2) Time semantics (prefer GPS time when fix_type >= 1)
   let timeSymbol = "●";
   let timeLabel = "TIME ?";
 
   if (!isObj(clock)) {
     timeSymbol = "●";
-    timeLabel = "TIME ?";
-  } else if (!clockFresh?.okTs || clockFresh?.stale) {
+    timeLabel = "TIME NO DATA";
+
+  } else if (!clockFresh?.okTs) {
+    timeSymbol = "●";
+    timeLabel = "TIME NO TS";
+
+  } else if (clockFresh.stale) {
     timeSymbol = "○";
     timeLabel = "TIME STALE";
+
   } else {
-    const src = typeof clock.source === "string" ? clock.source.toLowerCase() : "";
-    if (src === "gps")      { timeSymbol = "✓"; timeLabel = "GPS TIME"; }
-    else if (src === "system") { timeSymbol = "●"; timeLabel = "SYS TIME"; }
-    else if (src)          { timeSymbol = "●"; timeLabel = `TIME ${clock.source}`; }
-    else                   { timeSymbol = "●"; timeLabel = "TIME ?"; }
+    // If GPS fix_type >= 1, we consider time "GPS-derived" even without location lock.
+    const fixType = numOrNull(fix?.fix_type);
+
+    if (fixType != null && fixType >= 1) {
+      timeSymbol = "✓";
+      timeLabel = "GPS TIME";
+    } else {
+      // Not GPS-backed yet (or we don't know) → fallback to system time
+      timeSymbol = "●";
+      timeLabel = "SYS TIME";
+    }
   }
 
-  // 3) GPS fix: ✓ when has_fix, ✗ when not
+
+  // 3) GPS fix semantics
   let gpsSymbol = "●";
   let gpsLabel = "GPS ?";
 
   if (!isObj(fix)) {
     gpsSymbol = "●";
-    gpsLabel = "GPS ?";
-  } else if (!fixFresh?.okTs || fixFresh?.stale) {
+    gpsLabel = "GPS NO DATA";
+
+  } else if (!fixFresh?.okTs) {
+    gpsSymbol = "●";
+    gpsLabel = "GPS NO TS";
+
+  } else if (fixFresh.stale) {
     gpsSymbol = "○";
     gpsLabel = "GPS STALE";
+
   } else {
-    const hasFix = fix.has_fix === true || fix.has_fix === 1 || fix.has_fix === "true";
+    const fixType = numOrNull(fix.fix_type);
     const sats = numOrNull(fix.sats);
-    gpsSymbol = hasFix ? "✓" : "✗";
-    gpsLabel = hasFix ? `GPS ${sats ?? ""}`.trim() : `NO FIX ${sats ?? ""}`.trim();
+
+    if (fixType === 1) {
+      // Time-only fix (important semantic improvement)
+      gpsSymbol = "●";
+      gpsLabel = "SEARCH / TIME";
+
+    } else if (fixType >= 2) {
+      gpsSymbol = "✓";
+      gpsLabel = sats == null ? "GPS FIX" : `GPS FIX ${sats}`;
+
+    } else {
+      // fix_type === 0 or unknown
+      gpsSymbol = "✗";
+      gpsLabel = sats == null ? "NO FIX" : `NO FIX ${sats}`;
+    }
   }
+
 
 
 

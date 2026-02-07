@@ -209,8 +209,6 @@ User is red/green colorblind. Therefore:
 - Color may reinforce meaning but must never be the only signal.
 - Use distinct shapes (✅ / ❌ / ⚠️) as the primary cue.
 
-
-
 ---
 
 ## 7. Schema Versioning ##
@@ -227,7 +225,46 @@ This allows:
 
 ---
 
-## 8. What the UI Must Never Do ##
+## 8. GPS Semantics ##
+The following semantics define how GPS-related state keys are interpreted
+by the UI. These rules apply regardless of data source (system fallback,
+gpsd, NMEA, or future integrations).
+
+### rt:gps:fix
+Represents the best-known GPS receiver fix status as observed by the GPS publisher.
+
+Fields:
+- `has_fix` (bool): true only when `fix_type >= 2`
+- `fix_type` (int):
+    - `0` = no fix / no receiver / unknown
+    - `1` = time-only or “searching” (allowed but not a location fix)
+    - `2` = 2D fix (lat/lon)
+    - `3` = 3D fix (lat/lon/alt)
+- `sats` (int): satellites used (0 if unknown)
+- `source` (string): e.g. `gpsd`, `nmea`, `system`
+` `last_update_ms` (int): publisher timestamp
+
+Semantics:
+- UI should treat `fix_type < 2` as “no usable location fix”.
+- `has_fix` is derived truth: `has_fix = (fix_type >= 2)`.
+
+rt:gps:time (hash)
+Represents the best-known UTC time and its source.
+
+Fields:
+- `utc_iso` (string): ISO-8601 UTC timestamp, e.g. `2026-02-07T00:47:31Z`
+- `source` (string):
+     - `gps` = time derived from GPS receiver (preferred)
+     - `system` = OS time (fallback)
+- `last_update_ms' (int)
+
+Semantics:
+- UI may display UTC time even without a fix.
+- If `source != gps`, time is “fallback” (not “bad”).Represents the best-known GPS receiver fix status as observed by the GPS publisher.
+
+---
+
+## 9. What the UI Must Never Do ##
 The UI MUST NOT:
 - Invent node state
 - Guess status from timestamps
@@ -238,7 +275,7 @@ The UI MUST NOT:
 If something is unclear, the UI should display uncertainty, not confidence.
 
 
-## 9. When This Document Must Be Updated ##
+## 10. When This Document Must Be Updated ##
 Update this document if:
 - A new node status is introduced
 - Severity rules change
