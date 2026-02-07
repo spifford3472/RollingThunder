@@ -19,6 +19,10 @@ from typing import Any, Dict, Optional
 
 import redis
 
+from pathlib import Path
+from urllib.parse import urlparse, unquote
+import mimetypes
+
 
 HOST = os.environ.get("RT_UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("RT_UI_PORT", "8625"))
@@ -58,6 +62,45 @@ MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
 
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
+
+UI_ROOT = Path(os.getenv("RT_UI_ROOT", "/opt/rollingthunder/ui")).resolve()
+
+def try_serve_static(handler) -> bool:
+    parsed = urlparse(handler.path)
+    path = parsed.path
+
+    if path == "/ui":
+        path = "/ui/"
+    if not path.startswith("/ui/"):
+        return False
+
+    rel = path[len("/ui/"):]
+    if rel == "" or rel.endswith("/"):
+        rel = rel + "index.html"
+
+    rel = unquote(rel)
+    fs_path = (UI_ROOT / rel).resolve()
+
+    # prevent traversal
+    if not str(fs_path).startswith(str(UI_ROOT)):
+        handler.send_error(403, "forbidden")
+        return True
+
+    if not fs_path.exists() or not fs_path.is_file():
+        handler.send_error(404, "not_found")
+        return True
+
+    ctype, _ = mimetypes.guess_type(str(fs_path))
+    ctype = ctype or "application/octet-stream"
+    body = fs_path.read_bytes()
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-cache")
+    handler.end_headers()
+    handler.wfile.write(body)
+    return True
 
 
 def now_iso_utc() -> str:
@@ -537,6 +580,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"error":"not_found"}')
 
     def do_GET(self) -> None:
+        # 1) Serve static UI first (same-origin UI + API)
+        if try_serve_static(self):
+            return
+
+        # 2) Existing API routing (unchanged semantics)
         if self.path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
 
@@ -546,11 +594,13 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         if self.path in DEPLOY_PATHS:
             return self._handle_deploy()
 
+        # 3) Fallback: not found
         self.send_response(404)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"error":"not_found"}')
+
 
 
 def main() -> None:
