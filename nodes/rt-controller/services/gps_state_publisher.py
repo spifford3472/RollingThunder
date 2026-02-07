@@ -4,14 +4,13 @@ RollingThunder - GPS/Env State Publisher (rt-controller)
 
 Purpose:
 - Seed/publish predictable GPS-ish keys so UI panels can bind reliably.
-- For now uses system UTC time and placeholder GPS/temp values.
+- For now uses system UTC time and placeholder GPS values.
 - Later this can be upgraded to read GPSD / sensors without changing the UI.
 
 Keys written (hashes):
 - rt:gps:time  { utc_iso, source, last_update_ms }
 - rt:gps:fix   { has_fix, fix_type, sats, last_update_ms }
 - rt:gps:speed { mps, mph, kph, last_update_ms }
-- rt:env:temp  { f, c, source, last_update_ms }
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ POLL_MS = int(os.environ.get("RT_GPS_PUBLISH_INTERVAL_MS", "1000"))
 KEY_GPS_TIME = os.environ.get("RT_KEY_GPS_TIME", "rt:gps:time")
 KEY_GPS_FIX = os.environ.get("RT_KEY_GPS_FIX", "rt:gps:fix")
 KEY_GPS_SPEED = os.environ.get("RT_KEY_GPS_SPEED", "rt:gps:speed")
-KEY_ENV_TEMP = os.environ.get("RT_KEY_ENV_TEMP", "rt:env:temp")
+
 
 
 def now_ms() -> int:
@@ -87,14 +86,6 @@ def main() -> None:
             "last_update_ms": ts,
         })
 
-        # Temp placeholder (unknown)
-        # Use blanks so your UI can display --°F/--°C.
-        hset_dict(r, KEY_ENV_TEMP, {
-            "f": "",
-            "c": "",
-            "source": "unknown",
-            "last_update_ms": ts,
-        })
 
         time.sleep(interval)
 

@@ -127,7 +127,7 @@ def main() -> None:
         else:
             # do NOT blank c/f; just mark stale and update timestamp
             r.hset(KEY_TEMP, mapping={
-                "source": "unknown-test",
+                "source": "unknown",
                 "stale": "1",
                 "last_update_ms": ts,
             })
