@@ -40,7 +40,8 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] Add a internet "Keep-Alive function" so hotspot does not go to sleep
 
 ## 5) Stretch Ideas / R&D
-- [ ] ...
+- [ ] If rt-radio is offline then the HF Panel should not be available to select
+- [ ] If rt-wpsd is offline then the future panel DMR should not be available
 
 
 Rules:
