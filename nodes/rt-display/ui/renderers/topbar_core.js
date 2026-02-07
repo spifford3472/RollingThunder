@@ -38,15 +38,16 @@ function fmtUtcDate(d) {
  * shape-first icon: check, x, or dot
  * - symbol conveys state even if colors are hard to distinguish
  */
-function iconBadge({ symbol, label }) {
+function iconBadge({ symbol, label, opacity = 1.0 }) {
   return `
     <div class="rt-topbar-icon" title="${esc(label)}"
-         style="display:flex; flex-direction:column; align-items:center; gap:2px;">
+         style="display:flex; flex-direction:column; align-items:center; gap:2px; opacity:${opacity};">
       <div style="font-size:18px; line-height:18px;">${esc(symbol)}</div>
       <div style="font-size:10px; opacity:0.85;">${esc(label)}</div>
     </div>
   `;
 }
+
 
 function numOrNull(v) {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -94,6 +95,23 @@ function badgeFrom({
     : { symbol: badSymbol, label: badLabel };
 }
 
+function isStale(fresh) {
+  return !!fresh && fresh.okTs && fresh.stale;
+}
+
+function staleBadgeify(symbol, label, fresh, { staleSymbol = "○" } = {}) {
+  if (!fresh?.okTs) return { symbol, label, opacity: 0.85 }; // unknown timestamp
+  if (!fresh.stale) return { symbol, label, opacity: 1.0 };
+  // stale → downgrade symbol + mark label
+  const clean = String(label || "").replace(/\s+\(STALE\)$/, "");
+  return { symbol: staleSymbol, label: `${clean} (STALE)`, opacity: 0.45 };
+}
+
+// Optional: make center time/date dim when time is stale
+function staleTextOpacity(fresh, normal = 1.0, stale = 0.45) {
+  if (!fresh?.okTs) return 0.85;
+  return fresh.stale ? stale : normal;
+}
 
 
 export function renderTopbarCore(container, panel, data) {
@@ -212,6 +230,17 @@ export function renderTopbarCore(container, panel, data) {
     }
   }
 
+  // --- Phase C-3: apply staleness visualization (no new data)
+  ({ symbol: sysSymbol, label: sysLabel, opacity: sysOpacity } =
+    staleBadgeify(sysSymbol, sysLabel, sysFresh, { staleSymbol: "○" }));
+
+  ({ symbol: timeSymbol, label: timeLabel, opacity: timeOpacity } =
+    staleBadgeify(timeSymbol, timeLabel, clockFresh, { staleSymbol: "○" }));
+
+  ({ symbol: gpsSymbol, label: gpsLabel, opacity: gpsOpacity } =
+    staleBadgeify(gpsSymbol, gpsLabel, fixFresh, { staleSymbol: "○" }));
+
+  const midOpacity = staleTextOpacity(clockFresh, 1.0, 0.45);
 
 
 
@@ -233,7 +262,7 @@ export function renderTopbarCore(container, panel, data) {
 
       <!-- Middle -->
       <div class="rt-topbar-mid"
-          style="flex:1; text-align:center; display:flex; flex-direction:column; gap:2px;">
+          style="flex:1; text-align:center; display:flex; flex-direction:column; gap:2px; opacity:${midOpacity};">
         <div style="font-weight:700; font-size:18px; letter-spacing:0.5px;">${esc(utcTime)}</div>
         <div style="font-size:12px; opacity:0.85;">${esc(utcDate)}</div>
       </div>
@@ -242,9 +271,9 @@ export function renderTopbarCore(container, panel, data) {
       <div class="rt-topbar-right"
           style="min-width:210px; display:flex; justify-content:flex-end; align-items:flex-end; gap:12px;">
         <div style="display:flex; gap:10px; align-items:flex-end; white-space:nowrap;">
-          ${iconBadge({ symbol: sysSymbol, label: sysLabel })}
-          ${iconBadge({ symbol: timeSymbol, label: timeLabel })}
-          ${iconBadge({ symbol: gpsSymbol, label: gpsLabel })}
+          ${iconBadge({ symbol: sysSymbol, label: sysLabel, opacity: sysOpacity })}
+          ${iconBadge({ symbol: timeSymbol, label: timeLabel, opacity: timeOpacity })}
+          ${iconBadge({ symbol: gpsSymbol, label: gpsLabel, opacity: gpsOpacity })}
         </div>
 
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:70px; white-space:nowrap;">
