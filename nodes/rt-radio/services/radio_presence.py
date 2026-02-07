@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-rt-display presence publisher (Phase 14.2/14.3)
+rt-radio presence publisher (Phase 14.2/14.3)
 
 Tighten-ups included:
 1) No MQTT publish spam when broker is unavailable (publish loop is gated).
