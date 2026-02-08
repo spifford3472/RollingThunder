@@ -68,6 +68,18 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes /opt/rollingthunder/tools &&
   sudo chmod 755 /etc/rollingthunder
 "
+echo "[push] Ensure mosquitto_pub exists (mosquitto-clients)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "
+    set -e
+    if ! command -v mosquitto_pub >/dev/null 2>&1; then
+      sudo apt-get update
+      sudo apt-get install -y mosquitto-clients
+    fi
+  "
+else
+  echo "[dry] would ensure mosquitto-clients installed"
+fi
 
 # node.json (as you had it)
 NODE_JSON_SRC="${REPO_ROOT}/deploy/common/node_json/${TARGET_HOST}.node.json"
