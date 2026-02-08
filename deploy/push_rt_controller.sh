@@ -94,6 +94,7 @@ RSYNC_EXCLUDES=(
   --exclude='.pytest_cache/'
   --exclude='.venv/'
   --exclude='.git/'
+  --exclude='.dev/'
 )
 
 # ---- USER-OWNED SYNC (node code) ----
@@ -219,6 +220,9 @@ if [[ "${DRY_RUN}" != "1" ]]; then
 else
   echo "[dry] would record deployed commit ${GIT_SHA}"
 fi
+
+#Safety cleanup: remove old UI dev dir if it exists (it shouldn't, but just in case)
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf /opt/rollingthunder/ui/dev || true"
 
 # Smoke checks
 if [[ "${DRY_RUN}" != "1" ]]; then
