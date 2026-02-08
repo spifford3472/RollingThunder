@@ -235,6 +235,13 @@ else
   echo "[dry] would remove /opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py if present"
 fi
 
+# Guardrail: service executables must NOT live in node tree
+if [[ -f "${NODE_SRC_DIR}/node_presence_ingestor.py" ]]; then
+  echo "[error] node_presence_ingestor.py found under nodes/rt-controller/. It must live under nodes/rt-controller/services/ only."
+  exit 2
+fi
+
+
 # Smoke checks
 if [[ "${DRY_RUN}" != "1" ]]; then
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
