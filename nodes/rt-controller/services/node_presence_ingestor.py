@@ -118,20 +118,21 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     role = msg.get("role")
     role_s = safe_str(role, 50) if isinstance(role, str) else "unknown"
 
-    # --- IP extraction: accept both msg["ip"] and msg["net"]["ip"] ---
+    # --- IP extraction: accept either top-level "ip" or net.ip (preferred) ---
     ip = None
 
-    # 1) top-level ip
-    ip_val = msg.get("ip")
-    if isinstance(ip_val, str) and ip_val.strip():
-        ip = ip_val.strip()
-
-    # 2) nested net.ip (preferred if present)
+    # 1) net.ip (preferred)
     net = msg.get("net")
     if isinstance(net, dict):
-        ip2 = net.get("ip")
-        if isinstance(ip2, str) and ip2.strip():
-            ip = ip2.strip()
+        ip_val = net.get("ip")
+        if isinstance(ip_val, str) and ip_val.strip():
+            ip = ip_val.strip()
+
+    # 2) top-level ip (compat / legacy / simple publishers)
+    if not ip:
+        ip_val = msg.get("ip")
+        if isinstance(ip_val, str) and ip_val.strip():
+            ip = ip_val.strip()
 
 
     render_ok = None
@@ -160,6 +161,7 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
         "node_ts": node_ts_s,           # node timestamp (informational)
         "last_update_ms": str(ms),
     }
+
 
 
     if hostname_s:
