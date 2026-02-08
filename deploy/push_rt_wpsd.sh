@@ -18,19 +18,29 @@ fi
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-wpsd/"
 NODE_DST_DIR="/opt/rollingthunder/nodes/rt-wpsd/"
 
-UNIT_SRC="${REPO_ROOT}/nodes/rt-wpsd/systemd/rt-wpsd-presence.service"
-UNIT_DST="/etc/systemd/system/rt-wpsd-presence.service"
+TOOLS_SRC_DIR="${NODE_SRC_DIR}/tools/"
+TOOLS_DST_DIR="/opt/rollingthunder/tools/"
 
-UNITS=("rt-wpsd-presence.service")
+SVC_SRC_DIR="${NODE_SRC_DIR}/services/"
+SVC_DST_DIR="${NODE_DST_DIR}/services/"
+
+SYSTEMD_DIR="${NODE_SRC_DIR}/systemd"
+UNIT_DST_DIR="/etc/systemd/system"
+
+# Units present in your repo:
+UNITS=(
+  "rt-deploy-report-publisher.service"
+  "rt-deploy-report-publisher.timer"
+  "rt-presence-publisher.service"
+  "rt-presence-publisher.timer"
+)
+
+# Optional legacy/special unit (only if you truly want it enabled)
+OPTIONAL_UNITS=(
+  "rt-wpsd-presence.service"
+)
+
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
-
-# Optional deploy report publisher bits (only if you have them)
-DEPLOY_TOOL_SRC="${REPO_ROOT}/nodes/rt-wpsd/tools/publish_deploy_report.sh"
-DEPLOY_TOOL_DST="/opt/rollingthunder/tools/publish_deploy_report.sh"
-DEPLOY_SVC_SRC="${REPO_ROOT}/nodes/rt-wpsd/systemd/rt-deploy-report-publisher.service"
-DEPLOY_TMR_SRC="${REPO_ROOT}/nodes/rt-wpsd/systemd/rt-deploy-report-publisher.timer"
-DEPLOY_SVC_DST="/etc/systemd/system/rt-deploy-report-publisher.service"
-DEPLOY_TMR_DST="/etc/systemd/system/rt-deploy-report-publisher.timer"
 
 RSYNC_EXCLUDES=(
   --exclude='__pycache__/'
@@ -41,55 +51,93 @@ RSYNC_EXCLUDES=(
 )
 
 fail_missing_dir "${NODE_SRC_DIR}"
-fail_missing "${UNIT_SRC}"
+fail_missing_dir "${TOOLS_SRC_DIR}"
+fail_missing_dir "${SYSTEMD_DIR}"
 
-echo "[push] Ensure runtime dirs exist"
+for u in "${UNITS[@]}"; do
+  fail_missing "${SYSTEMD_DIR}/${u}"
+done
+
+# Optional unit sanity check (don’t fail if missing)
+HAS_OPTIONAL=0
+if [[ -f "${SYSTEMD_DIR}/rt-wpsd-presence.service" ]]; then
+  HAS_OPTIONAL=1
+fi
+
+echo "[push] Ensure runtime dirs exist (and are user-owned where needed)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  sudo mkdir -p /opt/rollingthunder/nodes/rt-wpsd /opt/rollingthunder/tools /opt/rollingthunder/.deploy /etc/rollingthunder &&
-  sudo chown root:root /etc/rollingthunder &&
-  sudo chmod 755 /etc/rollingthunder &&
-  sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes/rt-wpsd /opt/rollingthunder/tools
+  sudo mkdir -p /opt/rollingthunder/nodes/rt-wpsd /opt/rollingthunder/tools /opt/rollingthunder/.deploy /etc/rollingthunder
+  sudo chown root:root /etc/rollingthunder
+  sudo chmod 755 /etc/rollingthunder
+  sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes/rt-wpsd /opt/rollingthunder/tools /opt/rollingthunder/.deploy
 "
 
-echo "[push] Sync node subtree -> ${NODE_DST_DIR} (user-owned)"
+echo "[push] Sync tools -> ${TOOLS_DST_DIR} (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-group --no-perms --omit-dir-times \
   "${RSYNC_EXCLUDES[@]}" \
-  --exclude='systemd/' \
-  "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
+  "${TOOLS_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${TOOLS_DST_DIR}"
 
+echo "[push] Sync optional python services -> ${SVC_DST_DIR} (user-owned)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --no-group --no-perms --omit-dir-times \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${SVC_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${SVC_DST_DIR}"
+
+echo "[push] Ensure tool scripts executable"
 if [[ "${DRY_RUN}" != "1" ]]; then
-  push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${UNIT_SRC}" "${UNIT_DST}" "644"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+    chmod +x '${TOOLS_DST_DIR}/publish_presence.sh' || true
+    chmod +x '${TOOLS_DST_DIR}/publish_deploy_report.sh' || true
+  "
+else
+  echo "[dry] would chmod +x publish_presence.sh publish_deploy_report.sh"
+fi
 
-  # Optional deploy-report tool + units (only if present in repo)
-  if [[ -f "${DEPLOY_TOOL_SRC}" && -f "${DEPLOY_SVC_SRC}" && -f "${DEPLOY_TMR_SRC}" ]]; then
-    echo "[push] Install deploy report tool -> ${DEPLOY_TOOL_DST} (user-owned)"
-    rsync -avz --checksum --itemize-changes \
-      --no-group --no-perms --omit-dir-times \
-      "${DEPLOY_TOOL_SRC}" "${TARGET_USER}@${TARGET_HOST}:${DEPLOY_TOOL_DST}"
-    ssh "${TARGET_USER}@${TARGET_HOST}" "chmod +x '${DEPLOY_TOOL_DST}' || true"
+echo "[push] Install systemd units (root-owned)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  for u in "${UNITS[@]}"; do
+    push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+      "${SYSTEMD_DIR}/${u}" "${UNIT_DST_DIR}/${u}" "644"
+  done
 
-    push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${DEPLOY_SVC_SRC}" "${DEPLOY_SVC_DST}" "644"
-    push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${DEPLOY_TMR_SRC}" "${DEPLOY_TMR_DST}" "644"
-    UNITS+=("rt-deploy-report-publisher.timer" "rt-deploy-report-publisher.service")
-    UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
+  if [[ "${HAS_OPTIONAL}" == "1" ]]; then
+    push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+      "${SYSTEMD_DIR}/rt-wpsd-presence.service" "${UNIT_DST_DIR}/rt-wpsd-presence.service" "644"
+    # If you want it enabled, uncomment next line:
+    # UNITS+=("rt-wpsd-presence.service"); UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
   fi
+else
+  echo "[dry] would install unit files to ${UNIT_DST_DIR}"
+fi
 
-  echo "[push] systemd daemon-reload + enable + restart"
+echo "[push] systemd daemon-reload + enable + restart"
+if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     sudo systemctl daemon-reload
     sudo systemctl enable ${UNITS_STR}
     sudo systemctl restart ${UNITS_STR}
   "
+else
+  echo "[dry] would daemon-reload + enable + restart: ${UNITS[*]}"
+fi
 
-  GIT_SHA="$(cd "${REPO_ROOT}" && git rev-parse --short HEAD)"
+GIT_SHA="$(cd "${REPO_ROOT}" && git rev-parse --short HEAD)"
+if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-    sudo mkdir -p /opt/rollingthunder/.deploy
     echo ${GIT_SHA} | sudo tee /opt/rollingthunder/.deploy/DEPLOYED_COMMIT >/dev/null
   "
 else
-  echo "[dry] would push ${UNIT_DST} and restart ${UNITS[*]}"
-  echo "[dry] would record deployed commit"
+  echo "[dry] would record deployed commit ${GIT_SHA}"
 fi
 
-echo "[push] Done."
+if [[ "${DRY_RUN}" != "1" ]]; then
+  echo "[smoke] timer status (non-fatal)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    sudo systemctl --no-pager --full status rt-presence-publisher.timer | sed -n '1,25p' || true
+    sudo systemctl --no-pager --full status rt-deploy-report-publisher.timer | sed -n '1,25p' || true
+    exit 0
+  "
+fi
+
+echo "[push] Done. Deployed commit ${GIT_SHA}"
