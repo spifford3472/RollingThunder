@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=spiff
-Environment=RT_NODE_ROLE=display
+Environment=RT_NODE_ROLE=radio
 # If hostname lookup for rt-radio fails, uncomment and set IP:
 # Environment=RT_MQTT_HOST=192.168.8.191
 ExecStart=/opt/rollingthunder/tools/publish_deploy_report.sh
