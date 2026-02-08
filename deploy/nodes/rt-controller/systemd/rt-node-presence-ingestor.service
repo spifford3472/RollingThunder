@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=spiff
-ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/node_presence_ingestor.py
 Restart=always
 RestartSec=2
 

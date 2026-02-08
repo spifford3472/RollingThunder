@@ -95,7 +95,6 @@ RSYNC_EXCLUDES=(
   --exclude='.venv/'
   --exclude='.git/'
   --exclude='.dev/'
-  --exclude='services/'
 )
 
 # ---- USER-OWNED SYNC (node code) ----
@@ -149,6 +148,7 @@ else
 
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     sudo rsync -a --delete ${TMP_UI_REMOTE}/ ${UI_DST_DIR}/
+    sudo chown -R root:root ${UI_DST_DIR}
     sudo chmod -R 755 ${UI_DST_DIR}
     rm -rf ${TMP_UI_REMOTE}
   "
@@ -172,6 +172,7 @@ else
 
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     sudo rsync -a --delete ${TMP_CFG_REMOTE}/ ${CFG_DST_DIR}/
+    sudo chown -R root:root ${CFG_DST_DIR}
     sudo chmod -R 755 ${CFG_DST_DIR}
     rm -rf ${TMP_CFG_REMOTE}
   "
@@ -198,6 +199,12 @@ if [[ "${DRY_RUN}" != "1" ]]; then
 else
   echo "[dry] would push systemd unit files to /etc/systemd/system/"
 fi
+
+echo "[guard] rt-node-presence-ingestor ExecStart must point to /opt/rollingthunder/services/"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  systemctl show -p ExecStart rt-node-presence-ingestor.service | grep -q '/opt/rollingthunder/services/node_presence_ingestor.py' \
+    || (echo '[error] rt-node-presence-ingestor ExecStart is wrong' && systemctl show -p ExecStart rt-node-presence-ingestor.service && exit 2)
+"
 
 # systemd actions
 echo "[push] systemd daemon-reload + enable + restart"

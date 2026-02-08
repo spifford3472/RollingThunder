@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TARGET_HOST="${1:-ki5vnb-dmr2}"
-TARGET_USER="${RT_SSH_USER:-spiff}"
+TARGET_USER="${RT_SSH_USER:-pi-star}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
