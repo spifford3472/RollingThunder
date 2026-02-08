@@ -225,6 +225,16 @@ fi
 #Safety cleanup: remove old UI dev dir if it exists (it shouldn't, but just in case)
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf /opt/rollingthunder/ui/dev || true"
 
+# Clean deprecated duplicate(s) that must never exist on target
+if [[ "${DRY_RUN}" != "1" ]]; then
+  echo "[push] Remove deprecated node-level copies of service executables (if any)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+    rm -f /opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py || true
+  "
+else
+  echo "[dry] would remove /opt/rollingthunder/nodes/rt-controller/node_presence_ingestor.py if present"
+fi
+
 # Smoke checks
 if [[ "${DRY_RUN}" != "1" ]]; then
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
