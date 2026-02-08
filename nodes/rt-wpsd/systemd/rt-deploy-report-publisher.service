@@ -1,0 +1,13 @@
+[Unit]
+Description=RollingThunder Deploy Report Publisher (MQTT, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi-star
+Environment=RT_NODE_ID=ki5vnb-dmr2
+Environment=RT_NODE_ROLE=external
+Environment=RT_MQTT_HOST=rt-controller
+Environment=RT_MQTT_PORT=1883
+ExecStart=/opt/rollingthunder/tools/publish_deploy_report.sh
