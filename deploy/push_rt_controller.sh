@@ -95,6 +95,7 @@ RSYNC_EXCLUDES=(
   --exclude='.venv/'
   --exclude='.git/'
   --exclude='.dev/'
+  --exclude='services/'
 )
 
 # ---- USER-OWNED SYNC (node code) ----
