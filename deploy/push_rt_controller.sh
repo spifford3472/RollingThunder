@@ -26,11 +26,19 @@ NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
 SERVICES_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/services/"
 OPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/ops/"
 
+# Thin-client UI/runtime sources (served by rt-controller)
+UI_SRC_DIR="${REPO_ROOT}/nodes/rt-display/ui/"
+CFG_SRC_DIR="${REPO_ROOT}/config/"
+
 # --- Dest roots ---
 NODE_DST_DIR="/opt/rollingthunder/nodes/rt-controller/"
 SERVICES_DST_DIR="/opt/rollingthunder/services/"
 STATE_ENV_SRC="${OPS_SRC_DIR}/service_state_publisher.env.template"
 STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
+
+# Thin-client UI/runtime destinations (served by rt-controller)
+UI_DST_DIR="/opt/rollingthunder/ui/"
+CFG_DST_DIR="/opt/rollingthunder/config/"
 
 UNITS=(
   "rollingthunder-controller.service"
@@ -38,7 +46,7 @@ UNITS=(
   "rt-ui-snapshot-api.service"
   "rt-service-state-publisher.service"
   "rt-node-presence-ingestor.service"
-  #Deploy Report Publisher (cntrollr -> Redis)
+  # Deploy Report Publisher (controller -> Redis)
   "rt-deploy-report-controller.service"
   "rt-deploy-report-controller.timer"
   "rt-gps-state-publisher.service"
@@ -51,21 +59,33 @@ UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 # Ensure dirs
 echo "[push] Ensure runtime dirs exist"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  sudo mkdir -p /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/nodes/rt-controller &&
-  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder &&
-  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder
+  sudo mkdir -p \
+    /opt/rollingthunder/services \
+    /etc/rollingthunder \
+    /opt/rollingthunder/nodes/rt-controller \
+    /opt/rollingthunder/ui \
+    /opt/rollingthunder/config &&
+  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config &&
+  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config
 "
 
 # Debug / validation
 echo "[debug] NODE_SRC_DIR=${NODE_SRC_DIR}"
 echo "[debug] SERVICES_SRC_DIR=${SERVICES_SRC_DIR}"
 echo "[debug] OPS_SRC_DIR=${OPS_SRC_DIR}"
+echo "[debug] UI_SRC_DIR=${UI_SRC_DIR}"
+echo "[debug] CFG_SRC_DIR=${CFG_SRC_DIR}"
 ls -la "${NODE_SRC_DIR}" || true
 
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
+
+# Thin-client runtime assets must exist locally in repo
+fail_missing_dir "${UI_SRC_DIR}"
+fail_missing_dir "${CFG_SRC_DIR}"
+fail_missing "${CFG_SRC_DIR}/app.json"
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(
@@ -90,14 +110,11 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
 echo "[push] Sync services subtree -> ${SERVICES_DST_DIR} (root-owned)"
 
 if [[ "${DRY_RUN}" == "1" ]]; then
-  # Pure diff view: do NOT stage to /tmp or run sudo.
-  # This still gives you the "what would change" list.
   echo "[dry] services drift report:"
   rsync -avz --checksum --itemize-changes --dry-run \
     "${RSYNC_EXCLUDES[@]}" \
     "${SERVICES_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${SERVICES_DST_DIR}"
 else
-  # Stage to /tmp as user, then install to root-owned destination via sudo rsync.
   TMP_REMOTE="/tmp/rt_services_push.$$"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf ${TMP_REMOTE}; mkdir -p ${TMP_REMOTE}"
 
@@ -109,6 +126,52 @@ else
     sudo rsync -a --delete ${TMP_REMOTE}/ ${SERVICES_DST_DIR}/
     sudo chmod -R 755 ${SERVICES_DST_DIR}
     rm -rf ${TMP_REMOTE}
+  "
+fi
+
+# ---- ROOT-OWNED SYNC (thin-client UI assets) ----
+echo "[push] Sync UI assets -> ${UI_DST_DIR} (root-owned, served at /ui/*)"
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "[dry] ui drift report:"
+  rsync -avz --checksum --itemize-changes --dry-run \
+    "${RSYNC_EXCLUDES[@]}" \
+    "${UI_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${UI_DST_DIR}"
+else
+  TMP_UI_REMOTE="/tmp/rt_ui_push.$$"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf ${TMP_UI_REMOTE}; mkdir -p ${TMP_UI_REMOTE}"
+
+  rsync -avz --checksum --itemize-changes \
+    "${RSYNC_EXCLUDES[@]}" \
+    "${UI_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${TMP_UI_REMOTE}/"
+
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+    sudo rsync -a --delete ${TMP_UI_REMOTE}/ ${UI_DST_DIR}/
+    sudo chmod -R 755 ${UI_DST_DIR}
+    rm -rf ${TMP_UI_REMOTE}
+  "
+fi
+
+# ---- ROOT-OWNED SYNC (thin-client config assets) ----
+echo "[push] Sync config assets -> ${CFG_DST_DIR} (root-owned, served at /config/*)"
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "[dry] config drift report:"
+  rsync -avz --checksum --itemize-changes --dry-run \
+    "${RSYNC_EXCLUDES[@]}" \
+    "${CFG_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${CFG_DST_DIR}"
+else
+  TMP_CFG_REMOTE="/tmp/rt_cfg_push.$$"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf ${TMP_CFG_REMOTE}; mkdir -p ${TMP_CFG_REMOTE}"
+
+  rsync -avz --checksum --itemize-changes \
+    "${RSYNC_EXCLUDES[@]}" \
+    "${CFG_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${TMP_CFG_REMOTE}/"
+
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+    sudo rsync -a --delete ${TMP_CFG_REMOTE}/ ${CFG_DST_DIR}/
+    sudo chmod -R 755 ${CFG_DST_DIR}
+    rm -rf ${TMP_CFG_REMOTE}
   "
 fi
 
@@ -160,7 +223,15 @@ fi
 # Smoke checks
 if [[ "${DRY_RUN}" != "1" ]]; then
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
+
+  echo "[smoke] api nodes"
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
+
+  echo "[smoke] ui index"
+  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/ui/index.html" 5 1.5
+
+  echo "[smoke] config app.json"
+  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/config/app.json" 5 1.5
 
   echo "[smoke] redis ping"
   ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli ping || true"
@@ -179,7 +250,6 @@ if [[ "${DRY_RUN}" != "1" ]]; then
 
   echo "[smoke] deploy report key rt:deploy:report:rt-controller"
   ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli GET rt:deploy:report:rt-controller | head -c 200 && echo || true"
-
 else
   echo "[dry] skipping smoke checks"
 fi
