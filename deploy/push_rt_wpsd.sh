@@ -35,10 +35,6 @@ UNITS=(
   "rt-presence-publisher.timer"
 )
 
-# Optional legacy/special unit (only if you truly want it enabled)
-OPTIONAL_UNITS=(
-  "rt-wpsd-presence.service"
-)
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -58,11 +54,6 @@ for u in "${UNITS[@]}"; do
   fail_missing "${SYSTEMD_DIR}/${u}"
 done
 
-# Optional unit sanity check (don’t fail if missing)
-HAS_OPTIONAL=0
-if [[ -f "${SYSTEMD_DIR}/rt-wpsd-presence.service" ]]; then
-  HAS_OPTIONAL=1
-fi
 
 echo "[push] Ensure runtime dirs exist (and are user-owned where needed)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
@@ -101,15 +92,6 @@ if [[ "${DRY_RUN}" != "1" ]]; then
       "${SYSTEMD_DIR}/${u}" "${UNIT_DST_DIR}/${u}" "644"
   done
 
-  if [[ "${HAS_OPTIONAL}" == "1" ]]; then
-    push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
-      "${SYSTEMD_DIR}/rt-wpsd-presence.service" "${UNIT_DST_DIR}/rt-wpsd-presence.service" "644"
-    # If you want it enabled, uncomment next line:
-    # UNITS+=("rt-wpsd-presence.service"); UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
-  fi
-else
-  echo "[dry] would install unit files to ${UNIT_DST_DIR}"
-fi
 
 echo "[push] systemd daemon-reload + enable + restart"
 if [[ "${DRY_RUN}" != "1" ]]; then
