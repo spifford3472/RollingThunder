@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+echo "[hook pre-push] running repo invariants..."
+"${repo_root}/tools/rt_verify_repo.sh"
+echo "[hook pre-push] OK"
