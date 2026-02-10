@@ -39,6 +39,10 @@ RT_TOOLS="${RT_ROOT}/tools"
 
 UNIT_DST_DIR="/etc/systemd/system"
 
+LEGACY_UNITS=(
+  "rt-deploy-report-publisher.service"
+  "rt-deploy-report-publisher.timer"
+)
 # NOTE: rt-display-ui.service is intentionally removed.
 UNITS=(
   "rt-display-presence.service"
@@ -168,6 +172,19 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   "
 else
   echo "[dry] would stop/disable/remove rt-display-ui.service if present"
+fi
+
+echo "[push] Remove legacy deploy-report units (if present)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    sudo systemctl stop rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
+    sudo systemctl disable rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/rt-deploy-report-publisher.timer /etc/systemd/system/rt-deploy-report-publisher.service
+    sudo systemctl daemon-reload
+    exit 0
+  "
+else
+  echo \"[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}\"
 fi
 
 # ---- systemd reload + enable + restart ----

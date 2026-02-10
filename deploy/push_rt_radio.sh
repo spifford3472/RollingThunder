@@ -40,6 +40,11 @@ DEPLOY_TMR_DST="/etc/systemd/system/rt-radio-deploy-report-publisher.timer"
 # ---- Dests ----
 NODE_DST_DIR="/opt/rollingthunder/nodes/rt-radio/"
 
+LEGACY_UNITS=(
+  "rt-deploy-report-publisher.service"
+  "rt-deploy-report-publisher.timer"
+)
+
 UNITS=(
   "rt-radio-presence.service"
   "rt-radio-deploy-report-publisher.service"
@@ -110,6 +115,19 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; chmod +x '${DEPLOY_TOOL_DST}'"
 else
   echo "[dry] would rsync ${DEPLOY_TOOL_SRC} -> ${DEPLOY_TOOL_DST} and chmod +x"
+fi
+
+echo "[push] Remove legacy deploy-report units (if present)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    sudo systemctl stop rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
+    sudo systemctl disable rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/rt-deploy-report-publisher.timer /etc/systemd/system/rt-deploy-report-publisher.service
+    sudo systemctl daemon-reload
+    exit 0
+  "
+else
+  echo \"[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}\"
 fi
 
 # systemd units
