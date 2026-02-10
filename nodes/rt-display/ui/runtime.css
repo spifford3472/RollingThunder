@@ -51,3 +51,38 @@
 .rt-pill.ok   { background: rgba(46,160,67,0.18); border-color: rgba(46,160,67,0.55); }
 .rt-pill.warn { background: rgba(219,158,52,0.18); border-color: rgba(219,158,52,0.55); }
 .rt-pill.bad  { background: rgba(248,81,73,0.18); border-color: rgba(248,81,73,0.55); }
+
+/* runtime.css — add near the .rt-slot rules */
+
+.rt-slot { display:flex; flex-direction:column; gap:10px; }
+.rt-slot-hdr {
+  padding: 2px 2px 0 2px;
+}
+.rt-slot-hdr-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.rt-slot-title{
+  font-weight:700;
+  font-size:13px;
+  opacity:0.92;
+  text-transform:none;
+}
+.rt-slot-right{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.rt-slot-reason{
+  font-size:12px;
+  color:#9fb0c0;
+  max-width: 280px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+/* ensure body can’t crush */
+.rt-slot-body { min-width:0; }

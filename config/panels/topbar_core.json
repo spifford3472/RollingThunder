@@ -12,6 +12,11 @@
     { "id": "temp", "source": "state", "key": "rt:env:temp" }
   ],
   "meta": {
-    "purpose": "Always-visible status bar (time, gps, alert indicator). No actions."
+    "purpose": "Always-visible status bar (time, gps, alert indicator). No actions.",
+    "title": "Topbar",
+    "contract": {
+      "requiredBindings": ["sys_health", "clock"],
+      "allowNull": ["gps_fix", "gps_speed", "active_alerts", "temp"]
+    }
   }
 }

@@ -10,6 +10,10 @@
   ],
 
   "meta": {
-    "purpose": "Read-only deploy/drift visualizer (commit + drift state per node)."
+    "purpose": "Read-only deploy/drift visualizer (commit + drift state per node).",
+    "title": "Deploy / Drift",
+    "contract": {
+      "requiredBindings": ["deploy"]
+    }
   }
 }

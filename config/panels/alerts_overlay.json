@@ -21,6 +21,11 @@
   },
 
   "meta": {
-    "purpose": "Cross-page alert UI. Must be safe while driving."
+    "purpose": "Cross-page alert UI. Must be safe while driving.",
+    "title": "Alerts",
+    "contract": {
+      "requiredBindings": ["alerts"],
+      "allowNull": ["focused_alert"]
+    }
   }
 }

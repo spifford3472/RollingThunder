@@ -29,10 +29,15 @@ function buildRuntimeShell(root) {
   };
 }
 
+// slot has a header + body so diagnostics can’t be overwritten by renderer.
 function mkSlot(panelId) {
   const d = document.createElement("div");
   d.className = "rt-slot";
   d.dataset.panelId = String(panelId);
+  d.innerHTML = `
+    <div class="rt-slot-hdr"></div>
+    <div class="rt-slot-body"></div>
+  `;
   return d;
 }
 

@@ -6,7 +6,7 @@
   "refresh": { "mode": "poll", "intervalMs": 1000 },
 
   "bindings": [
-    {"id": "nodes", "source": "api", "url": "./dev/nodes_health.json" },
+    {"id": "nodes", "source": "api", "url": "/api/v1/ui/nodes" },
     {"id": "controller", "source": "state", "key": "rt:node:rt-controller" },
     {"id":"radio","source":"state","key":"rt:node:rt-radio"},
     {"id":"display","source":"state","key":"rt:node:rt-display"},
@@ -18,6 +18,11 @@
   ],
 
   "meta": {
-    "purpose": "At-a-glance health of nodes/services."
+    "purpose": "At-a-glance health of nodes/services.",
+    "title": "Nodes",
+    "contract": {
+      "requiredBindings": ["nodes"],
+      "allowNull": ["controller", "radio", "display", "wpsd"]
+    }
   }
 }
