@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
 
+# HARD GUARD: always validate repo invariants (even in DRY_RUN)
+verify_repo_invariants
+
 # --- repo invariants (deploy gate) ---
 deploy_entry
 

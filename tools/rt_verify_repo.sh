@@ -13,6 +13,47 @@ echo "[verify-repo] repo_root=${REPO_ROOT}"
 # Helpers (define BEFORE use)
 # ----------------------------
 
+verify_unit_name_uniqueness() {
+  echo "[verify-repo] systemd unit name uniqueness invariants..."
+
+  # Normalize:
+  #  - *.service stays *.service
+  #  - *.timer stays *.timer
+  #  - *.service.template becomes *.service (because it installs to /etc/systemd/system/foo.service)
+  local dupes
+  dupes="$(
+    find "${REPO_ROOT}/nodes" -type f \( \
+        -path "*/systemd/*.service" -o \
+        -path "*/systemd/*.timer" -o \
+        -path "*/ops/*.service.template" \
+      \) -print0 \
+    | while IFS= read -r -d '' p; do
+        local base
+        base="$(basename "$p")"
+        if [[ "$base" == *.service.template ]]; then
+          base="${base%.template}"  # -> foo.service
+        fi
+        printf "%s\t%s\n" "$base" "$p"
+      done \
+    | sort -k1,1 -k2,2 \
+    | awk -F'\t' '
+        { count[$1]++; paths[$1]=paths[$1] "\n  - " $2 }
+        END {
+          for (u in count) {
+            if (count[u] > 1) {
+              print "DUPLICATE: " u paths[u] "\n"
+            }
+          }
+        }'
+  )"
+
+  if [[ -n "$dupes" ]]; then
+    echo "[verify-repo][error] duplicate unit name(s) detected:"
+    echo "$dupes"
+    exit 2
+  fi
+}
+
 # Extract the first /opt/rollingthunder/... path mentioned anywhere in ExecStart.
 # Robust against wrappers like:
 #   ExecStart=/bin/bash -lc "/opt/rollingthunder/.../thing.sh ..."
@@ -211,15 +252,22 @@ while IFS= read -r unit; do
         die "unit '$rel' on node '${node_id}' must not ExecStart from /opt/rollingthunder/services/: ${rt_path}"
       fi
 
-      # Non-controller nodes should ExecStart from their own node subtree or from /opt/rollingthunder/tools/.
+      # Non-controller nodes: strict allow-list for any /opt/rollingthunder path referenced by ExecStart.
+      #
+      # Allowed:
+      #   - node-owned code: /opt/rollingthunder/nodes/<node_id>/...
+      #   - shared tools:    /opt/rollingthunder/tools/...
+      #   - venv binaries:   /opt/rollingthunder/.venv/...   (interpreter path etc.)
+      #
+      # Everything else under /opt/rollingthunder is forbidden.
       if [[ "$rt_path" == /opt/rollingthunder/nodes/${node_id}/* ]]; then
         : # ok
       elif [[ "$rt_path" == /opt/rollingthunder/tools/* ]]; then
-        : # ok (deploy/presence publishers)
+        : # ok
       elif [[ "$rt_path" == /opt/rollingthunder/.venv/* ]]; then
-        : # ok (we don't fully parse here)
+        : # ok
       else
-        die "unit '$rel' on node '${node_id}' has invalid ExecStart /opt/rollingthunder path: ${rt_path}"
+        die "unit '$rel' on node '${node_id}' has forbidden ExecStart /opt/rollingthunder path (allow-list violation): ${rt_path}"
       fi
       ;;
   esac
