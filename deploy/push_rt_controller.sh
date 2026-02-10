@@ -8,6 +8,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
 
+# --- repo invariants (deploy gate) ---
+deploy_entry
+
+
 DRY_RUN="${DRY_RUN:-0}"
 RSYNC_DRY=()
 if [[ "${DRY_RUN}" == "1" ]]; then

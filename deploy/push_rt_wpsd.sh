@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
 
+# --- repo invariants (deploy gate) ---
+deploy_entry
+
 DRY_RUN="${DRY_RUN:-0}"
 RSYNC_DRY=()
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -33,8 +36,8 @@ UNIT_DST_DIR="/etc/systemd/system"
 UNITS=(
   "rt-presence-publisher.service"
   "rt-presence-publisher.timer"
-  "rt-deploy-report-publisher.service"
-  "rt-deploy-report-publisher.timer"
+  "rt-wpsd-deploy-report-publisher.service"
+  "rt-wpsd-deploy-report-publisher.timer"
 )
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -54,6 +57,7 @@ fail_missing_dir "${SYSTEMD_SRC_DIR}"
 # tools required
 fail_missing "${TOOLS_SRC_DIR}/publish_deploy_report.sh"
 fail_missing "${TOOLS_SRC_DIR}/publish_presence.sh"
+
 
 # systemd required
 for u in "${UNITS[@]}"; do

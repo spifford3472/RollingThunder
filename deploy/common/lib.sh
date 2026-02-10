@@ -36,6 +36,11 @@ remote_mkdirs() {
   ' -- "$@"
 }
 
+verify_repo_invariants() {
+  echo "[deploy] verifying repo invariants..."
+  "${REPO_ROOT}/tools/rt_verify_repo.sh"
+}
+
 fail_missing_dir() {
   local p="$1"
   [[ -d "${p}" ]] || die "[error] missing dir: ${p}"
@@ -137,6 +142,11 @@ push_node_json() {
     echo "[push] ensure ${dst} exists (install-if-missing)"
     push_root_file_if_missing "${host}" "${user}" "${src}" "${dst}" "${mode}"
   fi
+}
+
+deploy_entry() {
+  # single place to enforce invariants for every deploy script
+  verify_repo_invariants
 }
 
 # ---- end lib.sh ----

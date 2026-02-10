@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
 
+# --- repo invariants (deploy gate) ---
+deploy_entry
+
 DRY_RUN="${DRY_RUN:-0}"
 RSYNC_DRY=()
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -41,8 +44,8 @@ UNITS=(
   "rt-display-presence.service"
   "rt-display-kiosk.service"
   # deploy report publisher
-  "rt-deploy-report-publisher.timer"
-  "rt-deploy-report-publisher.service"
+  "rt-display-deploy-report-publisher.timer"
+  "rt-display-deploy-report-publisher.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -60,6 +63,7 @@ fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.timer"
+
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(

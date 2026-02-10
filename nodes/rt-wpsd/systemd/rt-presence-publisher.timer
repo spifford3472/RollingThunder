@@ -2,6 +2,7 @@
 Description=Run RollingThunder Presence Publisher every 10 seconds
 
 [Timer]
+Unit=rt-presence-publisher.service
 OnBootSec=10
 OnUnitActiveSec=10
 AccuracySec=1

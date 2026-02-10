@@ -2,6 +2,7 @@
 Description=Run RollingThunder Deploy Report Publisher every 30 seconds
 
 [Timer]
+Unit=rt-wpsd-deploy-report-publisher.service
 OnBootSec=10
 OnUnitActiveSec=30
 AccuracySec=1

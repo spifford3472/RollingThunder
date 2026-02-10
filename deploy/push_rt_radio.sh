@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
 
+# --- repo invariants (deploy gate) ---
+deploy_entry
+
 DRY_RUN="${DRY_RUN:-0}"
 RSYNC_DRY=()
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -39,8 +42,8 @@ NODE_DST_DIR="/opt/rollingthunder/nodes/rt-radio/"
 
 UNITS=(
   "rt-radio-presence.service"
-  "rt-deploy-report-publisher.service"
-  "rt-deploy-report-publisher.timer"
+  "rt-radio-deploy-report-publisher.service"
+  "rt-radio-deploy-report-publisher.timer"
 )
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -61,6 +64,7 @@ fail_missing "${PRES_UNIT_SRC}"
 fail_missing "${DEPLOY_TOOL_SRC}"
 fail_missing "${DEPLOY_SVC_SRC}"
 fail_missing "${DEPLOY_TMR_SRC}"
+
 
 echo "[push] Ensure runtime dirs exist"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
