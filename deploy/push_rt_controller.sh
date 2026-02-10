@@ -234,7 +234,11 @@ else
 fi
 
 #Safety cleanup: remove old UI dev dir if it exists (it shouldn't, but just in case)
-ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf /opt/rollingthunder/ui/dev || true"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+  sudo rm -f /opt/rollingthunder/ui/dev/nodes_health.json
+  exit 0
+"
+
 
 # Clean deprecated duplicate(s) that must never exist on target
 if [[ "${DRY_RUN}" != "1" ]]; then

@@ -216,16 +216,16 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl --no-pager --full status rt-display-presence.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-kiosk.service   | sed -n '1,40p' || true
-    sudo systemctl --no-pager --full status rt-display-report-publisher.timer | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-display-deploy-report-publisher.timer | sed -n '1,40p' || true
     exit 0
   "
 
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
 
   echo "[smoke] kiosk target reachable? (non-fatal)"
-  # This only checks connectivity to controller UI endpoint
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
-    curl -sS --max-time 2 http://rt-controller:8625/ui/index.html?runtime=1&page=home >/dev/null && echo OK || echo WARN
+    curl -fsS --max-time 2 'http://rt-controller:8625/ui/index.html?runtime=1&page=home' >/dev/null \
+      && echo OK || echo WARN
     exit 0
   "
 else
