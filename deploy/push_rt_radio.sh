@@ -32,10 +32,10 @@ PRES_UNIT_DST="/etc/systemd/system/rt-radio-presence.service"
 DEPLOY_TOOL_SRC="${TOOLS_SRC_DIR}/publish_deploy_report.sh"
 DEPLOY_TOOL_DST="/opt/rollingthunder/tools/publish_deploy_report.sh"
 
-DEPLOY_SVC_SRC="${SYSTEMD_DIR}/rt-deploy-report-publisher.service"
-DEPLOY_SVC_DST="/etc/systemd/system/rt-deploy-report-publisher.service"
-DEPLOY_TMR_SRC="${SYSTEMD_DIR}/rt-deploy-report-publisher.timer"
-DEPLOY_TMR_DST="/etc/systemd/system/rt-deploy-report-publisher.timer"
+DEPLOY_SVC_SRC="${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.service"
+DEPLOY_SVC_DST="/etc/systemd/system/rt-radio-deploy-report-publisher.service"
+DEPLOY_TMR_SRC="${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
+DEPLOY_TMR_DST="/etc/systemd/system/rt-radio-deploy-report-publisher.timer"
 
 # ---- Dests ----
 NODE_DST_DIR="/opt/rollingthunder/nodes/rt-radio/"
@@ -123,7 +123,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl daemon-reload
     sudo systemctl enable ${UNITS_STR}
     sudo systemctl restart rt-radio-presence.service
-    sudo systemctl restart rt-deploy-report-publisher.timer
+    sudo systemctl restart rt-radio-deploy-report-publisher.timer
   "
 
   # Record deployed commit
@@ -142,15 +142,15 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   echo "[smoke] deploy report timer status (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "
     set +e
-    sudo systemctl --no-pager --full status rt-deploy-report-publisher.timer | sed -n '1,30p' || true
-    sudo systemctl --no-pager --full status rt-deploy-report-publisher.service | sed -n '1,30p' || true
+    sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,30p' || true
+    sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.service | sed -n '1,30p' || true
     exit 0
   "
 
   echo "[smoke] run deploy report once now (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "
     set +e
-    sudo systemctl start rt-deploy-report-publisher.service || true
+    sudo systemctl start rt-radio-deploy-report-publisher.service || true
     exit 0
   "
 else

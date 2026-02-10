@@ -133,7 +133,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   echo "[smoke] timers"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     systemctl status rt-presence-publisher.timer --no-pager | sed -n '1,25p' || true
-    systemctl status rt-deploy-report-publisher.timer --no-pager | sed -n '1,25p' || true
+    systemctl status rt-wpsd-deploy-report-publisher.timer --no-pager | sed -n '1,25p' || true
     exit 0
   "
 fi

@@ -61,8 +61,8 @@ fail_missing "${SYSTEMD_DIR}/rt-display-presence.service"
 fail_missing "${OPS_DIR}/rt-display-kiosk.service.template"
 fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
-fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.service"
-fail_missing "${SYSTEMD_DIR}/rt-deploy-report-publisher.timer"
+fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service"
+fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.timer"
 
 
 # Common rsync excludes
@@ -147,12 +147,12 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${UNIT_DST_DIR}/rt-display-kiosk.service" "644"
 
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
-    "${SYSTEMD_DIR}/rt-deploy-report-publisher.service" \
-    "${UNIT_DST_DIR}/rt-deploy-report-publisher.service" "644"
+    "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service" \
+    "${UNIT_DST_DIR}/rt-display-deploy-report-publisher.service" "644"
 
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
-    "${SYSTEMD_DIR}/rt-deploy-report-publisher.timer" \
-    "${UNIT_DST_DIR}/rt-deploy-report-publisher.timer" "644"
+    "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.timer" \
+    "${UNIT_DST_DIR}/rt-display-deploy-report-publisher.timer" "644"
 else
   echo "[dry] would install systemd units to ${UNIT_DST_DIR}: ${UNITS[*]}"
 fi
@@ -199,7 +199,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl --no-pager --full status rt-display-presence.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-kiosk.service   | sed -n '1,40p' || true
-    sudo systemctl --no-pager --full status rt-deploy-report-publisher.timer | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-display-report-publisher.timer | sed -n '1,40p' || true
     exit 0
   "
 
