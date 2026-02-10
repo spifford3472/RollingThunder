@@ -1,0 +1,20 @@
+[Unit]
+Description=RollingThunder API Server (read-only)
+After=network-online.target rollingthunder-controller.service
+Wants=network-online.target rollingthunder-controller.service
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder
+
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-controller/api_main.py --host 127.0.0.1 --port 8080
+
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
