@@ -3,7 +3,8 @@
   "type": "alerts_overlay",
   "focusable": true,
 
-  "refresh": { "mode": "push", "topic": "rt/alerts/active" },
+  "refresh": { "mode": "push", "topic": "rt/alerts/active", "fallbackPollMs": 1000 },
+
 
   "bindings": [
     { "id": "alerts", "source": "state", "key": "rt:alerts:active" },
