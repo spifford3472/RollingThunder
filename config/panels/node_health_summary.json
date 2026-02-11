@@ -8,8 +8,8 @@
   "bindings": [
     {"id": "nodes", "source": "api", "url": "/api/v1/ui/nodes" },
     {"id": "controller", "source": "state", "key": "rt:node:rt-controller" },
-    {"id":"radio","source":"state","key":"rt:node:rt-radio"},
-    {"id":"display","source":"state","key":"rt:node:rt-display"},
+    {"id": "radio","source":"state","key":"rt:node:rt-radio"},
+    {"id": "display","source":"state","key":"rt:node:rt-display"},
     {"id": "wpsd", "source": "state", "key": "rt:node:rt-wpsd" }
   ],
 

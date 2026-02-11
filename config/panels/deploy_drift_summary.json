@@ -6,7 +6,7 @@
   "refresh": { "mode": "poll", "intervalMs": 2000 },
 
   "bindings": [
-    { "id": "deploy", "source": "api", "url": "http://rt-controller:8625/api/v1/ui/deploy" }
+    { "id": "deploy", "source": "api", "url": "/api/v1/ui/deploy" }
   ],
 
   "meta": {

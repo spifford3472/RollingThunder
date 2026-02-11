@@ -40,37 +40,40 @@ function renderHdr(slot, panel, life) {
 export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   const mode = (panel?.refresh?.mode || "poll").toLowerCase();
   const pollIntervalMs = Math.max(250, Number(panel?.refresh?.intervalMs || 1000));
+  const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
   // If panel requests push, but runtime doesn't implement it yet,
   // fall back to polling at a safe cadence.
   const pushFallbackMs = Math.max(250, Number(panel?.refresh?.fallbackPollMs || 1000));
   const intervalMs = (mode === "push") ? pushFallbackMs : pollIntervalMs;
+  const topic = String(panel?.refresh?.topic || "").trim();
 
+  const pushReady =
+    mode !== "push" ? true :
+    (!!topic && typeof store?.subscribe === "function" && typeof store?.on === "function");
 
   let stopped = false;
 
   async function collectOnce() {
     const data = {};
-    const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
     const rt = { bindings: {}, ts_ms: Date.now() };
     rt.panel = {
       has_error: false,
       has_missing: false,
-      slow_bindings: [], // list of binding ids
+      slow_bindings: [],
     };
-
 
     for (const b of list) {
       const id = String(b.id);
-      const res = await store.resolve(b); // {ok,value,err,meta}
+      const res = await store.resolve(b);
       rt.bindings[id] = res;
       if (res?.ok === false) rt.panel.has_error = true;
       if (res?.ok === true && res.value == null) rt.panel.has_missing = true;
 
       const ms = Number(res?.meta?.ms ?? NaN);
       if (Number.isFinite(ms) && ms > 1000) rt.panel.slow_bindings.push(id);
-      // back-compat: renderers still read raw values
+
       data[id] = res?.ok ? res.value : null;
 
       if (res?.ok === false) {
@@ -87,17 +90,16 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     if (stopped) return;
 
     const data = await collectOnce();
-    slot.__rtData = data; // debug hook
+    slot.__rtData = data;
 
-    let life = classifyPanelFromResults(panel, data);
+    let life = classifyPanelFromResults(panel, list, data);
 
-    // If refresh mode is push but not implemented, force CONFIG semantics
-    // (but we still render + poll so the UI stays usable).
-    if (mode === "push") {
-      const issues = Array.isArray(life?.issues) ? life.issues.slice() : [];
-      issues.unshift("refresh:push_unimplemented");
-      life = { state: "config", issues };
-    }
+    // Push mode: only show CONFIG if push is not actually wired.
+    //if (mode === "push" && !pushReady) {
+    //  const issues = Array.isArray(life?.issues) ? life.issues.slice() : [];
+    //  issues.unshift(!topic ? "refresh:missing_topic" : "refresh:push_unimplemented");
+    //  life = { state: "config", issues };
+    //}
 
     data.__rt.lifecycle = life;
 
@@ -107,8 +109,23 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
   tick();
 
-  // Always run a timer for now.
-  // For "push" we are intentionally in fallback polling mode until bus subscriptions exist.
-  const t = setInterval(tick, intervalMs);
-  slot.__rtStop = () => { stopped = true; clearInterval(t); };
+  let unsub = null;
+
+  if (mode === "push" && pushReady) {
+    store.subscribe(topic);
+    unsub = store.on(topic, () => tick());
+  }
+
+  const fallbackMs =
+    mode === "push"
+      ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
+      : intervalMs;
+
+  const t = setInterval(tick, fallbackMs);
+
+  slot.__rtStop = () => {
+    stopped = true;
+    clearInterval(t);
+    if (typeof unsub === "function") unsub();
+  };
 }

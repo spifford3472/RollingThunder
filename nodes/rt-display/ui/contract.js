@@ -1,6 +1,15 @@
 // contract.js
 function isObj(v) { return v && typeof v === "object"; }
 
+function coerceBindings(panel) {
+  const b = panel?.bindings;
+  if (Array.isArray(b)) return b;
+  if (b && typeof b === "object") {
+    return Object.entries(b).map(([id, spec]) => ({ id, ...(spec || {}) }));
+  }
+  return [];
+}
+
 function src(binding) {
   return String(binding?.source || "").toLowerCase().trim();
 }
@@ -45,28 +54,25 @@ export function validateBindingSpec(binding) {
  *   allowNull: ["idX"]                // ids allowed to be null without counting against "ok"
  * }
  */
-export function classifyPanelFromResults(panel, data) {
+
+export function classifyPanelFromResults(panel, bindings, data) {
   const results = data?.__rt?.bindings || {};
 
-  // Validate binding specs (config)
-  const bindings = Array.isArray(panel?.bindings) ? panel.bindings : [];
+  const list = Array.isArray(bindings) ? bindings : [];
   const configIssues = [];
 
-  for (const b of bindings) {
+  for (const b of list) {
     if (!b?.id) { configIssues.push("binding:missing_id"); continue; }
     const v = validateBindingSpec(b);
     if (!v.ok) configIssues.push(`binding:${b.id}:${v.code}`);
   }
 
-  if (configIssues.length) {
-    return { state: "config", issues: configIssues };
-  }
+  if (configIssues.length) return { state: "config", issues: configIssues };
 
-  // Contract defaults (safe/back-compat)
   const contract = isObj(panel?.meta?.contract) ? panel.meta.contract : {};
   const required = Array.isArray(contract.requiredBindings)
     ? contract.requiredBindings
-    : bindings.map(b => b.id);
+    : list.map(b => b.id);
 
   const allowNull = new Set(Array.isArray(contract.allowNull) ? contract.allowNull : []);
 
