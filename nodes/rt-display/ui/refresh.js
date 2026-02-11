@@ -1,3 +1,4 @@
+// refresh.js
 import { classifyPanelFromResults } from "./contract.js";
 
 function pillHtml(kind, label) {
@@ -21,7 +22,7 @@ function renderHdr(slot, panel, life) {
     state === "config" ? pillHtml("bad", "CONFIG") :
     pillHtml("bad", "ERROR");
 
-  // driving-safe: one short reason max
+  // driving-safe: show only one short reason
   const reason = Array.isArray(life?.issues) && life.issues.length ? life.issues[0] : "";
 
   hdr.innerHTML = `
@@ -51,6 +52,8 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       const id = String(b.id);
       const res = await store.resolve(b); // {ok,value,err,meta}
       rt.bindings[id] = res;
+
+      // back-compat: renderers still read raw values
       data[id] = res?.ok ? res.value : null;
 
       if (res?.ok === false) {
@@ -68,7 +71,6 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
     const data = await collectOnce();
 
-    // ✅ Contract-based lifecycle
     const life = classifyPanelFromResults(panel, data);
     data.__rt.lifecycle = life;
 
@@ -82,6 +84,7 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     const t = setInterval(tick, intervalMs);
     slot.__rtStop = () => { stopped = true; clearInterval(t); };
   } else {
+    // push mode not implemented yet — Step 3 will handle this explicitly.
     slot.__rtStop = () => { stopped = true; };
   }
 }

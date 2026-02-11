@@ -36,6 +36,10 @@
   </style>
 </head>
 <body>
+  <!-- Runtime mounts here when ?runtime=1 -->
+  <div id="rt_mount"></div>
+
+  <!-- Legacy UI lives here -->
   <div class="wrap">
     <div class="row">
       <div class="card">
@@ -80,27 +84,63 @@
   const runtimeOn = params.get("runtime") === "1";
 
   if (runtimeOn) {
+    // Ensure mount exists + show a visible loading message
+    const mount = document.getElementById("rt_mount");
+    if (mount) {
+      mount.innerHTML = `
+        <div style="padding:24px; color:#9fb0c0; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">
+          Loading runtime…
+        </div>
+      `;
+    }
+
+    const legacyWrap = document.querySelector(".wrap");
+
     // Load the config-driven runtime (ES module)
     const s = document.createElement("script");
     s.type = "module";
     s.src = "./runtime.js";
+
+    // If runtime loads, THEN hide legacy
+    s.onload = () => {
+      window.__rt_runtime_loaded = true;
+      if (legacyWrap) legacyWrap.style.display = "none";
+    };
+
+    // If runtime fails, keep legacy visible and show message
     s.onerror = () => {
       console.error("Failed to load runtime.js; falling back to legacy UI");
+      if (mount) {
+        mount.innerHTML = `
+          <div style="padding:24px; color:#f85149; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">
+            Runtime failed to load. Showing legacy UI.
+          </div>
+        `;
+      }
       legacyBoot();
     };
-    document.title += " (runtime)";
-    document.head.appendChild(s);
-    window.__rt_runtime_loaded = false;
 
-    // If runtime doesn't mark itself loaded quickly, fall back to legacy.
+    document.title += " (runtime)";
+    window.__rt_runtime_loaded = false;
+    document.head.appendChild(s);
+
+    // If runtime doesn't load quickly, fall back (but DO NOT blank the page)
     setTimeout(() => {
       if (!window.__rt_runtime_loaded) {
-        console.error("runtime.js did not signal ready; falling back to legacy UI");
+        console.error("runtime.js did not load; falling back to legacy UI");
+        if (mount) {
+          mount.innerHTML = `
+            <div style="padding:24px; color:#f85149; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">
+              Runtime did not start. Showing legacy UI.
+            </div>
+          `;
+        }
         legacyBoot();
       }
-    }, 1200);    
+    }, 1500);
     return;
   }
+
 
   legacyBoot();
 

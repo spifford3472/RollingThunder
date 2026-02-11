@@ -1,5 +1,3 @@
-window.__rt_runtime_loaded = true;
-
 import { loadConfigBundle } from "./config_loader.js";
 import { createRendererRegistry } from "./renderer_registry.js";
 import { createBindingStore } from "./binding_store.js";
@@ -34,12 +32,20 @@ function mkSlot(panelId) {
   const d = document.createElement("div");
   d.className = "rt-slot";
   d.dataset.panelId = String(panelId);
-  d.innerHTML = `
-    <div class="rt-slot-hdr"></div>
-    <div class="rt-slot-body"></div>
-  `;
+
+  // runtime-owned header (never rendered by panels)
+  const hdr = document.createElement("div");
+  hdr.className = "rt-slot-hdr";
+
+  // renderer-owned body (panel renders only here)
+  const body = document.createElement("div");
+  body.className = "rt-slot-body";
+
+  d.appendChild(hdr);
+  d.appendChild(body);
   return d;
 }
+
 
 function coerceBindings(panel) {
   const b = panel?.bindings;
@@ -52,7 +58,8 @@ function coerceBindings(panel) {
   const params = new URLSearchParams(location.search);
   const pageId = params.get("page") || "home";
 
-  const root = document.querySelector(".wrap") || document.body;
+  const root = document.getElementById("rt_mount") || document.body;
+
 
   // attach runtime css
   const css = document.createElement("link");
@@ -95,19 +102,24 @@ function coerceBindings(panel) {
   const store = createBindingStore();
 
   root.querySelectorAll(".rt-slot").forEach((slot) => {
-    const panelId = slot.dataset.panelId;
-    const panel = bundle.panelsById[panelId];
-    if (!panel) return renderPanelError(slot, { title: "Missing panel", detail: panelId });
+  const panelId = slot.dataset.panelId;
 
-    const renderer = registry.get(panel.type);
-    if (!renderer) return renderPanelError(slot, { title: "No renderer", detail: panel.type });
+  // Renderer-owned body (never render into slot root)
+  const bodyEl = slot.querySelector(".rt-slot-body") || slot;
 
-    startPanelRefresh({
-      slot,
-      panel,
-      bindings: coerceBindings(panel),
-      store,
-      render: (data) => renderer(slot, panel, data),
-    });
+  const panel = bundle.panelsById[panelId];
+  if (!panel) return renderPanelError(bodyEl, { title: "Missing panel", detail: panelId });
+
+  const renderer = registry.get(panel.type);
+  if (!renderer) return renderPanelError(bodyEl, { title: "No renderer", detail: panel.type });
+
+  startPanelRefresh({
+    slot,
+    panel,
+    bindings: coerceBindings(panel),
+    store,
+    render: (data) => renderer(bodyEl, panel, data),
   });
+});
+
 })();
