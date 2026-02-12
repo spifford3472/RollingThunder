@@ -94,7 +94,6 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   }
 
   async function tick() {
-    console.log("TICK", panel?.id, Date.now());
 
     if (stopped) return;
 
@@ -149,6 +148,7 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
         for (const k of keys) {
           const ks = (typeof k === "string") ? k.trim() : String(k || "");
           if (ks && panelStateKeys.has(ks)) {
+            console.log("PUSH REFRESH", panel?.id, ks);
             tick();
             return;
           }
