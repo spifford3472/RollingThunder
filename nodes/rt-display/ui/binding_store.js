@@ -225,6 +225,13 @@ export function createBindingStore(opts = {}) {
     };
   }
 
+  // Clean shutdown of shared SSE when page unloads (prevents Firefox warning)
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", () => {
+      try { _closeSse(); } catch (_) {}
+    });
+  }
+
   return {
     subscribe,
     on,

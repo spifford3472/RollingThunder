@@ -148,7 +148,6 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
         for (const k of keys) {
           const ks = (typeof k === "string") ? k.trim() : String(k || "");
           if (ks && panelStateKeys.has(ks)) {
-            console.log("PUSH REFRESH", panel?.id, ks);
             tick();
             return;
           }
