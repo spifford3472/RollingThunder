@@ -153,6 +153,9 @@ export function createBindingStore(opts = {}) {
 
     // IMPORTANT: controller emits `event: message`, not default "message"
     es.addEventListener("message", (ev) => {
+
+      console.log("BUS msg raw", ev.data);
+
       const obj = _parseJson(ev?.data);
       if (!obj) return;
 
@@ -169,19 +172,19 @@ export function createBindingStore(opts = {}) {
     });
 
     es.addEventListener("eos", () => {
-      // Stream ended intentionally (bounded); reconnect if still subscribed.
+      // Stream ended intentionally (bounded). Force-close, then reconnect if still needed.
       _esConnected = false;
+      _closeSse();               // <-- KEY: kill the dead EventSource
       _scheduleReconnect("eos");
     });
 
     es.onerror = () => {
-      // EventSource will auto-retry on network errors.
-      // Keep quiet; we can add rate-limited diagnostics later if desired.
+      // Keep quiet; we can add rate-limited diagnostics later.
       _esConnected = false;
-
-      // If server closed in a way that doesn't auto-retry, this keeps us alive.
+      _closeSse();               // <-- KEY: kill the dead EventSource
       _scheduleReconnect("error");
     };
+
   }
 
   function subscribe(topic) {
