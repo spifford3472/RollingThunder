@@ -154,8 +154,6 @@ export function createBindingStore(opts = {}) {
     // IMPORTANT: controller emits `event: message`, not default "message"
     es.addEventListener("message", (ev) => {
 
-      console.log("BUS msg raw", ev.data);
-
       const obj = _parseJson(ev?.data);
       if (!obj) return;
 

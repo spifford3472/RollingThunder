@@ -24,7 +24,6 @@ function renderHdr(slot, panel, life) {
 
   // driving-safe: show only one short reason
   const reason = Array.isArray(life?.issues) && life.issues.length ? life.issues[0] : "";
-  const slow = Array.isArray(slot?.__rt_last_slow) ? slot.__rt_last_slow : [];
 
   hdr.innerHTML = `
     <div class="rt-slot-hdr-row">
@@ -42,17 +41,24 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   const pollIntervalMs = Math.max(250, Number(panel?.refresh?.intervalMs || 1000));
   const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
-  // If panel requests push, but runtime doesn't implement it yet,
-  // fall back to polling at a safe cadence.
-  const pushFallbackMs = Math.max(250, Number(panel?.refresh?.fallbackPollMs || 1000));
-  const intervalMs = (mode === "push") ? pushFallbackMs : pollIntervalMs;
+  // Push config
   const topic = String(panel?.refresh?.topic || "").trim();
 
   const pushReady =
     mode !== "push" ? true :
-    (!!topic && typeof store?.subscribe === "function" && typeof store?.on === "function");
+    (!!topic && typeof store?.subscribe === "function" && typeof store?.on === "function" && typeof store?.unsubscribe === "function");
 
   let stopped = false;
+  let inflight = false;
+  let needsRerun = false;
+
+  // Build the set of state keys this panel depends on (for cheap filtering)
+  const panelStateKeys = new Set(
+    list
+      .filter(b => String(b?.source || "").toLowerCase() === "state")
+      .map(b => String(b?.key || "").trim())
+      .filter(Boolean)
+  );
 
   async function collectOnce() {
     const data = {};
@@ -68,6 +74,7 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       const id = String(b.id);
       const res = await store.resolve(b);
       rt.bindings[id] = res;
+
       if (res?.ok === false) rt.panel.has_error = true;
       if (res?.ok === true && res.value == null) rt.panel.has_missing = true;
 
@@ -89,24 +96,33 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   async function tick() {
     if (stopped) return;
 
-    const data = await collectOnce();
-    slot.__rtData = data;
+    // Prevent overlapping runs (push can arrive while poll is running).
+    if (inflight) {
+      needsRerun = true;
+      return;
+    }
 
-    let life = classifyPanelFromResults(panel, list, data);
+    inflight = true;
+    try {
+      const data = await collectOnce();
+      slot.__rtData = data;
 
-    // Push mode: only show CONFIG if push is not actually wired.
-    //if (mode === "push" && !pushReady) {
-    //  const issues = Array.isArray(life?.issues) ? life.issues.slice() : [];
-    //  issues.unshift(!topic ? "refresh:missing_topic" : "refresh:push_unimplemented");
-    //  life = { state: "config", issues };
-    //}
+      const life = classifyPanelFromResults(panel, list, data);
+      data.__rt.lifecycle = life;
 
-    data.__rt.lifecycle = life;
-
-    renderHdr(slot, panel, life);
-    render(data);
+      renderHdr(slot, panel, life);
+      render(data);
+    } finally {
+      inflight = false;
+      if (!stopped && needsRerun) {
+        needsRerun = false;
+        // Run one more time to catch any missed updates while we were inflight.
+        tick();
+      }
+    }
   }
 
+  // Initial render
   tick();
 
   let unsub = null;
@@ -114,22 +130,14 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   if (mode === "push" && pushReady) {
     store.subscribe(topic);
 
-    // Build the set of state keys this panel depends on (for cheap filtering)
-    const panelStateKeys = new Set(
-      list
-        .filter(b => String(b?.source || "").toLowerCase() === "state")
-        .map(b => String(b?.key || "").trim())
-        .filter(Boolean)
-    );
-
     unsub = store.on(topic, (msg) => {
       try {
-        // Expected (recommended) publish shape:
+        // Expect publish payload shape:
         // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
+        // But be tolerant:
         const keys = msg?.payload?.keys ?? msg?.data?.payload?.keys;
 
-
-        // If no keys provided, treat as a general nudge: refresh.
+        // If no keys provided, treat as a general nudge.
         if (!Array.isArray(keys) || keys.length === 0) {
           tick();
           return;
@@ -137,34 +145,36 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
         // Only refresh if this push event touches a key we care about.
         for (const k of keys) {
-          if (typeof k === "string" && panelStateKeys.has(k)) {
+          const ks = (typeof k === "string") ? k.trim() : String(k || "");
+          if (ks && panelStateKeys.has(ks)) {
             tick();
             return;
           }
         }
-      } catch (e) {
-        // If anything is weird, fail safe: do nothing (polling fallback still runs)
-        return;
+      } catch (_) {
+        // Fail-safe: ignore (poll fallback still runs)
       }
     });
   }
 
-
+  // Poll fallback:
+  // - poll mode: intervalMs
+  // - push mode: fallbackPollMs (default 5000ms)
   const fallbackMs =
     mode === "push"
       ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
-      : intervalMs;
+      : pollIntervalMs;
 
   const t = setInterval(tick, fallbackMs);
-
 
   slot.__rtStop = () => {
     stopped = true;
     clearInterval(t);
+
     if (typeof unsub === "function") unsub();
+
     if (mode === "push" && pushReady) {
       try { store.unsubscribe(topic); } catch (_) {}
     }
   };
-
 }
