@@ -201,4 +201,77 @@ export function createBindingStore(opts = {}) {
 
     const cur = _topics.get(topic) || 0;
     const next = Math.max(0, cur - 1);
-    if (next === 0) _topic_
+    if (next === 0) _topics.delete(topic);
+    else _topics.set(topic, next);
+
+    // If nothing left subscribed, close the shared SSE
+    if (!_anySubscriptions()) _closeSse();
+  }
+
+  function on(topic, fn) {
+    topic = String(topic || "").trim();
+    if (!topic || typeof fn !== "function") return () => {};
+
+    const set = _ensureHandlerSet(topic);
+    set.add(fn);
+
+    // Return unsubscribe callback
+    return () => {
+      const s = _handlers.get(topic);
+      if (s) s.delete(fn);
+      // Note: we do NOT auto-unsubscribe the bus topic here because
+      // refresh.js manages unsub() already. Keep behavior deterministic.
+    };
+  }
+
+  return {
+    subscribe,
+    on,
+    unsubscribe,
+
+    async resolve(binding) {
+      const src = String(binding?.source || "").toLowerCase();
+      const started = Date.now();
+
+      if (src === "api") {
+        const url = String(binding?.url || "");
+        if (!url) {
+          return mkResult({ ok: false, err: "missing_url", meta: { source: "api", locator: "", ms: 0 } });
+        }
+        try {
+          const val = await fetchJson(url);
+          return mkResult({ ok: true, value: val, meta: { source: "api", locator: url, ms: Date.now() - started } });
+        } catch (e) {
+          return mkResult({ ok: false, err: e?.message || e, meta: { source: "api", locator: url, ms: Date.now() - started } });
+        }
+      }
+
+      if (src === "state") {
+        const key = String(binding?.key || "");
+        if (!key) {
+          return mkResult({ ok: false, err: "missing_key", meta: { source: "state", locator: "", ms: 0 } });
+        }
+        try {
+          const resp = await postJson(stateBatchUrl, { keys: [key] });
+          const entry = resp?.data?.values?.[key];
+          if (entry?.ok) {
+            return mkResult({ ok: true, value: entry.value, meta: { source: "state", locator: key, ms: Date.now() - started } });
+          }
+          return mkResult({ ok: true, value: null, meta: { source: "state", locator: key, ms: Date.now() - started } });
+        } catch (e) {
+          return mkResult({ ok: false, err: e?.message || e, meta: { source: "state", locator: key, ms: Date.now() - started } });
+        }
+      }
+
+      if (src === "bus") {
+        // Bus is consumed via subscribe()/on(), not resolve().
+        const t = String(binding?.topic || "").trim();
+        if (!t) return mkResult({ ok: false, err: "missing_topic", meta: { source: "bus", locator: "", ms: 0 } });
+        return mkResult({ ok: false, err: "bus_binding_not_resolvable", meta: { source: "bus", locator: t, ms: 0 } });
+      }
+
+      return mkResult({ ok: false, err: `unknown_source:${src || "?"}`, meta: { source: src || "?", locator: "", ms: 0 } });
+    },
+  };
+}
+
