@@ -126,7 +126,8 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       try {
         // Expected (recommended) publish shape:
         // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
-        const keys = msg?.payload?.keys;
+        const keys = msg?.payload?.keys ?? msg?.data?.payload?.keys;
+
 
         // If no keys provided, treat as a general nudge: refresh.
         if (!Array.isArray(keys) || keys.length === 0) {
