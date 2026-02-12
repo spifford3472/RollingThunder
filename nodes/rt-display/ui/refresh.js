@@ -94,6 +94,8 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   }
 
   async function tick() {
+    console.log("TICK", panel?.id, Date.now());
+
     if (stopped) return;
 
     // Prevent overlapping runs (push can arrive while poll is running).
