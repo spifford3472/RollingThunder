@@ -7,6 +7,8 @@ from typing import Dict, Set, Optional, Callable, Iterable
 
 from flask import Response, request, stream_with_context
 
+
+
 # Keep it tight: only allow known safe topics for UI consumption.
 ALLOWED_TOPICS: Set[str] = {
     "rt/alerts/active",
@@ -112,3 +114,4 @@ class UiBusSseHub:
                 "X-Accel-Buffering": "no",
             },
         )
+

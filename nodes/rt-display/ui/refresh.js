@@ -113,8 +113,41 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
   if (mode === "push" && pushReady) {
     store.subscribe(topic);
-    unsub = store.on(topic, () => tick());
+
+    // Build the set of state keys this panel depends on (for cheap filtering)
+    const panelStateKeys = new Set(
+      list
+        .filter(b => String(b?.source || "").toLowerCase() === "state")
+        .map(b => String(b?.key || "").trim())
+        .filter(Boolean)
+    );
+
+    unsub = store.on(topic, (msg) => {
+      try {
+        // Expected (recommended) publish shape:
+        // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
+        const keys = msg?.payload?.keys;
+
+        // If no keys provided, treat as a general nudge: refresh.
+        if (!Array.isArray(keys) || keys.length === 0) {
+          tick();
+          return;
+        }
+
+        // Only refresh if this push event touches a key we care about.
+        for (const k of keys) {
+          if (typeof k === "string" && panelStateKeys.has(k)) {
+            tick();
+            return;
+          }
+        }
+      } catch (e) {
+        // If anything is weird, fail safe: do nothing (polling fallback still runs)
+        return;
+      }
+    });
   }
+
 
   const fallbackMs =
     mode === "push"
@@ -123,9 +156,14 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
   const t = setInterval(tick, fallbackMs);
 
+
   slot.__rtStop = () => {
     stopped = true;
     clearInterval(t);
     if (typeof unsub === "function") unsub();
+    if (mode === "push" && pushReady) {
+      try { store.unsubscribe(topic); } catch (_) {}
+    }
   };
+
 }

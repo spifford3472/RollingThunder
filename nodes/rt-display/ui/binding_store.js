@@ -37,15 +37,22 @@ function mkResult({ ok, value = null, err = null, meta = {} }) {
 export function createBindingStore(opts = {}) {
   const stateBatchUrl = opts.stateBatchUrl || "/api/v1/ui/state/batch";
 
-  // SSE endpoint on the controller (same-origin strongly preferred)
-  // Example: /api/v1/ui/bus/subscribe?topic=rt/alerts/active
-  const busSubscribeBaseUrl = opts.busSubscribeBaseUrl || "/api/v1/ui/bus/subscribe";
-
-  // topic -> { es: EventSource, refs: number }
-  const _streams = new Map();
+  // Controller SSE endpoint (shared connection). Controller emits:
+  // - event: hello
+  // - event: message  (JSON: { channel, ts, server_time_ms, data:<published> })
+  // - event: eos      (bounded stream ends; we must reconnect)
+  const busSubscribeUrl = opts.busSubscribeUrl || "/api/v1/ui/bus/subscribe";
 
   // topic -> Set<fn>
   const _handlers = new Map();
+
+  // Track which topics the runtime currently cares about (purely for routing/refs)
+  const _topics = new Map(); // topic -> refs
+
+  // Single shared SSE connection state
+  let _es = null;
+  let _esConnected = false;
+  let _reconnectTimer = null;
 
   function _emit(topic, msg) {
     const set = _handlers.get(topic);
@@ -61,121 +68,137 @@ export function createBindingStore(opts = {}) {
     return set;
   }
 
+  function _anySubscriptions() {
+    for (const [, refs] of _topics) {
+      if ((refs || 0) > 0) return true;
+    }
+    return false;
+  }
+
+  function _clearReconnectTimer() {
+    if (_reconnectTimer) {
+      clearTimeout(_reconnectTimer);
+      _reconnectTimer = null;
+    }
+  }
+
+  function _scheduleReconnect(reason) {
+    if (!_anySubscriptions()) return;
+    if (_reconnectTimer) return;
+
+    // small jitter so multiple kiosks don’t reconnect in lockstep
+    const minMs = opts.busReconnectMinMs ?? 250;
+    const maxMs = opts.busReconnectMaxMs ?? 750;
+    const delay = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+
+    _reconnectTimer = setTimeout(() => {
+      _reconnectTimer = null;
+      // only reconnect if still needed
+      if (_anySubscriptions()) _connectSse(`reconnect:${reason || "unknown"}`);
+    }, delay);
+  }
+
+  function _closeSse() {
+    _clearReconnectTimer();
+    if (_es) {
+      try { _es.close(); } catch (_) {}
+      _es = null;
+    }
+    _esConnected = false;
+  }
+
+  function _parseJson(s) {
+    if (typeof s !== "string") return null;
+    const t = s.trim();
+    if (!t) return null;
+    try { return JSON.parse(t); } catch (_) { return null; }
+  }
+
+  function _extractTopic(obj) {
+    // Controller "message" shape:
+    // { channel, ts, server_time_ms, data: <published> }
+    // Published payload SHOULD carry topic, so look there first.
+    if (obj && typeof obj === "object") {
+      const inner = (obj.data && typeof obj.data === "object") ? obj.data : null;
+      const t1 = inner && typeof inner.topic === "string" ? inner.topic : null;
+      const t2 = typeof obj.topic === "string" ? obj.topic : null;
+      return (t1 || t2 || "").trim();
+    }
+    return "";
+  }
+
+  function _connectSse(reason) {
+    _clearReconnectTimer();
+
+    // If no one is subscribed, do nothing.
+    if (!_anySubscriptions()) return;
+
+    // Reset any existing connection
+    _closeSse();
+
+    const es = new EventSource(busSubscribeUrl, { withCredentials: false });
+    _es = es;
+
+    es.onopen = () => {
+      _esConnected = true;
+      // console.log("SSE open", reason || "");
+    };
+
+    es.addEventListener("hello", (ev) => {
+      _esConnected = true;
+      // Optional: you could emit a diagnostic topic here if you ever want.
+      // const obj = _parseJson(ev.data);
+      // console.log("SSE hello", obj);
+    });
+
+    // IMPORTANT: controller emits `event: message`, not default "message"
+    es.addEventListener("message", (ev) => {
+      const obj = _parseJson(ev?.data);
+      if (!obj) return;
+
+      const topic = _extractTopic(obj);
+      if (!topic) return;
+
+      // Only dispatch if we’re currently subscribed (cheap guard)
+      const refs = _topics.get(topic) || 0;
+      if (refs <= 0) return;
+
+      // Deliver the *published payload* if present, else the wrapper
+      const inner = (obj.data && typeof obj.data === "object") ? obj.data : obj;
+      _emit(topic, inner);
+    });
+
+    es.addEventListener("eos", () => {
+      // Stream ended intentionally (bounded); reconnect if still subscribed.
+      _esConnected = false;
+      _scheduleReconnect("eos");
+    });
+
+    es.onerror = () => {
+      // EventSource will auto-retry on network errors.
+      // Keep quiet; we can add rate-limited diagnostics later if desired.
+      _esConnected = false;
+
+      // If server closed in a way that doesn't auto-retry, this keeps us alive.
+      _scheduleReconnect("error");
+    };
+  }
+
   function subscribe(topic) {
     topic = String(topic || "").trim();
     if (!topic) return;
 
-    const cur = _streams.get(topic);
-    if (cur) {
-      cur.refs++;
-      return;
-    }
+    const cur = _topics.get(topic) || 0;
+    _topics.set(topic, cur + 1);
 
-    const url = `${busSubscribeBaseUrl}?topic=${encodeURIComponent(topic)}`;
-    const es = new EventSource(url, { withCredentials: false });
-
-    const stream = { es, refs: 1 };
-    _streams.set(topic, stream);
-
-    es.onmessage = (ev) => {
-      // Expect JSON: { topic, payload, ts_ms? }
-      try {
-        const obj = JSON.parse(ev.data);
-        const t = String(obj?.topic || topic);
-        // Only dispatch to matching topic (be strict)
-        if (t !== topic) return;
-        _emit(topic, obj);
-      } catch (e) {
-        console.error("SSE parse error", e, ev?.data);
-      }
-    };
-
-    es.onerror = () => {
-      // EventSource auto-reconnects; keep it calm.
-      // We do NOT spam UI. We just log once-ish.
-      // (If you want rate-limited diagnostics later, we can add them.)
-      // console.warn("SSE error for topic", topic);
-    };
+    // Ensure the shared SSE connection exists
+    if (!_es) _connectSse("subscribe");
   }
 
   function unsubscribe(topic) {
     topic = String(topic || "").trim();
     if (!topic) return;
 
-    const cur = _streams.get(topic);
-    if (!cur) return;
-
-    cur.refs = Math.max(0, (cur.refs || 0) - 1);
-    if (cur.refs > 0) return;
-
-    try { cur.es.close(); } catch (_) {}
-    _streams.delete(topic);
-  }
-
-  function on(topic, fn) {
-    topic = String(topic || "").trim();
-    if (!topic || typeof fn !== "function") return () => {};
-
-    const set = _ensureHandlerSet(topic);
-    set.add(fn);
-
-    // Return unsubscribe callback
-    return () => {
-      const s = _handlers.get(topic);
-      if (s) s.delete(fn);
-      // Note: we do NOT auto-unsubscribe the SSE stream here because
-      // refresh.js manages unsub() already. Keep behavior deterministic.
-    };
-  }
-
-  return {
-    subscribe,
-    on,
-    unsubscribe,
-
-    async resolve(binding) {
-      const src = String(binding?.source || "").toLowerCase();
-      const started = Date.now();
-
-      if (src === "api") {
-        const url = String(binding?.url || "");
-        if (!url) {
-          return mkResult({ ok: false, err: "missing_url", meta: { source: "api", locator: "", ms: 0 } });
-        }
-        try {
-          const val = await fetchJson(url);
-          return mkResult({ ok: true, value: val, meta: { source: "api", locator: url, ms: Date.now() - started } });
-        } catch (e) {
-          return mkResult({ ok: false, err: e?.message || e, meta: { source: "api", locator: url, ms: Date.now() - started } });
-        }
-      }
-
-      if (src === "state") {
-        const key = String(binding?.key || "");
-        if (!key) {
-          return mkResult({ ok: false, err: "missing_key", meta: { source: "state", locator: "", ms: 0 } });
-        }
-        try {
-          const resp = await postJson(stateBatchUrl, { keys: [key] });
-          const entry = resp?.data?.values?.[key];
-          if (entry?.ok) {
-            return mkResult({ ok: true, value: entry.value, meta: { source: "state", locator: key, ms: Date.now() - started } });
-          }
-          return mkResult({ ok: true, value: null, meta: { source: "state", locator: key, ms: Date.now() - started } });
-        } catch (e) {
-          return mkResult({ ok: false, err: e?.message || e, meta: { source: "state", locator: key, ms: Date.now() - started } });
-        }
-      }
-
-      if (src === "bus") {
-        // For now: runtime doesn't resolve bus bindings via resolve().
-        // Bus is consumed via subscribe()/on().
-        const t = String(binding?.topic || "").trim();
-        if (!t) return mkResult({ ok: false, err: "missing_topic", meta: { source: "bus", locator: "", ms: 0 } });
-        return mkResult({ ok: false, err: "bus_binding_not_resolvable", meta: { source: "bus", locator: t, ms: 0 } });
-      }
-
-      return mkResult({ ok: false, err: `unknown_source:${src || "?"}`, meta: { source: src || "?", locator: "", ms: 0 } });
-    },
-  };
-}
+    const cur = _topics.get(topic) || 0;
+    const next = Math.max(0, cur - 1);
+    if (next === 0) _topic_

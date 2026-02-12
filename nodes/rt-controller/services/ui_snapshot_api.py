@@ -11,6 +11,10 @@ Add-on:
 - Serve static UI assets from /opt/rollingthunder/ui under /ui/*
 - Serve static config assets from /opt/rollingthunder/config under /config/*
   (same-origin UI + API + config for kiosk/browser simplicity)
+
+Phase 15:
+- SSE UI bus subscribe endpoint: /api/v1/ui/bus/subscribe (read-only)
+- ThreadingHTTPServer to avoid blocking the entire server on SSE connections
 """
 
 from __future__ import annotations
@@ -20,10 +24,10 @@ import mimetypes
 import os
 import re
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import redis
 
@@ -41,6 +45,9 @@ SNAPSHOT_PATHS = ("/api/v1/ui/snapshot", "/api/v1/ui/snapshot/")
 NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
 DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
 STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
+
+# NEW: SSE bus subscribe endpoint (read-only)
+BUS_SUBSCRIBE_PATHS = ("/api/v1/ui/bus/subscribe", "/api/v1/ui/bus/subscribe/")
 
 HEALTHZ_PATHS = ("/healthz", "/healthz/")
 
@@ -66,6 +73,19 @@ HEALTH_STALE_SEC = int(os.environ.get("RT_HEALTH_STALE_SEC", "30"))
 MAX_STATE_KEYS = int(os.environ.get("RT_MAX_STATE_KEYS", "200"))
 MAX_KEY_LEN = int(os.environ.get("RT_MAX_STATE_KEY_LEN", "256"))
 MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
+
+# NEW: SSE safety bounds
+SSE_MAX_STREAM_SEC = float(os.environ.get("RT_SSE_MAX_STREAM_SEC", "55"))  # hard cap per connection
+SSE_MAX_EVENTS = int(os.environ.get("RT_SSE_MAX_EVENTS", "250"))          # hard cap per connection
+SSE_POLL_SEC = float(os.environ.get("RT_SSE_POLL_SEC", "0.5"))            # pubsub poll interval
+SSE_HEARTBEAT_SEC = float(os.environ.get("RT_SSE_HEARTBEAT_SEC", "15"))   # keepalive comment
+SSE_MAX_DATA_BYTES = int(os.environ.get("RT_SSE_MAX_DATA_BYTES", "16384"))  # per event data cap
+
+# NEW: PubSub channel defaults (read-only)
+# Keep it conservative: one channel by default, optional override via query if allowed.
+UI_BUS_DEFAULT_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+UI_BUS_ALLOW_QUERY_CHANNEL = (os.environ.get("RT_UI_BUS_ALLOW_QUERY_CHANNEL", "0").strip() == "1")
+UI_BUS_CHANNEL_PREFIX = os.environ.get("RT_UI_BUS_CHANNEL_PREFIX", "rt:")  # must start with this
 
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
@@ -274,6 +294,24 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         r.ping()
         return r
 
+    def _redis_pubsub_client(self) -> redis.Redis:
+        """
+        Separate client for PubSub. Use a larger socket timeout so the thread can
+        wait/poll safely without hammering Redis.
+        """
+        t = max(1.0, float(os.environ.get("RT_SSE_REDIS_TIMEOUT_SEC", "2.0")))
+        r = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD,
+            decode_responses=True,
+            socket_timeout=t,
+            socket_connect_timeout=max(t, 1.0),
+        )
+        r.ping()
+        return r
+
     def _key_allowed(self, k: Any) -> bool:
         if not isinstance(k, str):
             return False
@@ -350,6 +388,72 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # ---------- SSE helpers ----------
+    def _sse_write(self, chunk: str) -> bool:
+        """
+        Write an SSE chunk and flush.
+        Returns False if client is gone.
+        """
+        if self._is_head():
+            return False
+        try:
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            return False
+        except Exception:
+            return False
+
+    def _sse_event(self, event: str, data_obj: Any) -> bool:
+        """
+        Serialize data as JSON (bounded), send as SSE event.
+        """
+        try:
+            data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            data_json = json.dumps({"_error": "event_json_serialize_failed"}, separators=(",", ":"))
+
+        # Hard cap payload size (avoid memory bloat / huge frames)
+        if len(data_json.encode("utf-8")) > SSE_MAX_DATA_BYTES:
+            data_json = json.dumps(
+                {"_truncated": True, "_preview": data_json[: min(1024, len(data_json))] + "…"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        # SSE framing: one "data:" line is okay for JSON
+        chunk = f"event: {event}\ndata: {data_json}\n\n"
+        return self._sse_write(chunk)
+
+    def _sse_comment(self, comment: str) -> bool:
+        # comment lines start with ":"
+        return self._sse_write(f": {comment}\n\n")
+
+    def _select_bus_channel(self) -> str:
+        """
+        Conservative channel selection:
+        - default: UI_BUS_DEFAULT_CHANNEL
+        - optionally allow ?channel=... if RT_UI_BUS_ALLOW_QUERY_CHANNEL=1
+        - enforce prefix and length bounds
+        """
+        chan = UI_BUS_DEFAULT_CHANNEL
+
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query or "")
+        if UI_BUS_ALLOW_QUERY_CHANNEL and "channel" in qs and qs["channel"]:
+            candidate = str(qs["channel"][0]).strip()
+            if (
+                candidate
+                and len(candidate) <= MAX_KEY_LEN
+                and candidate.startswith(UI_BUS_CHANNEL_PREFIX)
+                and "\n" not in candidate
+                and "\r" not in candidate
+            ):
+                chan = candidate
+
+        return chan
+
     # ---------- API handlers ----------
     def _handle_healthz(self) -> None:
         payload = {
@@ -359,6 +463,124 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             "redis": {"host": REDIS_HOST, "port": REDIS_PORT, "db": REDIS_DB},
         }
         return self._write_json(200, payload)
+
+    def _handle_bus_subscribe(self) -> None:
+        """
+        Read-only SSE stream backed by Redis PubSub.
+
+        Safety / boundedness:
+        - hard cap by time (SSE_MAX_STREAM_SEC)
+        - hard cap by events (SSE_MAX_EVENTS)
+        - polling-based loop with small sleeps (SSE_POLL_SEC)
+        - heartbeat comments (SSE_HEARTBEAT_SEC)
+        - uses ThreadingHTTPServer so each SSE connection consumes one thread, not the whole server
+        """
+        if self._is_head():
+            # SSE doesn't make sense for HEAD; keep it simple.
+            self.send_response(405)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self._safe_write(b'{"error":"method_not_allowed"}')
+            return
+
+        # Prepare SSE response headers
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        # Helpful when running behind proxies (harmless otherwise)
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        channel = self._select_bus_channel()
+
+        started = time.time()
+        last_heartbeat = started
+        sent = 0
+
+        # One initial hello event (bounded, useful to the UI)
+        if not self._sse_event(
+            "hello",
+            {
+                "source": "rt-controller",
+                "endpoint": "/api/v1/ui/bus/subscribe",
+                "ts": now_iso_utc(),
+                "server_time_ms": now_ms(),
+                "channel": channel,
+                "bounds": {"max_sec": SSE_MAX_STREAM_SEC, "max_events": SSE_MAX_EVENTS},
+                "schema_version": "ui.bus.sse.v1",
+            },
+        ):
+            return
+
+        try:
+            r = self._redis_pubsub_client()
+            pubsub = r.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe(channel)
+
+            while True:
+                # time bound
+                if (time.time() - started) >= SSE_MAX_STREAM_SEC:
+                    self._sse_event("eos", {"reason": "max_stream_sec", "sent": sent, "ts": now_iso_utc()})
+                    break
+
+                # event bound
+                if sent >= SSE_MAX_EVENTS:
+                    self._sse_event("eos", {"reason": "max_events", "sent": sent, "ts": now_iso_utc()})
+                    break
+
+                # heartbeat
+                now_t = time.time()
+                if (now_t - last_heartbeat) >= SSE_HEARTBEAT_SEC:
+                    if not self._sse_comment(f"heartbeat {now_iso_utc()}"):
+                        break
+                    last_heartbeat = now_t
+
+                # poll pubsub (non-blocking-ish)
+                msg = None
+                try:
+                    msg = pubsub.get_message(timeout=SSE_POLL_SEC)
+                except Exception:
+                    msg = None
+
+                if msg and isinstance(msg, dict) and msg.get("type") == "message":
+                    ch = msg.get("channel")
+                    data = msg.get("data")
+
+                    parsed = _try_parse_json(data if isinstance(data, str) else str(data))
+                    if isinstance(parsed, str):
+                        parsed = _coerce_scalar(parsed)
+
+                    evt = {
+                        "channel": ch,
+                        "ts": now_iso_utc(),
+                        "server_time_ms": now_ms(),
+                        "data": _truncate(parsed),
+                    }
+
+                    if not self._sse_event("message", evt):
+                        break
+                    sent += 1
+
+                # light yield; avoids tight looping even if timeout=0 on some redis versions
+                time.sleep(max(0.0, min(SSE_POLL_SEC, 0.05)))
+
+        except Exception as e:
+            # Best-effort error event; don't assume the client is still there.
+            try:
+                self._sse_event("error", {"error": f"{type(e).__name__}: {e}", "ts": now_iso_utc()})
+            except Exception:
+                pass
+        finally:
+            try:
+                # Close pubsub cleanly if it exists in locals
+                if "pubsub" in locals():
+                    pubsub.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
 
     def _handle_state_batch(self) -> None:
         payload: Dict[str, Any] = {
@@ -630,25 +852,33 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._safe_write(b'{"error":"not_found"}')
 
     def do_GET(self) -> None:
+        # Parse once for path-only routing (ignore query for path matching)
+        parsed = urlparse(self.path)
+        path = parsed.path
+
         # 0) healthz
-        if self.path in HEALTHZ_PATHS:
+        if path in HEALTHZ_PATHS:
             return self._handle_healthz()
 
         # 1) Static UI/config first (same-origin UI + API + config)
         if self._try_serve_static_ui_or_config():
             return
 
-        # 2) API routing
-        if self.path in SNAPSHOT_PATHS:
+        # 2) SSE bus subscribe (read-only)
+        if path in BUS_SUBSCRIBE_PATHS:
+            return self._handle_bus_subscribe()
+
+        # 3) API routing
+        if path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
 
-        if self.path in NODES_PATHS:
+        if path in NODES_PATHS:
             return self._handle_nodes()
 
-        if self.path in DEPLOY_PATHS:
+        if path in DEPLOY_PATHS:
             return self._handle_deploy()
 
-        # 3) Fallback: not found
+        # 4) Fallback: not found
         self.send_response(404)
         self._cors()
         self.send_header("Content-Type", "application/json")
@@ -657,7 +887,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    httpd = HTTPServer((HOST, PORT), UiSnapshotHandler)
+    httpd = ThreadingHTTPServer((HOST, PORT), UiSnapshotHandler)
     print(f"ui_snapshot_api listening on {HOST}:{PORT} (redis {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB})")
     httpd.serve_forever()
 
