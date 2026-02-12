@@ -3,7 +3,8 @@
   "type": "node_health_summary",
   "focusable": true,
 
-  "refresh": { "mode": "poll", "intervalMs": 1000 },
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
+
 
   "bindings": [
     {"id": "nodes", "source": "api", "url": "/api/v1/ui/nodes" },
