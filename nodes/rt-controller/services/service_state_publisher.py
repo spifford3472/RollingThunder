@@ -35,6 +35,8 @@ LOCAL_NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
 
 POLL_SEC = float(os.environ.get("RT_POLL_SEC", "5.0"))
 
+UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+
 # Mapping from service id -> systemd unit name on this node.
 # Keep this small and explicit. Add entries as you bring up more units.
 DEFAULT_UNIT_MAP: Dict[str, str] = {
@@ -193,7 +195,22 @@ def main() -> None:
                     # Clear any previous error on a healthy observation
                     r.hdel(key, "publisher_error")
 
+                prev_state = (h.get("state") or "").strip()
+                state_changed = (state != prev_state)
+
                 r.hset(key, mapping=mapping)
+
+                if state_changed:
+                    evt = {
+                        "topic": "state.changed",
+                        "payload": {"keys": [key]},
+                        "ts_ms": now_ms(),
+                        "source": "service_state_publisher",
+                    }
+                    try:
+                        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
+                    except Exception:
+                        pass
 
 
             except Exception as e:
