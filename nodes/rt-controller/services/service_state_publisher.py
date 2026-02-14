@@ -39,18 +39,34 @@ UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
 
 # Mapping from service id -> systemd unit name on this node.
 # Keep this small and explicit. Add entries as you bring up more units.
+# OLD KEEPING FOR REFERENCE FOR FUTURE
+#DEFAULT_UNIT_MAP: Dict[str, str] = {
+#    # Core controller plumbing (adjust names to match your actual unit files)
+#    "mqtt_bus": "rt-mqtt-bus.service",
+#    "logging": "rt-logging.service",
+#    "node_health": "rt-node-health.service",
+#    "redis_state": "rt-redis-state.service",
+#    "gps_ingest": "rt-gps-ingest.service",
+#    "noaa_same": "rt-noaa-same.service",
+#    "meshtastic_c2": "rt-meshtastic-c2.service",
+#    # Snapshot API itself (optional, but useful)
+#    "ui_snapshot_api": "rt-ui-snapshot-api.service",
+#}
 DEFAULT_UNIT_MAP: Dict[str, str] = {
-    # Core controller plumbing (adjust names to match your actual unit files)
-    "mqtt_bus": "rt-mqtt-bus.service",
-    "logging": "rt-logging.service",
-    "node_health": "rt-node-health.service",
-    "redis_state": "rt-redis-state.service",
-    "gps_ingest": "rt-gps-ingest.service",
-    "noaa_same": "rt-noaa-same.service",
-    "meshtastic_c2": "rt-meshtastic-c2.service",
-    # Snapshot API itself (optional, but useful)
-    "ui_snapshot_api": "rt-ui-snapshot-api.service",
+    # These IDs already exist in Redis (rt:services:<id>) and are owned by rt-controller
+    "mqtt_bus": "mosquitto.service",
+    "redis_state": "redis-server.service",
+    "gps_ingest": "rt-gps-state-publisher.service",
+
+    # These exist in Redis but you don't currently have matching systemd units on rt-controller.
+    # Leave them unmapped for now (recommended), or map them once the units exist.
+    # "logging": ???,
+    # "node_health": ???,
+    # "meshtastic_c2": ???,
+    # "noaa_same": ???,
 }
+
+
 
 # Optional override via env var containing JSON dict: {"service_id":"unit.service", ...}
 UNIT_MAP_JSON = os.environ.get("RT_UNIT_MAP_JSON", "")
@@ -175,6 +191,7 @@ def main() -> None:
                     r.hset(key, mapping={
                         "state": "unknown",
                         "last_update_ms": str(now_ms()),
+                        "publisher_error": f"no_unit_mapping_for_id:{sid}",
                     })
                     r.hdel(key, "publisher_error")
                     continue
