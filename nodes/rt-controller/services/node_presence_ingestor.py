@@ -63,6 +63,10 @@ STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
 OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
 CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
 
+# UI bus publish (read-only consumers)
+UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+UI_BUS_MAX_KEYS = int(os.environ.get("RT_UI_BUS_MAX_KEYS", "25"))  # safety for any future batching
+
 def is_deploy_report(msg: Dict[str, Any]) -> bool:
     return msg.get("schema") == "deploy.report.v1"
 
@@ -88,6 +92,25 @@ def now_iso_utc() -> str:
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
+    # hard bounds
+    if not keys:
+        return
+    keys = [k for k in keys if isinstance(k, str) and k.startswith("rt:")]
+    keys = keys[:UI_BUS_MAX_KEYS]
+    if not keys:
+        return
+
+    evt = {
+        "topic": "state.changed",
+        "payload": {"keys": keys},
+        "ts_ms": now_ms(),
+        "source": source,
+    }
+    try:
+        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
+    except Exception:
+        pass
 
 def safe_str(v: Any, max_len: int = 200) -> str:
     s = "" if v is None else str(v)
@@ -206,11 +229,17 @@ def update_presence_status(r: redis.Redis, key: str, stale_after_ms: int, offlin
         else:
             status = "offline"
 
+        prev_status = (h.get("status") or "").strip()
+
         r.hset(key, mapping={
             "status": status,
             "age_sec": str(age_sec),
             "last_update_ms": str(ms_now),
         })
+
+        # Publish only when status changes (online/stale/offline)
+        if status != prev_status:
+            publish_state_changed(r, [key], source="presence_sweeper")
 
     except Exception:
         return
@@ -268,18 +297,27 @@ def main() -> int:
         # 2) Presence path (existing logic)
         node_id, mapping = derive_node_fields(payload)
 
-        if node_id == CONTROLLER_NODE_ID:
-            mapping.pop("status", None)
-            mapping.pop("age_sec", None)
-            return
-
         if not node_id:
             return
 
         key = f"{NODE_KEY_PREFIX}{node_id}"
         try:
-            # Write bounded fields only
+            # Compare against previous to avoid publish spam
+            prev = r.hgetall(key)
             r.hset(key, mapping=mapping)
+
+            # Publish if any meaningful field changed
+            # (ignore controller timestamps that always change)
+            meaningful = ("role", "status", "ip", "hostname", "ui_render_ok", "publisher_error")
+
+            changed = False
+            for f in meaningful:
+                if (prev.get(f) or "") != (mapping.get(f) or ""):
+                    changed = True
+                    break
+            if changed:
+                publish_state_changed(r, [key], source="presence_ingestor")
+  
         except Exception as e:
             try:
                 r.hset(key, mapping={
@@ -312,8 +350,6 @@ def main() -> int:
         while True:
             try:
                 for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
-                    if k == f"{NODE_KEY_PREFIX}{CONTROLLER_NODE_ID}":
-                        continue
                     update_presence_status(r, k, stale_after_ms, offline_after_ms)
             except Exception:
                 pass
