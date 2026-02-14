@@ -196,11 +196,15 @@ def main() -> None:
                     r.hdel(key, "publisher_error")
 
                 prev_state = (h.get("state") or "").strip()
+                prev_error = (h.get("publisher_error") or "").strip()
+                new_error = (mapping.get("publisher_error") or "").strip()
+
                 state_changed = (state != prev_state)
+                error_changed = (new_error != prev_error)
 
                 r.hset(key, mapping=mapping)
 
-                if state_changed:
+                if state_changed or error_changed:
                     evt = {
                         "topic": "state.changed",
                         "payload": {"keys": [key]},
@@ -211,7 +215,6 @@ def main() -> None:
                         r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
                     except Exception:
                         pass
-
 
             except Exception as e:
                 set_error(r, key, f"{type(e).__name__}: {e}")
