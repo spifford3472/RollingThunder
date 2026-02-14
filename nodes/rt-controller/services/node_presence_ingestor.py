@@ -308,7 +308,7 @@ def main() -> int:
 
             # Publish if any meaningful field changed
             # (ignore controller timestamps that always change)
-            meaningful = ("role", "status", "ip", "hostname", "ui_render_ok", "publisher_error")
+            meaningful = ("role", "ip", "hostname", "ui_render_ok", "publisher_error")
 
             changed = False
             for f in meaningful:
