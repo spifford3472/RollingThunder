@@ -1,6 +1,4 @@
 // binding_store.js
-// Drop-in replacement: adds `source:"scan"` resolver for /api/v1/ui/state/scan
-// Keeps existing API/state/bus behavior unchanged.
 
 async function fetchJson(url, timeoutMs = 2500) {
   const controller = new AbortController();
@@ -36,25 +34,55 @@ function mkResult({ ok, value = null, err = null, meta = {} }) {
   return { ok: !!ok, value: ok ? value : null, err: err ? String(err) : null, meta };
 }
 
+function qs(obj) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    p.set(k, String(v));
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+function safeObj(x) {
+  return (x && typeof x === "object") ? x : null;
+}
+
+function coerceRow(entry) {
+  // entry shape from /api/v1/ui/state/scan:
+  // { key, type, preview: {...} }
+  const e = safeObj(entry) || {};
+  const pv = safeObj(e.preview) || {};
+  return {
+    key: e.key ?? null,
+    type: e.type ?? null,
+    ...pv,
+  };
+}
+
+function matchFilter(row, filterObj) {
+  const f = safeObj(filterObj);
+  if (!f) return true;
+
+  for (const [k, want] of Object.entries(f)) {
+    const got = row?.[k];
+    if (want == null) continue;
+    if (String(got) !== String(want)) return false;
+  }
+  return true;
+}
+
 export function createBindingStore(opts = {}) {
   const stateBatchUrl = opts.stateBatchUrl || "/api/v1/ui/state/batch";
+  const stateScanUrl  = opts.stateScanUrl  || "/api/v1/ui/state/scan";
 
-  // NEW: scan endpoint (read-only)
-  const stateScanUrl = opts.stateScanUrl || "/api/v1/ui/state/scan";
-
-  // Controller SSE endpoint (shared connection). Controller emits:
-  // - event: hello
-  // - event: message  (JSON: { channel, ts, server_time_ms, data:<published> })
-  // - event: eos      (bounded stream ends; we must reconnect)
+  // Controller SSE endpoint (shared connection)
   const busSubscribeUrl = opts.busSubscribeUrl || "/api/v1/ui/bus/subscribe";
 
   // topic -> Set<fn>
   const _handlers = new Map();
-
-  // Track which topics the runtime currently cares about (purely for routing/refs)
   const _topics = new Map(); // topic -> refs
 
-  // Single shared SSE connection state
   let _es = null;
   let _esConnected = false;
   let _reconnectTimer = null;
@@ -91,14 +119,12 @@ export function createBindingStore(opts = {}) {
     if (!_anySubscriptions()) return;
     if (_reconnectTimer) return;
 
-    // small jitter so multiple kiosks don’t reconnect in lockstep
     const minMs = opts.busReconnectMinMs ?? 250;
     const maxMs = opts.busReconnectMaxMs ?? 750;
     const delay = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
 
     _reconnectTimer = setTimeout(() => {
       _reconnectTimer = null;
-      // only reconnect if still needed
       if (_anySubscriptions()) _connectSse(`reconnect:${reason || "unknown"}`);
     }, delay);
   }
@@ -120,9 +146,6 @@ export function createBindingStore(opts = {}) {
   }
 
   function _extractTopic(obj) {
-    // Controller "message" shape:
-    // { channel, ts, server_time_ms, data: <published> }
-    // Published payload SHOULD carry topic, so look there first.
     if (obj && typeof obj === "object") {
       const inner = (obj.data && typeof obj.data === "object") ? obj.data : null;
       const t1 = inner && typeof inner.topic === "string" ? inner.topic : null;
@@ -134,29 +157,17 @@ export function createBindingStore(opts = {}) {
 
   function _connectSse(reason) {
     _clearReconnectTimer();
-
-    // If no one is subscribed, do nothing.
     if (!_anySubscriptions()) return;
 
-    // Reset any existing connection
     _closeSse();
 
     const es = new EventSource(busSubscribeUrl, { withCredentials: false });
     _es = es;
 
-    es.onopen = () => {
-      _esConnected = true;
-      // console.log("SSE open", reason || "");
-    };
+    es.onopen = () => { _esConnected = true; };
 
-    es.addEventListener("hello", (ev) => {
-      _esConnected = true;
-      // Optional: diagnostics
-      // const obj = _parseJson(ev.data);
-      // console.log("SSE hello", obj);
-    });
+    es.addEventListener("hello", () => { _esConnected = true; });
 
-    // IMPORTANT: controller emits `event: message`, not default "message"
     es.addEventListener("message", (ev) => {
       const obj = _parseJson(ev?.data);
       if (!obj) return;
@@ -164,25 +175,22 @@ export function createBindingStore(opts = {}) {
       const topic = _extractTopic(obj);
       if (!topic) return;
 
-      // Only dispatch if we’re currently subscribed (cheap guard)
       const refs = _topics.get(topic) || 0;
       if (refs <= 0) return;
 
-      // Deliver the *published payload* if present, else the wrapper
       const inner = (obj.data && typeof obj.data === "object") ? obj.data : obj;
       _emit(topic, inner);
     });
 
     es.addEventListener("eos", () => {
-      // Stream ended intentionally (bounded). Force-close, then reconnect if still needed.
       _esConnected = false;
-      _closeSse();               // <-- KEY: kill the dead EventSource
+      _closeSse();
       _scheduleReconnect("eos");
     });
 
     es.onerror = () => {
       _esConnected = false;
-      _closeSse();               // <-- KEY: kill the dead EventSource
+      _closeSse();
       _scheduleReconnect("error");
     };
   }
@@ -194,7 +202,6 @@ export function createBindingStore(opts = {}) {
     const cur = _topics.get(topic) || 0;
     _topics.set(topic, cur + 1);
 
-    // Ensure the shared SSE connection exists
     if (!_es) _connectSse("subscribe");
   }
 
@@ -207,7 +214,6 @@ export function createBindingStore(opts = {}) {
     if (next === 0) _topics.delete(topic);
     else _topics.set(topic, next);
 
-    // If nothing left subscribed, close the shared SSE
     if (!_anySubscriptions()) _closeSse();
   }
 
@@ -218,99 +224,16 @@ export function createBindingStore(opts = {}) {
     const set = _ensureHandlerSet(topic);
     set.add(fn);
 
-    // Return unsubscribe callback
     return () => {
       const s = _handlers.get(topic);
       if (s) s.delete(fn);
-      // refresh.js manages unsubscribe(topic) deterministically
     };
   }
 
-  // Clean shutdown of shared SSE when page unloads (prevents Firefox warning)
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", () => {
       try { _closeSse(); } catch (_) {}
     });
-  }
-
-  // ---------- NEW: scan resolver ----------
-  async function resolveScan(binding, started) {
-    const match = String(binding?.match || "").trim();
-    const prefix = String(binding?.prefix || "").trim();
-
-    let limit = Number(binding?.limit ?? 50);
-    if (!Number.isFinite(limit)) limit = 50;
-    limit = Math.max(1, Math.min(200, Math.floor(limit)));
-
-    if (!match && !prefix) {
-      return mkResult({
-        ok: false,
-        err: "missing_match_or_prefix",
-        meta: { source: "scan", locator: "", ms: Date.now() - started },
-      });
-    }
-
-    // Build URL: /api/v1/ui/state/scan?match=...&limit=...
-    const u = new URL(stateScanUrl, window.location.origin);
-    if (match) u.searchParams.set("match", match);
-    if (prefix) u.searchParams.set("prefix", prefix);
-    u.searchParams.set("limit", String(limit));
-
-    try {
-      const resp = await fetchJson(u.toString());
-
-      if (!resp?.ok || !resp?.data || !Array.isArray(resp.data.keys)) {
-        return mkResult({
-          ok: false,
-          err: "scan_bad_response",
-          meta: { source: "scan", locator: match || prefix, ms: Date.now() - started },
-        });
-      }
-
-      // resp.data.keys is [{key,type,preview},...]
-      let items = resp.data.keys.slice();
-
-      // Optional filter on preview fields: { ownerNode: "rt-controller" }
-      const filter = binding?.filter;
-      if (filter && typeof filter === "object") {
-        items = items.filter((it) => {
-          const p = (it && typeof it.preview === "object" && it.preview) ? it.preview : {};
-          for (const [fk, fv] of Object.entries(filter)) {
-            if ((p?.[fk] ?? null) !== fv) return false;
-          }
-          return true;
-        });
-      }
-
-      // Normalize to renderer-friendly objects:
-      // { key, type, ...preview }
-      const value = items.map((it) => {
-        const key = String(it?.key ?? "");
-        const type = String(it?.type ?? "");
-        const preview = (it && typeof it.preview === "object" && it.preview) ? it.preview : {};
-        return { key, type, ...preview };
-      });
-
-      // Stable order: by preview.id then key
-      value.sort((a, b) => {
-        const ai = String(a?.id ?? "");
-        const bi = String(b?.id ?? "");
-        if (ai !== bi) return ai.localeCompare(bi);
-        return String(a?.key ?? "").localeCompare(String(b?.key ?? ""));
-      });
-
-      return mkResult({
-        ok: true,
-        value,
-        meta: { source: "scan", locator: match || prefix, ms: Date.now() - started, count: value.length },
-      });
-    } catch (e) {
-      return mkResult({
-        ok: false,
-        err: e?.message || e,
-        meta: { source: "scan", locator: match || prefix, ms: Date.now() - started },
-      });
-    }
   }
 
   return {
@@ -319,14 +242,13 @@ export function createBindingStore(opts = {}) {
     unsubscribe,
 
     async resolve(binding) {
-      const src = String(binding?.source || "").toLowerCase();
+      const src = String(binding?.source || "").trim().toLowerCase();
       const started = Date.now();
 
       if (src === "api") {
         const url = String(binding?.url || "");
-        if (!url) {
-          return mkResult({ ok: false, err: "missing_url", meta: { source: "api", locator: "", ms: 0 } });
-        }
+        if (!url) return mkResult({ ok: false, err: "missing_url", meta: { source: "api", locator: "", ms: 0 } });
+
         try {
           const val = await fetchJson(url);
           return mkResult({ ok: true, value: val, meta: { source: "api", locator: url, ms: Date.now() - started } });
@@ -337,9 +259,8 @@ export function createBindingStore(opts = {}) {
 
       if (src === "state") {
         const key = String(binding?.key || "");
-        if (!key) {
-          return mkResult({ ok: false, err: "missing_key", meta: { source: "state", locator: "", ms: 0 } });
-        }
+        if (!key) return mkResult({ ok: false, err: "missing_key", meta: { source: "state", locator: "", ms: 0 } });
+
         try {
           const resp = await postJson(stateBatchUrl, { keys: [key] });
           const entry = resp?.data?.values?.[key];
@@ -353,11 +274,33 @@ export function createBindingStore(opts = {}) {
       }
 
       if (src === "scan") {
-        return await resolveScan(binding, started);
+        // binding: { match: "rt:services:*", limit, cursor?, filter? }
+        const match = String(binding?.match || "").trim();
+        const limit = Math.max(1, Math.min(500, Number(binding?.limit || 50)));
+        const cursor = binding?.cursor != null ? Number(binding.cursor) : undefined;
+
+        if (!match) {
+          return mkResult({ ok: false, err: "missing_match", meta: { source: "scan", locator: "", ms: 0 } });
+        }
+
+        try {
+          const url = `${stateScanUrl}${qs({ match, limit, cursor })}`;
+          const resp = await fetchJson(url);
+          const keys = resp?.data?.keys;
+          const list = Array.isArray(keys) ? keys.map(coerceRow) : [];
+
+          const filtered = list.filter(row => matchFilter(row, binding?.filter));
+          return mkResult({
+            ok: true,
+            value: filtered,
+            meta: { source: "scan", locator: match, ms: Date.now() - started, next_cursor: resp?.data?.next_cursor ?? null }
+          });
+        } catch (e) {
+          return mkResult({ ok: false, err: e?.message || e, meta: { source: "scan", locator: match, ms: Date.now() - started } });
+        }
       }
 
       if (src === "bus") {
-        // Bus is consumed via subscribe()/on(), not resolve().
         const t = String(binding?.topic || "").trim();
         if (!t) return mkResult({ ok: false, err: "missing_topic", meta: { source: "bus", locator: "", ms: 0 } });
         return mkResult({ ok: false, err: "bus_binding_not_resolvable", meta: { source: "bus", locator: t, ms: 0 } });
