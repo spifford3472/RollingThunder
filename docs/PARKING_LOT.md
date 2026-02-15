@@ -20,6 +20,7 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] Alerts at bottom of page?
 - [ ] Nodes and deploy/drift next to each other in middle
 - [ ] Change temp on topbar to location driven from NOAA
+- [ ] Add SFI; K; and Sunspot # to weather
 
 ## 2) Hardware / Physical Controls (Beta-plus)
 - [ ] Build physical control panel (buttons + rotary encoder)

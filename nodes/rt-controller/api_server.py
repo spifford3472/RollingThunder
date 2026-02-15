@@ -149,5 +149,71 @@ def create_app(cfg: Dict[str, Any]) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 503
 
+    @app.get("/api/v1/ui/state/scan")
+    def state_scan():
+        """
+        Read-only bounded SCAN for Redis hashes under a prefix.
+        Example:
+          /api/v1/ui/state/scan?prefix=rt:services:&limit=200
+        """
+
+        from flask import request
+
+        req_prefix = request.args.get("prefix", "").strip()
+        if not req_prefix:
+            return jsonify({"ok": False, "error": "prefix query param required"}), 400
+
+        try:
+            limit = int(request.args.get("limit", "200"))
+        except ValueError:
+            return jsonify({"ok": False, "error": "limit must be integer"}), 400
+
+        # Hard safety cap
+        limit = max(1, min(limit, 500))
+
+        results = []
+        cursor = 0
+
+        try:
+            while True:
+                cursor, keys = r.scan(cursor=cursor, match=f"{req_prefix}*", count=100)
+
+                for key in keys:
+                    if len(results) >= limit:
+                        break
+
+                    k = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else str(key)
+
+                    if r.type(k) != b"hash" and r.type(k) != "hash":
+                        continue
+
+                    h = r.hgetall(k)
+                    decoded = {}
+
+                    for hk, hv in (h or {}).items():
+                        ks = hk.decode("utf-8") if isinstance(hk, (bytes, bytearray)) else str(hk)
+                        vs = hv.decode("utf-8") if isinstance(hv, (bytes, bytearray)) else str(hv)
+                        decoded[ks] = vs
+
+                    results.append({
+                        "key": k,
+                        "value": decoded
+                    })
+
+                if cursor == 0 or len(results) >= limit:
+                    break
+
+            return jsonify({
+                "ok": True,
+                "prefix": req_prefix,
+                "count": len(results),
+                "limit": limit,
+                "items": results
+            }), 200
+
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 503
+
+
 
     return app

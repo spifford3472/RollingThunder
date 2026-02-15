@@ -37,21 +37,7 @@ POLL_SEC = float(os.environ.get("RT_POLL_SEC", "5.0"))
 
 UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
 
-# Mapping from service id -> systemd unit name on this node.
-# Keep this small and explicit. Add entries as you bring up more units.
-# OLD KEEPING FOR REFERENCE FOR FUTURE
-#DEFAULT_UNIT_MAP: Dict[str, str] = {
-#    # Core controller plumbing (adjust names to match your actual unit files)
-#    "mqtt_bus": "rt-mqtt-bus.service",
-#    "logging": "rt-logging.service",
-#    "node_health": "rt-node-health.service",
-#    "redis_state": "rt-redis-state.service",
-#    "gps_ingest": "rt-gps-ingest.service",
-#    "noaa_same": "rt-noaa-same.service",
-#    "meshtastic_c2": "rt-meshtastic-c2.service",
-#    # Snapshot API itself (optional, but useful)
-#    "ui_snapshot_api": "rt-ui-snapshot-api.service",
-#}
+
 DEFAULT_UNIT_MAP: Dict[str, str] = {
     # These IDs already exist in Redis (rt:services:<id>) and are owned by rt-controller
     "mqtt_bus": "mosquitto.service",
