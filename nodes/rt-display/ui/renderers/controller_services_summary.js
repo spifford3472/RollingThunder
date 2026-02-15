@@ -1,4 +1,10 @@
 // controller_services_summary.js
+//
+// Drop-in replacement:
+// - Renders ONLY what the scan finds (no “future/known” placeholders)
+// - No known-order bias; stable sort by service id
+// - Age ticker updates in-place without “resetting” ages on rerender
+//   (we do NOT force a new baseline; we just recompute from last_update_ms)
 
 function pillHtml(kind, label) {
   const cls =
@@ -19,12 +25,6 @@ function stateToPill(state) {
   return pillHtml("warn", s.slice(0, 5).toUpperCase());
 }
 
-function ageSecFrom(lastUpdateMs) {
-  const t = Number(lastUpdateMs);
-  if (!Number.isFinite(t) || t <= 0) return null;
-  return Math.max(0, Math.floor((Date.now() - t) / 1000));
-}
-
 function ageSecFromMs(ms) {
   const n = Number(ms ?? NaN);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -32,7 +32,7 @@ function ageSecFromMs(ms) {
 }
 
 function fmtAge(ageSec) {
-  if (ageSec == null) return "";
+  if (ageSec == null) return "—";
   if (ageSec < 60) return `${ageSec}s`;
   const m = Math.floor(ageSec / 60);
   const s = ageSec % 60;
@@ -40,63 +40,65 @@ function fmtAge(ageSec) {
 }
 
 function startAgeTicker(container) {
-  // kill any previous ticker (important; renderer runs many times)
+  // Kill any previous ticker (renderer runs many times)
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
     container.__rtAgeTimer = null;
   }
 
   container.__rtAgeTimer = setInterval(() => {
-    // update only the age cells
     const cells = container.querySelectorAll("[data-rt-age-ms]");
     for (const el of cells) {
       const ms = el.getAttribute("data-rt-age-ms");
       const age = ageSecFromMs(ms);
       el.textContent = fmtAge(age);
+
+      // Optional: keep stale styling “live” as age increases.
+      const tr = el.closest("tr");
+      if (tr) {
+        const stale = (age != null && age > 12);
+        tr.classList.toggle("stale", stale);
+      }
     }
   }, 1000);
 }
 
+function safeText(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function renderControllerServicesSummary(container, panel, data) {
+  // Render ONLY what we actually found from scan.
   const services = Array.isArray(data?.controller_services) ? data.controller_services : [];
-
-  const labelMap = {
-    mqtt_bus: "MQTT",
-    redis_state: "Redis",
-    gps_ingest: "GPS/Env",
-    node_health: "Node Health",
-    logging: "Logging",
-    meshtastic_c2: "Meshtastic",
-    noaa_same: "NOAA SAME",
-  };
-
-  const knownOrder = Object.keys(labelMap);
-  const orderIndex = new Map(knownOrder.map((k, i) => [k, i]));
 
   const rows = services
     .slice()
     .sort((a, b) => {
-      const ai = orderIndex.has(a?.id) ? orderIndex.get(a.id) : 999;
-      const bi = orderIndex.has(b?.id) ? orderIndex.get(b.id) : 999;
-      if (ai !== bi) return ai - bi;
-      return String(a?.id || "").localeCompare(String(b?.id || ""));
+      // Prefer explicit id; fall back to key
+      const as = String(a?.id || a?.key || "");
+      const bs = String(b?.id || b?.key || "");
+      return as.localeCompare(bs);
     })
     .map((svc) => {
       const id = String(svc?.id || svc?.key || "unknown");
-      const name = labelMap[id] || id;
+      const name = id; // no “future” known-service mapping
       const pill = stateToPill(svc?.state);
 
       const ms = svc?.last_update_ms ?? null;
-      const age = ageSecFrom(svc.last_update_ms);
-      const ageTxt = (age == null) ? "-" : `${age}s`;
-
+      const age = ageSecFromMs(ms);
+      const ageTxt = fmtAge(age);
 
       const stale = (age != null && age > 12);
       const rowCls = stale ? "rt-row stale" : "rt-row";
 
       return `
         <tr class="${rowCls}">
-          <td class="rt-cell-name">${name}</td>
+          <td class="rt-cell-name">${safeText(name)}</td>
           <td class="rt-cell-status">${pill}</td>
           <td class="rt-cell-age" data-rt-age-ms="${ms ?? ""}">${ageTxt}</td>
         </tr>
@@ -121,6 +123,6 @@ export function renderControllerServicesSummary(container, panel, data) {
     </div>
   `;
 
-  // Make Age tick even if push/poll is quiet
+  // Keep Age moving even if push/poll is quiet
   startAgeTicker(container);
 }
