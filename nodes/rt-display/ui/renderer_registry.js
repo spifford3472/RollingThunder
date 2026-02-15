@@ -4,6 +4,7 @@ import { renderTopbarCore } from "./renderers/topbar_core.js";
 import { renderAlertsOverlay } from "./renderers/alerts_overlay.js";
 import { renderNodeHealthSummary } from "./renderers/node_health_summary.js";
 import { renderRadioStatus } from "./renderers/radio_status.js";
+import { renderControllerServicesSummary } from  "./renderers/controller_services_summary.js";
 
 
 /**
@@ -29,6 +30,10 @@ export function createRendererRegistry() {
     renderAlertsOverlay(container, panel, data)
   );
 
+  map.set("controller_services_summary", (container, panel, data) =>
+    renderControllerServicesSummary(container, panel, data)
+  );
+
   // Optional aliases (if config uses shorter type strings)
   map.set("topbar", (container, panel, data) =>
     renderTopbarCore(container, panel, data)
@@ -37,15 +42,16 @@ export function createRendererRegistry() {
     renderAlertsOverlay(container, panel, data)
   );
 
-    map.set("node_health_summary", (container, panel, data) =>
+  map.set("node_health_summary", (container, panel, data) =>
     renderNodeHealthSummary(container, panel, data)
   );
+
   map.set("node_health", (container, panel, data) =>
     renderNodeHealthSummary(container, panel, data)
   );
 
   map.set("radio_status", (container, panel, data) =>
-  renderRadioStatus(container, panel, data)
+    renderRadioStatus(container, panel, data)
 );
 
   return map;
