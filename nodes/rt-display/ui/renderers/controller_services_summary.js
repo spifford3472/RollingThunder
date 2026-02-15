@@ -1,4 +1,4 @@
-// renderers/controller_services_summary.js
+// controller_services_summary.js
 
 function pillHtml(kind, label) {
   const cls =
@@ -14,14 +14,15 @@ function stateToPill(state) {
   if (s === "stopped" || s === "inactive") return pillHtml("warn", "STOP");
   if (s === "failed") return pillHtml("bad", "FAIL");
   if (s === "missing") return pillHtml("bad", "MISS");
+  if (s === "unknown") return pillHtml("warn", "UNKN");
   if (!s) return pillHtml("warn", "N/A");
   return pillHtml("warn", s.slice(0, 5).toUpperCase());
 }
 
-function ageSecFrom(obj) {
-  const ms = Number(obj?.last_update_ms ?? NaN);
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  return Math.max(0, Math.floor((Date.now() - ms) / 1000));
+function ageSecFromMs(ms) {
+  const n = Number(ms ?? NaN);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(0, Math.floor((Date.now() - n) / 1000));
 }
 
 function fmtAge(ageSec) {
@@ -29,22 +30,14 @@ function fmtAge(ageSec) {
   if (ageSec < 60) return `${ageSec}s`;
   const m = Math.floor(ageSec / 60);
   const s = ageSec % 60;
-  return `${m}m${String(s).padStart(2, "0")}`;
+  return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
-export function renderControllerServicesSummary(slot, data) {
-  // Preferred: scan binding provides an array at data.controller_services
-  let services = [];
-  if (Array.isArray(data?.controller_services)) {
-    services = data.controller_services;
-  } else {
-    // Fallback: old static bindings (mqtt_bus, redis_state, etc)
-    services = Object.entries(data || {})
-      .filter(([k]) => !k.startsWith("__"))
-      .map(([id, obj]) => ({ id, ...obj }));
-  }
+export function renderControllerServicesSummary(container, panel, data) {
+  // Expect scan binding shape: data.controller_services = [{id,state,last_update_ms,...}, ...]
+  const services = Array.isArray(data?.controller_services) ? data.controller_services : [];
 
-  // Friendly names
+  // Optional: stable display order
   const labelMap = {
     mqtt_bus: "MQTT",
     redis_state: "Redis",
@@ -53,47 +46,42 @@ export function renderControllerServicesSummary(slot, data) {
     logging: "Logging",
     meshtastic_c2: "Meshtastic",
     noaa_same: "NOAA SAME",
-    wpsd_integration: "WPSD"
   };
 
-  // Normalize shape: scan rows may include { id, state, last_update_ms, ownerNode, key, ... }
-  const rowsNorm = services
-    .map(s => {
-      const id = String(s?.id || s?.key || "").replace(/^rt:services:/, "");
-      return {
-        id,
-        state: s?.state,
-        last_update_ms: s?.last_update_ms,
-        ownerNode: s?.ownerNode,
-        publisher_error: s?.publisher_error,
-      };
+  // Sort for readability (keep known ones first, then alpha)
+  const knownOrder = Object.keys(labelMap);
+  const orderIndex = new Map(knownOrder.map((k, i) => [k, i]));
+
+  const rows = services
+    .slice()
+    .sort((a, b) => {
+      const ai = orderIndex.has(a?.id) ? orderIndex.get(a.id) : 999;
+      const bi = orderIndex.has(b?.id) ? orderIndex.get(b.id) : 999;
+      if (ai !== bi) return ai - bi;
+      return String(a?.id || "").localeCompare(String(b?.id || ""));
     })
-    .filter(s => s.id);
+    .map((svc) => {
+      const id = String(svc?.id || svc?.key || "unknown");
+      const name = labelMap[id] || id;
+      const pill = stateToPill(svc?.state);
+      const age = ageSecFromMs(svc?.last_update_ms);
+      const ageTxt = fmtAge(age);
 
-  // Stable ordering
-  rowsNorm.sort((a, b) => a.id.localeCompare(b.id));
+      // Consider stale if > ~2 poll intervals of service_state_publisher (10–12s)
+      const stale = (age != null && age > 12);
+      const rowCls = stale ? "rt-row stale" : "rt-row";
 
-  const rows = rowsNorm.map(s => {
-    const name = labelMap[s.id] || s.id;
-    const pill = stateToPill(s.state);
-    const age = ageSecFrom(s);
-    const ageTxt = fmtAge(age);
-    const err = (s?.publisher_error || "").toString().trim();
+      return `
+        <tr class="${rowCls}">
+          <td class="rt-cell-name">${name}</td>
+          <td class="rt-cell-status">${pill}</td>
+          <td class="rt-cell-age">${ageTxt}</td>
+        </tr>
+      `;
+    })
+    .join("");
 
-    const stale = (age != null && age > 12);
-    const rowCls = stale ? "rt-row stale" : "rt-row";
-
-    return `
-      <tr class="${rowCls}">
-        <td class="rt-cell-name">${name}</td>
-        <td class="rt-cell-status">${pill}</td>
-        <td class="rt-cell-age">${ageTxt}</td>
-        <td class="rt-cell-err">${err ? err : ""}</td>
-      </tr>
-    `;
-  }).join("");
-
-  slot.innerHTML = `
+  container.innerHTML = `
     <div class="rt-table-wrap">
       <table class="rt-table">
         <thead>
@@ -101,11 +89,10 @@ export function renderControllerServicesSummary(slot, data) {
             <th>Service</th>
             <th>Status</th>
             <th>Age</th>
-            <th></th>
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="4">No services</td></tr>`}
+          ${rows || `<tr><td colspan="3">No services</td></tr>`}
         </tbody>
       </table>
     </div>
