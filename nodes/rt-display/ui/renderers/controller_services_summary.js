@@ -33,11 +33,27 @@ function fmtAge(ageSec) {
   return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
+function startAgeTicker(container) {
+  // kill any previous ticker (important; renderer runs many times)
+  if (container.__rtAgeTimer) {
+    try { clearInterval(container.__rtAgeTimer); } catch (_) {}
+    container.__rtAgeTimer = null;
+  }
+
+  container.__rtAgeTimer = setInterval(() => {
+    // update only the age cells
+    const cells = container.querySelectorAll("[data-rt-age-ms]");
+    for (const el of cells) {
+      const ms = el.getAttribute("data-rt-age-ms");
+      const age = ageSecFromMs(ms);
+      el.textContent = fmtAge(age);
+    }
+  }, 1000);
+}
+
 export function renderControllerServicesSummary(container, panel, data) {
-  // Expect scan binding shape: data.controller_services = [{id,state,last_update_ms,...}, ...]
   const services = Array.isArray(data?.controller_services) ? data.controller_services : [];
 
-  // Optional: stable display order
   const labelMap = {
     mqtt_bus: "MQTT",
     redis_state: "Redis",
@@ -48,7 +64,6 @@ export function renderControllerServicesSummary(container, panel, data) {
     noaa_same: "NOAA SAME",
   };
 
-  // Sort for readability (keep known ones first, then alpha)
   const knownOrder = Object.keys(labelMap);
   const orderIndex = new Map(knownOrder.map((k, i) => [k, i]));
 
@@ -64,10 +79,11 @@ export function renderControllerServicesSummary(container, panel, data) {
       const id = String(svc?.id || svc?.key || "unknown");
       const name = labelMap[id] || id;
       const pill = stateToPill(svc?.state);
-      const age = ageSecFromMs(svc?.last_update_ms);
+
+      const ms = svc?.last_update_ms ?? null;
+      const age = ageSecFromMs(ms);
       const ageTxt = fmtAge(age);
 
-      // Consider stale if > ~2 poll intervals of service_state_publisher (10–12s)
       const stale = (age != null && age > 12);
       const rowCls = stale ? "rt-row stale" : "rt-row";
 
@@ -75,7 +91,7 @@ export function renderControllerServicesSummary(container, panel, data) {
         <tr class="${rowCls}">
           <td class="rt-cell-name">${name}</td>
           <td class="rt-cell-status">${pill}</td>
-          <td class="rt-cell-age">${ageTxt}</td>
+          <td class="rt-cell-age" data-rt-age-ms="${ms ?? ""}">${ageTxt}</td>
         </tr>
       `;
     })
@@ -97,4 +113,7 @@ export function renderControllerServicesSummary(container, panel, data) {
       </table>
     </div>
   `;
+
+  // Make Age tick even if push/poll is quiet
+  startAgeTicker(container);
 }
