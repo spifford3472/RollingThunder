@@ -267,16 +267,46 @@ def validate_config(
             if not isinstance(b, dict):
                 errors.append(f"panel[{pid}].bindings[{bi}] must be an object")
                 continue
+
             src = b.get("source")
-            if src not in {"state", "api", "bus"}:
-                errors.append(f"panel[{pid}].bindings[{bi}].source must be one of state|api|bus")
+
+            # Allow scan now (UI runtime supports it)
+            if src not in {"state", "api", "bus", "scan"}:
+                errors.append(f"panel[{pid}].bindings[{bi}].source must be one of state|api|bus|scan")
                 continue
-            if src == "state" and not _is_nonempty_str(b.get("key")):
-                errors.append(f"panel[{pid}].bindings[{bi}] state binding must define non-empty 'key'")
-            if src == "api" and not _is_nonempty_str(b.get("url")):
-                errors.append(f"panel[{pid}].bindings[{bi}] api binding must define non-empty 'url'")
-            if src == "bus" and not _is_nonempty_str(b.get("topic")):
-                errors.append(f"panel[{pid}].bindings[{bi}] bus binding must define non-empty 'topic'")
+
+            if src == "state":
+                if not _is_nonempty_str(b.get("key")):
+                    errors.append(f"panel[{pid}].bindings[{bi}] state binding must define non-empty 'key'")
+
+            elif src == "api":
+                if not _is_nonempty_str(b.get("url")):
+                    errors.append(f"panel[{pid}].bindings[{bi}] api binding must define non-empty 'url'")
+
+            elif src == "bus":
+                if not _is_nonempty_str(b.get("topic")):
+                    errors.append(f"panel[{pid}].bindings[{bi}] bus binding must define non-empty 'topic'")
+
+            elif src == "scan":
+                # Required: match
+                if not _is_nonempty_str(b.get("match")):
+                    errors.append(f"panel[{pid}].bindings[{bi}] scan binding must define non-empty 'match'")
+
+                # Optional: limit (if present) must be positive int
+                lim = b.get("limit")
+                if lim is not None and not _is_positive_int(lim):
+                    errors.append(f"panel[{pid}].bindings[{bi}] scan binding 'limit' must be a positive integer if present")
+
+                # Optional: filter (if present) must be an object
+                flt = b.get("filter")
+                if flt is not None and not isinstance(flt, dict):
+                    errors.append(f"panel[{pid}].bindings[{bi}] scan binding 'filter' must be an object if present")
+
+                # Minimal safety: only allow rt:* patterns (matches your key policy elsewhere)
+                m = (b.get("match") or "").strip() if isinstance(b.get("match"), str) else ""
+                if m and not m.startswith("rt:"):
+                    errors.append(f"panel[{pid}].bindings[{bi}] scan binding 'match' must start with 'rt:'")
+
 
         actions = panel.get("actions", [])
         if actions is None:
