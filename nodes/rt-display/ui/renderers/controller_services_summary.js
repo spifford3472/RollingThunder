@@ -19,6 +19,12 @@ function stateToPill(state) {
   return pillHtml("warn", s.slice(0, 5).toUpperCase());
 }
 
+function ageSecFrom(lastUpdateMs) {
+  const t = Number(lastUpdateMs);
+  if (!Number.isFinite(t) || t <= 0) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 1000));
+}
+
 function ageSecFromMs(ms) {
   const n = Number(ms ?? NaN);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -81,8 +87,9 @@ export function renderControllerServicesSummary(container, panel, data) {
       const pill = stateToPill(svc?.state);
 
       const ms = svc?.last_update_ms ?? null;
-      const age = ageSecFromMs(ms);
-      const ageTxt = fmtAge(age);
+      const age = ageSecFrom(svc.last_update_ms);
+      const ageTxt = (age == null) ? "-" : `${age}s`;
+
 
       const stale = (age != null && age > 12);
       const rowCls = stale ? "rt-row stale" : "rt-row";
