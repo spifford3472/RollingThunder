@@ -1,4 +1,6 @@
 // binding_store.js
+// Drop-in replacement: adds `source:"scan"` resolver for /api/v1/ui/state/scan
+// Keeps existing API/state/bus behavior unchanged.
 
 async function fetchJson(url, timeoutMs = 2500) {
   const controller = new AbortController();
@@ -36,6 +38,9 @@ function mkResult({ ok, value = null, err = null, meta = {} }) {
 
 export function createBindingStore(opts = {}) {
   const stateBatchUrl = opts.stateBatchUrl || "/api/v1/ui/state/batch";
+
+  // NEW: scan endpoint (read-only)
+  const stateScanUrl = opts.stateScanUrl || "/api/v1/ui/state/scan";
 
   // Controller SSE endpoint (shared connection). Controller emits:
   // - event: hello
@@ -146,14 +151,13 @@ export function createBindingStore(opts = {}) {
 
     es.addEventListener("hello", (ev) => {
       _esConnected = true;
-      // Optional: you could emit a diagnostic topic here if you ever want.
+      // Optional: diagnostics
       // const obj = _parseJson(ev.data);
       // console.log("SSE hello", obj);
     });
 
     // IMPORTANT: controller emits `event: message`, not default "message"
     es.addEventListener("message", (ev) => {
-
       const obj = _parseJson(ev?.data);
       if (!obj) return;
 
@@ -177,12 +181,10 @@ export function createBindingStore(opts = {}) {
     });
 
     es.onerror = () => {
-      // Keep quiet; we can add rate-limited diagnostics later.
       _esConnected = false;
       _closeSse();               // <-- KEY: kill the dead EventSource
       _scheduleReconnect("error");
     };
-
   }
 
   function subscribe(topic) {
@@ -220,8 +222,7 @@ export function createBindingStore(opts = {}) {
     return () => {
       const s = _handlers.get(topic);
       if (s) s.delete(fn);
-      // Note: we do NOT auto-unsubscribe the bus topic here because
-      // refresh.js manages unsub() already. Keep behavior deterministic.
+      // refresh.js manages unsubscribe(topic) deterministically
     };
   }
 
@@ -230,6 +231,86 @@ export function createBindingStore(opts = {}) {
     window.addEventListener("beforeunload", () => {
       try { _closeSse(); } catch (_) {}
     });
+  }
+
+  // ---------- NEW: scan resolver ----------
+  async function resolveScan(binding, started) {
+    const match = String(binding?.match || "").trim();
+    const prefix = String(binding?.prefix || "").trim();
+
+    let limit = Number(binding?.limit ?? 50);
+    if (!Number.isFinite(limit)) limit = 50;
+    limit = Math.max(1, Math.min(200, Math.floor(limit)));
+
+    if (!match && !prefix) {
+      return mkResult({
+        ok: false,
+        err: "missing_match_or_prefix",
+        meta: { source: "scan", locator: "", ms: Date.now() - started },
+      });
+    }
+
+    // Build URL: /api/v1/ui/state/scan?match=...&limit=...
+    const u = new URL(stateScanUrl, window.location.origin);
+    if (match) u.searchParams.set("match", match);
+    if (prefix) u.searchParams.set("prefix", prefix);
+    u.searchParams.set("limit", String(limit));
+
+    try {
+      const resp = await fetchJson(u.toString());
+
+      if (!resp?.ok || !resp?.data || !Array.isArray(resp.data.keys)) {
+        return mkResult({
+          ok: false,
+          err: "scan_bad_response",
+          meta: { source: "scan", locator: match || prefix, ms: Date.now() - started },
+        });
+      }
+
+      // resp.data.keys is [{key,type,preview},...]
+      let items = resp.data.keys.slice();
+
+      // Optional filter on preview fields: { ownerNode: "rt-controller" }
+      const filter = binding?.filter;
+      if (filter && typeof filter === "object") {
+        items = items.filter((it) => {
+          const p = (it && typeof it.preview === "object" && it.preview) ? it.preview : {};
+          for (const [fk, fv] of Object.entries(filter)) {
+            if ((p?.[fk] ?? null) !== fv) return false;
+          }
+          return true;
+        });
+      }
+
+      // Normalize to renderer-friendly objects:
+      // { key, type, ...preview }
+      const value = items.map((it) => {
+        const key = String(it?.key ?? "");
+        const type = String(it?.type ?? "");
+        const preview = (it && typeof it.preview === "object" && it.preview) ? it.preview : {};
+        return { key, type, ...preview };
+      });
+
+      // Stable order: by preview.id then key
+      value.sort((a, b) => {
+        const ai = String(a?.id ?? "");
+        const bi = String(b?.id ?? "");
+        if (ai !== bi) return ai.localeCompare(bi);
+        return String(a?.key ?? "").localeCompare(String(b?.key ?? ""));
+      });
+
+      return mkResult({
+        ok: true,
+        value,
+        meta: { source: "scan", locator: match || prefix, ms: Date.now() - started, count: value.length },
+      });
+    } catch (e) {
+      return mkResult({
+        ok: false,
+        err: e?.message || e,
+        meta: { source: "scan", locator: match || prefix, ms: Date.now() - started },
+      });
+    }
   }
 
   return {
@@ -271,6 +352,10 @@ export function createBindingStore(opts = {}) {
         }
       }
 
+      if (src === "scan") {
+        return await resolveScan(binding, started);
+      }
+
       if (src === "bus") {
         // Bus is consumed via subscribe()/on(), not resolve().
         const t = String(binding?.topic || "").trim();
@@ -282,4 +367,3 @@ export function createBindingStore(opts = {}) {
     },
   };
 }
-

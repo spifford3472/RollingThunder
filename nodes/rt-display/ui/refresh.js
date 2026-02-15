@@ -136,12 +136,12 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       try {
         // Build scan match prefixes for cheap push filtering.
         // We only support simple "prefix*" matches here (safe + fast).
-        const scanPrefixes = list
-          .filter(b => String(b?.source || "").toLowerCase() === "scan")
-          .map(b => String(b?.match || "").trim())
-          .filter(m => m.endsWith("*"))
-          .map(m => m.slice(0, -1)) // remove trailing '*'
-          .filter(Boolean);
+      const scanPrefixes = list
+        .filter(b => String(b?.source || "").toLowerCase() === "scan")
+        .map(b => String(b?.match || "").trim())
+        .filter(m => m.endsWith("*"))
+        .map(m => m.slice(0, -1))
+        .filter(Boolean);
 
         // Expect publish payload shape:
         // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
