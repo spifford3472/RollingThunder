@@ -34,7 +34,7 @@ function fmtAge(ageSec) {
   return `${m}m${String(s).padStart(2, "0")}`;
 }
 
-export function render_controller_services_summary(slot, data) {
+export function renderControllerServicesSummary(slot, data) {
   // data.<bindingId> is the resolved value (hash object) or null
   const entries = Object.entries(data || {})
     .filter(([k]) => !k.startsWith("__"))
