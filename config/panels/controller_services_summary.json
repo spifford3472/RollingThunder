@@ -19,9 +19,9 @@
     { "intent": "host.status", "params": { "scope": "services" } }
   ],
 
-"meta": {
-    "purpose": "Controller-owned systemd service health summary (from rt:services:*).",
+ "meta": {
     "title": "Controller Services",
+    "purpose": "At-a-glance state of controller-owned services (rt:services:*).",
     "contract": {
       "requiredBindings": ["mqtt_bus", "redis_state", "gps_ingest"],
       "allowNull": ["logging", "node_health", "noaa_same", "meshtastic_c2"]
