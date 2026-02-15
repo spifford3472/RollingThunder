@@ -1,10 +1,11 @@
 // controller_services_summary.js
 //
 // Drop-in replacement:
-// - Renders ONLY what the scan finds (no “future/known” placeholders)
-// - No known-order bias; stable sort by service id
-// - Age ticker updates in-place without “resetting” ages on rerender
-//   (we do NOT force a new baseline; we just recompute from last_update_ms)
+// - Renders ONLY what scan finds
+// - Hides services whose state is "unknown" (and also blank/null), so you don’t see
+//   logging / meshtastic_c2 / noaa_same / node_health until they’re real.
+// - Stable sort by id/key
+// - Age ticker updates in-place
 
 function pillHtml(kind, label) {
   const cls =
@@ -25,6 +26,16 @@ function stateToPill(state) {
   return pillHtml("warn", s.slice(0, 5).toUpperCase());
 }
 
+function shouldShowService(svc) {
+  const s = String(svc?.state || "").toLowerCase().trim();
+
+  // Hide anything that’s not actually giving us a meaningful state yet.
+  if (!s) return false;
+  if (s === "unknown") return false;
+
+  return true;
+}
+
 function ageSecFromMs(ms) {
   const n = Number(ms ?? NaN);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -40,7 +51,6 @@ function fmtAge(ageSec) {
 }
 
 function startAgeTicker(container) {
-  // Kill any previous ticker (renderer runs many times)
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
     container.__rtAgeTimer = null;
@@ -53,7 +63,6 @@ function startAgeTicker(container) {
       const age = ageSecFromMs(ms);
       el.textContent = fmtAge(age);
 
-      // Optional: keep stale styling “live” as age increases.
       const tr = el.closest("tr");
       if (tr) {
         const stale = (age != null && age > 12);
@@ -73,20 +82,20 @@ function safeText(s) {
 }
 
 export function renderControllerServicesSummary(container, panel, data) {
-  // Render ONLY what we actually found from scan.
-  const services = Array.isArray(data?.controller_services) ? data.controller_services : [];
+  const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
+
+  // Key change: hide unknown/unset states entirely
+  const services = all.filter(shouldShowService);
 
   const rows = services
     .slice()
     .sort((a, b) => {
-      // Prefer explicit id; fall back to key
       const as = String(a?.id || a?.key || "");
       const bs = String(b?.id || b?.key || "");
       return as.localeCompare(bs);
     })
     .map((svc) => {
       const id = String(svc?.id || svc?.key || "unknown");
-      const name = id; // no “future” known-service mapping
       const pill = stateToPill(svc?.state);
 
       const ms = svc?.last_update_ms ?? null;
@@ -98,7 +107,7 @@ export function renderControllerServicesSummary(container, panel, data) {
 
       return `
         <tr class="${rowCls}">
-          <td class="rt-cell-name">${safeText(name)}</td>
+          <td class="rt-cell-name">${safeText(id)}</td>
           <td class="rt-cell-status">${pill}</td>
           <td class="rt-cell-age" data-rt-age-ms="${ms ?? ""}">${ageTxt}</td>
         </tr>
@@ -123,6 +132,5 @@ export function renderControllerServicesSummary(container, panel, data) {
     </div>
   `;
 
-  // Keep Age moving even if push/poll is quiet
   startAgeTicker(container);
 }
