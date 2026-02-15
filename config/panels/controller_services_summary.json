@@ -5,12 +5,23 @@
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
 
   "bindings": [
-    { "id": "controller_services", "source": "scan", "match": "rt:services:*", "filter": { "ownerNode": "rt-controller" }, "limit": 50 }
+    { "id": "controller_services", 
+      "source": "scan", 
+      "match": "rt:services:*", 
+      "filter": { "ownerNode": "rt-controller" }, 
+      "limit": 50 
+    }
   ],
 
-  "meta": {
-    "title": "Controller Services",
-    "purpose": "At-a-glance state of controller-owned services.",
-    "contract": { "requiredBindings": ["controller_services"] }
+  "actions": [
+      { "intent": "host.status", "params": { "scope": "services" } }
+    ],
+
+    "meta": {
+      "title": "Controller Services",
+      "purpose": "At-a-glance state of controller-owned services (rt:services:*).",
+      "contract": {
+        "requiredBindings": ["controller_services"]
+      }
+    }
   }
-}
