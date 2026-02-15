@@ -45,6 +45,8 @@ SNAPSHOT_PATHS = ("/api/v1/ui/snapshot", "/api/v1/ui/snapshot/")
 NODES_PATHS = ("/api/v1/ui/nodes", "/api/v1/ui/nodes/")
 DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
 STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
+STATE_SCAN_PATHS = ("/api/v1/ui/state/scan", "/api/v1/ui/state/scan/")
+
 
 # NEW: SSE bus subscribe endpoint (read-only)
 BUS_SUBSCRIBE_PATHS = ("/api/v1/ui/bus/subscribe", "/api/v1/ui/bus/subscribe/")
@@ -55,6 +57,17 @@ KEY_DEPLOY_PREFIX = os.environ.get("RT_KEY_DEPLOY_PREFIX", "rt:deploy:report:")
 DEPLOY_MAX_AGE_SEC = int(os.environ.get("RT_DEPLOY_MAX_AGE_SEC", "30"))
 DEPLOY_COMMIT_FILE = os.environ.get(
     "RT_DEPLOYED_COMMIT_FILE", "/opt/rollingthunder/.deploy/DEPLOYED_COMMIT"
+)
+
+MAX_SCAN_LIMIT = int(os.environ.get("RT_MAX_SCAN_LIMIT", "50"))
+MAX_SCAN_PREVIEW_BYTES = int(os.environ.get("RT_MAX_SCAN_PREVIEW_BYTES", "2048"))
+
+# Conservative: only allow scanning inside these prefixes.
+SCAN_MATCH_ALLOWLIST = (
+    "rt:nodes:",
+    "rt:services:",
+    "rt:deploy:report:",
+    "rt:system:",
 )
 
 # Observed base keys
@@ -219,6 +232,145 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     # Keep logs quiet by default; systemd/journal can still show tracebacks if we print
     def log_message(self, fmt: str, *args: Any) -> None:
         return
+
+    def _parse_int_qs(self, qs: Dict[str, list[str]], name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            raw = (qs.get(name) or [str(default)])[0]
+            v = int(str(raw).strip())
+            if v < lo:
+                return lo
+            if v > hi:
+                return hi
+            return v
+        except Exception:
+            return default
+
+    def _scan_match_allowed(self, match: str) -> bool:
+        # must be simple and bounded
+        if not isinstance(match, str):
+            return False
+        m = match.strip()
+        if not m or len(m) > MAX_KEY_LEN:
+            return False
+        if "\n" in m or "\r" in m:
+            return False
+
+        # Only allow allowlisted prefixes, and only "*" at the end.
+        # Example: "rt:services:*" or "rt:services:mqtt_bus" (no wildcard)
+        if "*" in m and not m.endswith("*"):
+            return False
+
+        base = m[:-1] if m.endswith("*") else m
+        return any(base.startswith(p) for p in SCAN_MATCH_ALLOWLIST)
+
+    def _handle_state_scan(self) -> None:
+        """
+        GET /api/v1/ui/state/scan?match=rt:services:*&limit=50&cursor=0
+
+        Returns:
+          {
+            ok, ts, server_time_ms,
+            data: { cursor, next_cursor, keys: [{key,type,preview}] }
+          }
+
+        Bounded:
+        - allowlisted match prefixes only
+        - cursor-based SCAN
+        - limit clamped to MAX_SCAN_LIMIT
+        - preview is small (hash subset / string prefix)
+        """
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query or "")
+
+        # Accept either `match` or `prefix` for convenience.
+        match = ""
+        if "match" in qs and qs["match"]:
+            match = str(qs["match"][0])
+        elif "prefix" in qs and qs["prefix"]:
+            pref = str(qs["prefix"][0]).strip()
+            match = pref if pref.endswith("*") else (pref + "*")
+
+        if not match:
+            match = "rt:services:*"
+
+        if not self._scan_match_allowed(match):
+            return self._write_json(
+                400,
+                {
+                    "ok": False,
+                    "ts": now_iso_utc(),
+                    "server_time_ms": now_ms(),
+                    "errors": ["bad_request: match_not_allowed"],
+                    "data": {"cursor": 0, "next_cursor": 0, "keys": []},
+                },
+            )
+
+        limit = self._parse_int_qs(qs, "limit", default=25, lo=1, hi=MAX_SCAN_LIMIT)
+        cursor = self._parse_int_qs(qs, "cursor", default=0, lo=0, hi=10_000_000)
+
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "ts": now_iso_utc(),
+            "server_time_ms": now_ms(),
+            "errors": [],
+            "data": {"cursor": cursor, "next_cursor": cursor, "keys": []},
+            "source": "rt-controller",
+            "endpoint": "/api/v1/ui/state/scan",
+            "schema_version": "ui.state.scan.v1",
+        }
+
+        try:
+            r = self._redis()
+
+            # redis-py scan: cursor + match + count hint
+            next_cursor, keys = r.scan(cursor=cursor, match=match, count=limit)
+
+            out = []
+            for k in keys[:limit]:
+                ks = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                if not self._key_allowed(ks):
+                    continue
+
+                t = str(r.type(ks))
+                preview: Any = None
+
+                try:
+                    if t == "hash":
+                        h = r.hgetall(ks)
+                        # bounded preview: pick a few stable fields
+                        keep = {}
+                        for fld in ("id", "role", "status", "state", "age_sec", "last_seen_ms", "last_update_ms", "ownerNode", "publisher_error"):
+                            if fld in h:
+                                keep[fld] = _truncate(_coerce_scalar(h.get(fld)))
+                        preview = keep
+                    elif t == "string":
+                        s = r.get(ks) or ""
+                        # small preview only
+                        b = s.encode("utf-8", errors="replace")
+                        if len(b) > MAX_SCAN_PREVIEW_BYTES:
+                            s = b[:MAX_SCAN_PREVIEW_BYTES].decode("utf-8", errors="replace") + "…"
+                        parsed_s = _try_parse_json(s)
+                        preview = _truncate(parsed_s)
+                    else:
+                        preview = None
+                except Exception:
+                    preview = {"_error": "preview_failed"}
+
+                out.append({"key": ks, "type": t, "preview": preview})
+
+            payload["data"] = {
+                "cursor": cursor,
+                "next_cursor": int(next_cursor),
+                "keys": out,
+                "match": match,
+                "limit": limit,
+            }
+            payload["ok"] = True
+            return self._write_json(200, payload)
+
+        except Exception as e:
+            payload["errors"].append(f"scan_failed: {type(e).__name__}: {e}")
+            return self._write_json(503, payload)
 
     # ---------- HTTP helpers ----------
     def _cors(self) -> None:
@@ -877,6 +1029,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
         if path in DEPLOY_PATHS:
             return self._handle_deploy()
+
+        if path in STATE_SCAN_PATHS:
+            return self._handle_state_scan()
 
         # 4) Fallback: not found
         self.send_response(404)
