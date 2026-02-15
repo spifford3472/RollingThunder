@@ -6,26 +6,19 @@
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
 
   "bindings": [
-    { "id": "mqtt_bus",     "source": "state", "key": "rt:services:mqtt_bus" },
-    { "id": "redis_state",  "source": "state", "key": "rt:services:redis_state" },
-    { "id": "gps_ingest",   "source": "state", "key": "rt:services:gps_ingest" },
-    { "id": "logging",      "source": "state", "key": "rt:services:logging" },
-    { "id": "node_health",  "source": "state", "key": "rt:services:node_health" },
-    { "id": "noaa_same",    "source": "state", "key": "rt:services:noaa_same" },
-    { "id": "meshtastic_c2","source": "state", "key": "rt:services:meshtastic_c2" }
+    { "id": "controller_services", "source": "scan", "match": "rt:services:*", "filter": { "ownerNode": "rt-controller" }, "limit": 50 }
   ],
 
   "actions": [
     { "intent": "host.status", "params": { "scope": "services" } }
   ],
 
- "meta": {
+  "meta": {
     "title": "Controller Services",
     "purpose": "At-a-glance state of controller-owned services (rt:services:*).",
     "contract": {
-      "requiredBindings": ["mqtt_bus", "redis_state", "gps_ingest"],
-      "allowNull": ["logging", "node_health", "noaa_same", "meshtastic_c2"]
+      "requiredBindings": ["controller_services"],
+      "allowNull": ["mqtt_bus", "redis_state", "gps_ingest", "logging", "node_health", "noaa_same", "meshtastic_c2"]
     }
   }
 }
-

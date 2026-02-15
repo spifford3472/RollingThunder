@@ -132,11 +132,33 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     store.subscribe(topic);
 
     unsub = store.on(topic, (msg) => {
+
       try {
+        // Build scan match prefixes for cheap push filtering.
+        // We only support simple "prefix*" matches here (safe + fast).
+        const scanPrefixes = list
+          .filter(b => String(b?.source || "").toLowerCase() === "scan")
+          .map(b => String(b?.match || "").trim())
+          .filter(m => m.endsWith("*"))
+          .map(m => m.slice(0, -1)) // remove trailing '*'
+          .filter(Boolean);
+
         // Expect publish payload shape:
         // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
         // But be tolerant:
         const keys = msg?.payload?.keys ?? msg?.data?.payload?.keys;
+
+        // If any changed key matches a scan prefix, refresh.
+        for (const k of (Array.isArray(keys) ? keys : [])) {
+          if (typeof k !== "string") continue;
+
+          for (const p of scanPrefixes) {
+            if (k.startsWith(p)) {
+              tick();
+              return;
+            }
+          }
+        }
 
         // If no keys provided, treat as a general nudge.
         if (!Array.isArray(keys) || keys.length === 0) {
