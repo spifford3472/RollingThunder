@@ -11,7 +11,7 @@
     ],
     "bottom": []
   },
-  "requires": ["wpsd_poll"],
+  "requires": [ ],
   "optional": ["wpsd_integration"],
   "controls": {
     "allowedIntents": ["ui.page.next","ui.page.prev","ui.focus.next","ui.focus.prev"]
