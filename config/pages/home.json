@@ -6,7 +6,7 @@
   "layout": {
     "top": ["topbar_core"],
     "middle": [
-      ["alerts_overlay", "controller_services_summary"],
+      ["alerts_overlay", "controller_services_summary","wpsd_status"],
       ["node_health_summary", "deploy_drift_summary"]
     ],
     "bottom": []
