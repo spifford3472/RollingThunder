@@ -5,7 +5,7 @@ import { renderAlertsOverlay } from "./renderers/alerts_overlay.js";
 import { renderNodeHealthSummary } from "./renderers/node_health_summary.js";
 import { renderRadioStatus } from "./renderers/radio_status.js";
 import { renderControllerServicesSummary } from  "./renderers/controller_services_summary.js";
-
+import { renderWpsdStatus } from "./wpsd_status.js";
 
 /**
  * createRendererRegistry()
@@ -51,6 +51,10 @@ export function createRendererRegistry() {
   );
 
   map.set("radio_status", (container, panel, data) =>
+    renderRadioStatus(container, panel, data)
+);
+
+  map.set("wpsd_status", (container, panel, data) =>
     renderRadioStatus(container, panel, data)
 );
 

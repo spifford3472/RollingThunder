@@ -114,3 +114,16 @@
 .rt-ts-line .v { text-align:right; }
 .rt-flag { height: 20px; vertical-align: middle; margin-right: 6px; }
 .rt-muted { opacity: 0.7; }
+
+.rt-wpsd-hd { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+.rt-wpsd-title { font-weight:700; letter-spacing:0.5px; }
+.rt-wpsd-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; }
+.rt-wpsd-slot { padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; }
+.rt-wpsd-slot-hd { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.rt-wpsd-slot-title { font-weight:700; }
+.rt-kv { width:100%; border-collapse:collapse; }
+.rt-kv .k { width:70px; opacity:0.7; padding:2px 0; }
+.rt-kv .v { padding:2px 0; }
+.rt-subtle { opacity:0.7; font-size:0.95em; }
+.rt-right { text-align:right; }
+.rt-wpsd.stale { opacity:0.75; }

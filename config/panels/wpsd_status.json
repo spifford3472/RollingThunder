@@ -1,10 +1,22 @@
 {
   "id": "wpsd_status",
   "type": "wpsd_status",
-  "focusable": false,
-  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
+  "focusable": true,
+
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 1500 },
+
   "bindings": [
-    { "id": "snapshot", "source": "state", "key": "rt:wpsd:snapshot" }
+    { "id": "rf_slots",  "source": "state", "key": "rt:wpsd:rf:slots" },
+    { "id": "rf_recent", "source": "state", "key": "rt:wpsd:rf:recent" }
   ],
-  "meta": { "title": "WPSD Status" }
+
+  "actions": [],
+
+  "meta": {
+    "title": "WPSD RF Status",
+    "purpose": "DMR RF activity summary for TS1/TS2 and recent transmissions.",
+    "contract": {
+      "requiredBindings": ["rf_slots", "rf_recent"]
+    }
+  }
 }
