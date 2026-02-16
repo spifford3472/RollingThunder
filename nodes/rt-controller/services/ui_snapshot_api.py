@@ -28,7 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlparse
-
+import urllib.request
+from urllib.error import URLError, HTTPError
 import redis
 
 
@@ -108,6 +109,12 @@ UI_PREFIX = "/ui"
 
 CFG_ROOT = Path(os.environ.get("RT_CFG_ROOT", "/opt/rollingthunder/config")).resolve()
 CFG_PREFIX = "/config"
+
+# Flag proxy (WPSD -> same-origin UI)
+FLAGS_PREFIX = "/ui/flags"  # we will serve /ui/flags/<code>.png
+WPSD_HTTP_BASE = os.environ.get("RT_WPSD_HTTP_BASE", "http://192.168.8.184")
+FLAGS_MAX_BYTES = int(os.environ.get("RT_FLAGS_MAX_BYTES", "200000"))  # 200KB cap
+_FLAG_RE = re.compile(r"^[a-z]{2}\.png$", re.IGNORECASE)
 
 
 def now_iso_utc() -> str:
@@ -232,6 +239,54 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     # Keep logs quiet by default; systemd/journal can still show tracebacks if we print
     def log_message(self, fmt: str, *args: Any) -> None:
         return
+
+    def _handle_flag_proxy(self, path: str) -> bool:
+        """
+        GET /ui/flags/us.png  ->  fetch from WPSD: http://<wpsd>/images/flags/us.png
+        Read-only, bounded, traversal-safe.
+        """
+        if not path.startswith(FLAGS_PREFIX + "/"):
+            return False
+
+        name = path[len(FLAGS_PREFIX) + 1 :]  # after "/ui/flags/"
+        name = unquote(name).strip()
+
+        # Strict allowlist: only "xx.png"
+        if not _FLAG_RE.match(name):
+            self.send_error(404, "not_found")
+            return True
+
+        upstream = f"{WPSD_HTTP_BASE}/images/flags/{name}"
+
+        try:
+            req = urllib.request.Request(upstream, headers={"User-Agent": "RollingThunder/flag-proxy"})
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                ctype = resp.headers.get("Content-Type", "image/png")
+                data = resp.read(FLAGS_MAX_BYTES + 1)
+
+            if len(data) > FLAGS_MAX_BYTES:
+                self.send_error(502, "upstream_too_large")
+                return True
+
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            # flags are basically immutable; cache is fine
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self._safe_write(data)
+            return True
+
+        except HTTPError:
+            self.send_error(404, "not_found")
+            return True
+        except URLError:
+            self.send_error(502, "upstream_unreachable")
+            return True
+        except Exception:
+            self.send_error(502, "upstream_error")
+            return True
 
     def _parse_int_qs(self, qs: Dict[str, list[str]], name: str, default: int, lo: int, hi: int) -> int:
         try:
@@ -1012,15 +1067,19 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         if path in HEALTHZ_PATHS:
             return self._handle_healthz()
 
-        # 1) Static UI/config first (same-origin UI + API + config)
+        # 1) Flag proxy (must be before static UI so /ui/flags/* doesn't look for local files)
+        if self._handle_flag_proxy(path):
+            return
+
+        # 2) Static UI/config
         if self._try_serve_static_ui_or_config():
             return
 
-        # 2) SSE bus subscribe (read-only)
+        # 3) SSE bus subscribe (read-only)
         if path in BUS_SUBSCRIBE_PATHS:
             return self._handle_bus_subscribe()
 
-        # 3) API routing
+        # 4) API routing
         if path in SNAPSHOT_PATHS:
             return self._handle_snapshot()
 
@@ -1033,7 +1092,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         if path in STATE_SCAN_PATHS:
             return self._handle_state_scan()
 
-        # 4) Fallback: not found
+        # 5) Fallback: not found
         self.send_response(404)
         self._cors()
         self.send_header("Content-Type", "application/json")

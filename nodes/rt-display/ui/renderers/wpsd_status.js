@@ -50,7 +50,7 @@ function flagUrlFromCountryCode(cc) {
 
   // Option B: fetch directly from WPSD web UI (cross-origin)
   // Adjust if your WPSD uses a different base path.
-  return `http://rt-wpsd.local/images/flags/${code}.png`;
+  return `/ui/flags/${code}.png`;
 }
 
 // Emoji fallback (regional indicator symbols)
