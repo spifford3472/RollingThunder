@@ -6,14 +6,20 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=spiff
+WorkingDirectory=/opt/rollingthunder
 Environment=PYTHONUNBUFFERED=1
+
 Environment=RT_WPSD_HOST=192.168.8.184
 Environment=RT_WPSD_USER=pi-star
 
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/wpsd_poller.py
+
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=10
+
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
