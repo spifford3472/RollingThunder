@@ -13,7 +13,7 @@ Environment=RT_WPSD_USER=pi-star
 # Environment=RT_WPSD_SSH_KEY=/home/spiff/.ssh/id_ed25519
 # Environment=RT_WPSD_KNOWN_HOSTS=/home/spiff/.ssh/known_hosts
 
-ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-controller/services/wpsd_log_ingestor.py
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/wpsd_log_ingestor.py
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=10
