@@ -6,8 +6,7 @@
     "top": ["topbar_core"],
     "middle": [
       ["wpsd_status"],
-      ["wpsd_rf_summary"],
-      ["wpsd_errors"]
+      ["wpsd_rf_summary"]
     ],
     "bottom": []
   },
