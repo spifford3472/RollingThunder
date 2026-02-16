@@ -18,7 +18,7 @@
   },
   "focusPolicy": {
     "defaultPanel": "wpsd_rf_summary",
-    "rotation": ["wpsd_rf_summary","wpsd_status","wpsd_errors"]
+    "rotation": ["wpsd_rf_summary","wpsd_status"]
   },
   "meta": { "purpose": "Operational insight into external WPSD appliance (read-only)." }
 }
