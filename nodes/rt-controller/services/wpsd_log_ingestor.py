@@ -36,6 +36,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+import urllib.request
+import urllib.error
 
 import redis
 
@@ -71,6 +73,13 @@ KEY_SLOTS = os.environ.get("RT_KEY_WPSD_SLOTS", "rt:wpsd:rf:slots")
 KEY_RECENT = os.environ.get("RT_KEY_WPSD_RECENT", "rt:wpsd:rf:recent")
 
 LOCAL_NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
+# WPSD HTTP (for flag lookup)
+WPSD_HTTP_BASE = os.environ.get("RT_WPSD_HTTP_BASE", "http://192.168.8.184")
+WPSD_CALLER_DETAILS_PATH = os.environ.get("RT_WPSD_CALLER_DETAILS_PATH", "/mmdvmhost/caller_details_table.php")
+WPSD_HTTP_TIMEOUT_SEC = float(os.environ.get("RT_WPSD_HTTP_TIMEOUT_SEC", "0.8"))
+
+# Cache: callsign -> cc (country code) TTL
+CALLSIGN_CC_TTL_SEC = int(os.environ.get("RT_WPSD_CC_TTL_SEC", "86400"))  # 24h default
 
 
 def now_ms() -> int:
@@ -143,6 +152,8 @@ class SlotState:
     loss_pct: Optional[int] = None
     ber: Optional[float] = None
     alias: Optional[str] = None
+    cc: Optional[str] = None   # e.g. "us", "jp", "au"
+
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -156,6 +167,7 @@ class SlotState:
             "loss_pct": self.loss_pct,
             "ber": self.ber,
             "alias": self.alias,
+            "cc": self.cc,
         }
 
 
@@ -300,6 +312,104 @@ def build_recent_payload(recent: List[Dict[str, Any]]) -> Dict[str, Any]:
         "items": recent[:RECENT_MAX],
     }
 
+# --- callsign -> country code (cc) lookup via WPSD HTML (bounded, cached) ---
+
+_FLAG_IMG_RE = re.compile(r"/images/flags/(?P<cc>[a-z0-9\-]+)\.png", re.IGNORECASE)
+_CALLSIGN_IN_ROW_RE = re.compile(r"callsign=([A-Z0-9/]+)", re.IGNORECASE)
+
+def _http_get_text(url: str, timeout_sec: float) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "RollingThunder/rt-controller (flag-lookup)",
+            "Accept": "text/html,*/*",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        # WPSD is typically UTF-8 but be defensive.
+        data = resp.read(200_000)  # hard cap read
+        return data.decode("utf-8", errors="replace")
+
+def fetch_callsign_cc_map() -> Dict[str, str]:
+    """
+    Pull caller_details_table.php and extract callsign -> cc (country code).
+    We intentionally parse the *same* source that renders flags in WPSD.
+    """
+    url = WPSD_HTTP_BASE.rstrip("/") + WPSD_CALLER_DETAILS_PATH
+    try:
+        html = _http_get_text(url, timeout_sec=WPSD_HTTP_TIMEOUT_SEC)
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return {}
+    except Exception:
+        return {}
+
+    # Strategy:
+    # - Split into coarse "rows" using <tr ...> boundaries.
+    # - If a row contains callsign=FOO and /images/flags/xx.png then map FOO->xx.
+    # This avoids trying to build a brittle full HTML parser.
+    out: Dict[str, str] = {}
+
+    # crude but effective row split
+    parts = re.split(r"<tr\b", html, flags=re.IGNORECASE)
+    for p in parts:
+        mcall = _CALLSIGN_IN_ROW_RE.search(p)
+        if not mcall:
+            continue
+        cs = mcall.group(1).strip().upper()
+        if not cs:
+            continue
+
+        mflag = _FLAG_IMG_RE.search(p)
+        if not mflag:
+            continue
+
+        cc = mflag.group("cc").strip().lower()
+        if not cc:
+            continue
+
+        out[cs] = cc
+
+    return out
+
+def get_cc_for_callsign(
+    callsign: Optional[str],
+    cache: Dict[str, Dict[str, Any]],
+    now_ms_fn=now_ms,
+) -> Optional[str]:
+    """
+    Cache entries: cache[CALL] = {"cc": "us", "ts_ms": <when learned>}
+    TTL is CALLSIGN_CC_TTL_SEC.
+    """
+    if not callsign:
+        return None
+    cs = str(callsign).strip().upper()
+    if not cs:
+        return None
+
+    nowt = now_ms_fn()
+    ent = cache.get(cs)
+    if ent:
+        ts = ent.get("ts_ms")
+        if isinstance(ts, int) and (nowt - ts) <= (CALLSIGN_CC_TTL_SEC * 1000):
+            cc = ent.get("cc")
+            return cc if isinstance(cc, str) and cc else None
+
+    # Miss/expired: refresh map once and update cache
+    mp = fetch_callsign_cc_map()
+    if mp:
+        t = nowt
+        for k, v in mp.items():
+            if isinstance(k, str) and isinstance(v, str) and k and v:
+                cache[k.upper()] = {"cc": v.lower(), "ts_ms": t}
+
+    ent2 = cache.get(cs)
+    if ent2:
+        cc = ent2.get("cc")
+        return cc if isinstance(cc, str) and cc else None
+
+    return None
+
 
 def main() -> None:
     r = redis_client()
@@ -307,6 +417,8 @@ def main() -> None:
     # Local derived state
     slots: Dict[int, SlotState] = {1: SlotState(), 2: SlotState()}
     recent: List[Dict[str, Any]] = []
+    # callsign -> cc cache (in-memory, bounded by TTL + natural churn)
+    cc_cache: Dict[str, Dict[str, Any]] = {}
 
     # Try to load existing recent list (optional continuity)
     prev_recent = load_json(r, KEY_RECENT)
@@ -388,6 +500,8 @@ def main() -> None:
             s.since_ms = nowt
             s.direction = payload.get("src")
             s.callsign = payload.get("callsign")
+            s.cc = get_cc_for_callsign(s.callsign, cc_cache)
+
             s.tg = payload.get("tg")
             # don't reset alias/dur/ber/loss; those reflect last completed TX
             changed_keys.append(KEY_SLOTS)
@@ -404,6 +518,8 @@ def main() -> None:
             s.last_end_ms = nowt
             s.direction = payload.get("src")
             s.callsign = payload.get("callsign")
+            s.cc = get_cc_for_callsign(s.callsign, cc_cache)
+
             s.tg = payload.get("tg")
             s.dur_s = payload.get("dur_s")
             s.loss_pct = payload.get("loss_pct")
@@ -416,12 +532,14 @@ def main() -> None:
                 "slot": slot,
                 "direction": s.direction,
                 "callsign": s.callsign,
+                "cc": s.cc,
                 "tg": s.tg,
                 "dur_s": s.dur_s,
                 "loss_pct": s.loss_pct,
                 "ber": s.ber,
                 "alias": s.alias,
             }
+
             recent.insert(0, recent_item)
             if len(recent) > RECENT_MAX:
                 recent = recent[:RECENT_MAX]

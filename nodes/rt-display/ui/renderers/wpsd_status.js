@@ -6,6 +6,10 @@
 // - Removes BER
 // - Stabilizes FRESH/STALE badge with hysteresis (no 1s flip-flop)
 // - Age ticker updates in-place
+//
+// Expects ingestor fields:
+// - slot.cc (e.g. "us", "gb-eng", "jp")
+// - recent_item.cc
 
 function safeText(s) {
   return String(s ?? "")
@@ -40,21 +44,17 @@ function fmtAge(ageSec) {
 
 // ---- Flag helpers ----
 
-// Prefer same-origin proxy if you add it later. For now, use WPSD path if provided.
-function flagUrlFromCountryCode(cc) {
+// Same-origin static path served by rt-controller ui_snapshot_api.py:
+// /ui/*  -> /opt/rollingthunder/ui/*
+function flagUrlFromCC(cc) {
   const code = String(cc || "").trim().toLowerCase();
-  if (!code || code.length !== 2) return null;
-
-  // Option A (recommended): proxy through rt-controller (same origin)
-  // return `/ui/flags/${code}.png`;
-
-  // Option B: fetch directly from WPSD web UI (cross-origin)
-  // Adjust if your WPSD uses a different base path.
+  // allow "us", "gb-eng", etc.
+  if (!code || !/^[a-z0-9-]+$/.test(code)) return null;
   return `/ui/flags/${code}.png`;
 }
 
-// Emoji fallback (regional indicator symbols)
-function flagEmojiFromCountryCode(cc) {
+// Emoji fallback only works for 2-letter ISO-ish codes
+function flagEmojiFromCC(cc) {
   const code = String(cc || "").trim().toUpperCase();
   if (!code || code.length !== 2) return "🏳️";
   const A = 0x1F1E6;
@@ -65,18 +65,17 @@ function flagEmojiFromCountryCode(cc) {
   return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
-function callWithFlagHtml(callsign, countryCode, alias) {
+function callWithFlagHtml(callsign, cc, alias) {
   const cs = String(callsign || "").trim().toUpperCase();
   if (!cs) return "—";
 
-  const cc = String(countryCode || "").trim().toLowerCase();
-  const emoji = flagEmojiFromCountryCode(cc);
-  const url = flagUrlFromCountryCode(cc);
+  const code = String(cc || "").trim().toLowerCase();
+  const url = flagUrlFromCC(code);
+  const emoji = flagEmojiFromCC(code);
 
-  // Render a small inline layout: [flag] CALLSIGN   (optional alias on second line)
   const aliasTxt = alias ? `<div class="rt-subtle">${safeText(alias)}</div>` : "";
 
-  // If we have a URL, try to show img; onerror hide it and show emoji span.
+  // If we have a URL, try image first; if missing, swap to emoji.
   if (url) {
     return `
       <div class="rt-callrow">
@@ -126,14 +125,9 @@ function slotSummary(slotNum, slot) {
 
   const sinceAge = fmtAge(ageSecFromMs(sinceMs));
   const endAge = fmtAge(ageSecFromMs(lastEndMs));
-
   const timeLabel = active ? "Since" : "Last";
 
-  const callHtml = callWithFlagHtml(
-    slot?.callsign,
-    slot?.country_code,   // <-- expected field (see note below)
-    slot?.alias
-  );
+  const callHtml = callWithFlagHtml(slot?.callsign, slot?.cc, slot?.alias);
 
   return `
     <div class="rt-wpsd-slot">
@@ -158,7 +152,7 @@ function recentRows(items) {
   const arr = Array.isArray(items) ? items : [];
   const rows = arr.slice(0, 8).map((it) => {
     const slot = it?.slot != null ? `TS${safeText(it.slot)}` : "—";
-    const callHtml = callWithFlagHtml(it?.callsign, it?.country_code, it?.alias);
+    const callHtml = callWithFlagHtml(it?.callsign, it?.cc, it?.alias);
     const tg = it?.tg != null ? `TG ${safeText(it.tg)}` : "—";
     const dur = it?.dur_s != null ? `${safeText(it.dur_s)}s` : "—";
     const loss = it?.loss_pct != null ? `${safeText(it.loss_pct)}%` : "—";
@@ -204,7 +198,6 @@ function startAgeTicker(container) {
     const ageEl = container.querySelector("[data-rt-age-text]");
     if (ageEl) ageEl.textContent = ageTxt;
 
-    // stable stale state
     const prev = container.__rtIsStale === true;
     let isStale = prev;
 
