@@ -1,13 +1,11 @@
 // wpsd_status.js
 //
-// Drop-in replacement for renderers/wpsd_status.js
-// Changes:
-// - Callsigns are plain text (NO links; kiosk/car-safe)
-// - Removes BER everywhere
-// - Adds a country flag icon next to callsign (best-effort heuristic from callsign prefix)
-//   -> tries to load WPSD-served flag PNGs: http://rt-wpsd.local/images/flags/<cc>.png
-//   -> falls back to emoji flag if image fails (or if unknown)
-// - Fresh/STALE pill uses hysteresis (no 1s flip-flop when idle)
+// Drop-in replacement:
+// - No links (car-friendly)
+// - Adds country flag (image + emoji fallback) next to callsign
+// - Removes BER
+// - Stabilizes FRESH/STALE badge with hysteresis (no 1s flip-flop)
+// - Age ticker updates in-place
 
 function safeText(s) {
   return String(s ?? "")
@@ -40,123 +38,83 @@ function fmtAge(ageSec) {
   return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
-// --- Country flag (best effort) ---------------------------------------------
+// ---- Flag helpers ----
 
-function normCall(callsign) {
-  return String(callsign || "").trim().toUpperCase();
+// Prefer same-origin proxy if you add it later. For now, use WPSD path if provided.
+function flagUrlFromCountryCode(cc) {
+  const code = String(cc || "").trim().toLowerCase();
+  if (!code || code.length !== 2) return null;
+
+  // Option A (recommended): proxy through rt-controller (same origin)
+  // return `/ui/flags/${code}.png`;
+
+  // Option B: fetch directly from WPSD web UI (cross-origin)
+  // Adjust if your WPSD uses a different base path.
+  return `http://rt-wpsd.local/images/flags/${code}.png`;
 }
 
-// Heuristic mapping. Not perfect. Good enough for “flag candy” on a car UI.
-function countryCodeFromCallsign(callsign) {
-  const cs = normCall(callsign);
-  if (!cs) return null;
-
-  // USA (very common): K, N, W, AA-AL
-  if (/^(K|N|W)\d/.test(cs)) return "us";
-  if (/^A[A-L]\d/.test(cs)) return "us";
-
-  // Canada
-  if (/^(VE|VA|VY)\d/.test(cs)) return "ca";
-
-  // Australia
-  if (/^VK\d/.test(cs)) return "au";
-
-  // New Zealand
-  if (/^ZL\d/.test(cs)) return "nz";
-
-  // UK (rough)
-  if (/^(G|M|2E|2M|GM|GW|GI|GJ)\d/.test(cs)) return "gb";
-
-  // Germany
-  if (/^(DL|DA|DB|DC|DD|DE|DF|DG|DH|DJ|DK|DM|DO|DP|DR)\d/.test(cs)) return "de";
-
-  // France
-  if (/^(F|TM|TK)\d/.test(cs)) return "fr";
-
-  // Italy
-  if (/^(I|IK|IZ)\d/.test(cs)) return "it";
-
-  // Japan
-  if (/^(JA|JE|JF|JG|JH|JI|JJ|JK|JL|JM|JN|JO|JR|7J|7K|7L|7M|7N|8J)\d/.test(cs)) return "jp";
-
-  // China
-  if (/^(B|BA|BD|BG|BH|BI|BJ|BL|BM|BN|BO|BP|BQ|BR)\d/.test(cs)) return "cn";
-  if (/^BY\d/.test(cs)) return "cn";
-
-  // Russia (rough)
-  if (/^(R|RA|RC|RD|RE|RF|RG|RH|RI|RJ|RK|RL|RM|RN|RO|RP|RQ|RR|RS|RT|RU|RV|RW|RX|RY|RZ|UA|UB|UC|UD|UE|UF|UG|UH|UI|UJ|UK|UL|UM|UN|UO|UP|UQ|UR|US|UT|UU|UV|UW|UX|UY|UZ)\d/.test(cs)) return "ru";
-
-  // Netherlands
-  if (/^(PA|PB|PC|PD|PE|PF|PG|PH|PI)\d/.test(cs)) return "nl";
-
-  // Spain
-  if (/^(EA|EB|EC|ED|EE)\d/.test(cs)) return "es";
-
-  // Sweden
-  if (/^(SA|SB|SC|SD|SE|SF|SG|SH|SI|SJ|SK)\d/.test(cs)) return "se";
-
-  return null;
-}
-
-function emojiFlagFromCC(cc) {
-  const c = String(cc || "").toUpperCase();
-  if (!/^[A-Z]{2}$/.test(c)) return "";
-  // Regional Indicator Symbols
+// Emoji fallback (regional indicator symbols)
+function flagEmojiFromCountryCode(cc) {
+  const code = String(cc || "").trim().toUpperCase();
+  if (!code || code.length !== 2) return "🏳️";
   const A = 0x1F1E6;
-  const out = [...c].map(ch => String.fromCodePoint(A + (ch.charCodeAt(0) - 65))).join("");
-  return out;
+  const base = "A".charCodeAt(0);
+  const c1 = code.charCodeAt(0);
+  const c2 = code.charCodeAt(1);
+  if (c1 < 65 || c1 > 90 || c2 < 65 || c2 > 90) return "🏳️";
+  return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
-// You can override this at runtime if you ever want:
-//   window.RT_WPSD_BASE = "http://192.168.8.184";
-function wpsdBaseUrl() {
-  return (typeof window !== "undefined" && window.RT_WPSD_BASE) ? String(window.RT_WPSD_BASE) : "http://rt-wpsd.local";
-}
+function callWithFlagHtml(callsign, countryCode, alias) {
+  const cs = String(callsign || "").trim().toUpperCase();
+  if (!cs) return "—";
 
-function flagHtmlForCallsign(callsign) {
-  const cc = countryCodeFromCallsign(callsign);
-  const emoji = emojiFlagFromCC(cc);
-  if (!cc) return emoji ? `<span class="rt-flag-emoji">${emoji}</span>` : "";
+  const cc = String(countryCode || "").trim().toLowerCase();
+  const emoji = flagEmojiFromCountryCode(cc);
+  const url = flagUrlFromCountryCode(cc);
 
-  // Prefer WPSD local images (no external internet needed).
-  const src = `${wpsdBaseUrl()}/images/flags/${cc}.png`;
-  const alt = cc.toUpperCase();
+  // Render a small inline layout: [flag] CALLSIGN   (optional alias on second line)
+  const aliasTxt = alias ? `<div class="rt-subtle">${safeText(alias)}</div>` : "";
 
-  // onerror => hide image, show emoji fallback if we have it
-  const fallback = emoji ? emoji.replace(/"/g, "") : "";
+  // If we have a URL, try to show img; onerror hide it and show emoji span.
+  if (url) {
+    return `
+      <div class="rt-callrow">
+        <span class="rt-flagwrap" aria-hidden="true">
+          <img class="rt-flagimg" src="${safeText(url)}" alt="" loading="lazy"
+               onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" />
+          <span class="rt-flagemoji" style="display:none;">${safeText(emoji)}</span>
+        </span>
+        <div class="rt-calltext">
+          <div class="rt-callsign">${safeText(cs)}</div>
+          ${aliasTxt}
+        </div>
+      </div>
+    `;
+  }
+
+  // No URL known → emoji only
   return `
-    <span class="rt-flag-wrap" title="${safeText(alt)}">
-      <img class="rt-flag-img" src="${safeText(src)}" alt="${safeText(alt)}"
-           onerror="this.style.display='none'; if(this.nextSibling){ this.nextSibling.style.display='inline'; }" />
-      <span class="rt-flag-emoji" style="display:none;">${safeText(fallback)}</span>
-    </span>
+    <div class="rt-callrow">
+      <span class="rt-flagwrap" aria-hidden="true">
+        <span class="rt-flagemoji">${safeText(emoji)}</span>
+      </span>
+      <div class="rt-calltext">
+        <div class="rt-callsign">${safeText(cs)}</div>
+        ${aliasTxt}
+      </div>
+    </div>
   `;
 }
 
-// --- Rendering ---------------------------------------------------------------
-
-function callsignText(callsign) {
-  const cs = normCall(callsign);
-  return cs ? safeText(cs) : "—";
-}
-
-function aliasLine(alias) {
-  const a = String(alias || "").trim();
-  if (!a) return "";
-  // Keep it subtle; alias strings sometimes contain junk/truncation
-  return `<div class="rt-subtle">${safeText(a)}</div>`;
-}
+// ---- Slot rendering ----
 
 function slotSummary(slotNum, slot) {
   const active = !!slot?.active;
   const statePill = active ? pillHtml("bad", "ACTIVE") : pillHtml("ok", "IDLE");
 
-  const cs = normCall(slot?.callsign);
-  const flag = cs ? flagHtmlForCallsign(cs) : "";
-  const call = cs ? `${flag}<span class="rt-call">${safeText(cs)}</span>${aliasLine(slot?.alias)}` : "—";
-
   const tg = (slot?.tg != null) ? `TG ${safeText(slot.tg)}` : "—";
-  const tgName = slot?.tg_name ? safeText(slot.tg_name) : ""; // optional future field
+  const tgName = slot?.tg_name ? safeText(slot.tg_name) : "";
   const tgLine = tgName ? `${tg}<div class="rt-subtle">${tgName}</div>` : tg;
 
   const dir = slot?.direction ? safeText(slot.direction) : "—";
@@ -171,6 +129,12 @@ function slotSummary(slotNum, slot) {
 
   const timeLabel = active ? "Since" : "Last";
 
+  const callHtml = callWithFlagHtml(
+    slot?.callsign,
+    slot?.country_code,   // <-- expected field (see note below)
+    slot?.alias
+  );
+
   return `
     <div class="rt-wpsd-slot">
       <div class="rt-wpsd-slot-hd">
@@ -179,7 +143,7 @@ function slotSummary(slotNum, slot) {
       </div>
 
       <table class="rt-kv">
-        <tr><td class="k">Call</td><td class="v">${call}</td></tr>
+        <tr><td class="k">Call</td><td class="v">${callHtml}</td></tr>
         <tr><td class="k">Target</td><td class="v">${tgLine}</td></tr>
         <tr><td class="k">Dir</td><td class="v">${dir}</td></tr>
         <tr><td class="k">Dur</td><td class="v">${dur}</td></tr>
@@ -194,11 +158,7 @@ function recentRows(items) {
   const arr = Array.isArray(items) ? items : [];
   const rows = arr.slice(0, 8).map((it) => {
     const slot = it?.slot != null ? `TS${safeText(it.slot)}` : "—";
-
-    const cs = normCall(it?.callsign);
-    const flag = cs ? flagHtmlForCallsign(cs) : "";
-    const call = cs ? `${flag}<span class="rt-call">${safeText(cs)}</span>${aliasLine(it?.alias)}` : "—";
-
+    const callHtml = callWithFlagHtml(it?.callsign, it?.country_code, it?.alias);
     const tg = it?.tg != null ? `TG ${safeText(it.tg)}` : "—";
     const dur = it?.dur_s != null ? `${safeText(it.dur_s)}s` : "—";
     const loss = it?.loss_pct != null ? `${safeText(it.loss_pct)}%` : "—";
@@ -207,7 +167,7 @@ function recentRows(items) {
     return `
       <tr>
         <td>${slot}</td>
-        <td>${call}</td>
+        <td>${callHtml}</td>
         <td>${tg}</td>
         <td>${dur}</td>
         <td>${loss}</td>
@@ -219,9 +179,11 @@ function recentRows(items) {
   return rows || `<tr><td colspan="6">No recent activity</td></tr>`;
 }
 
-// Hysteresis so we don’t flap every second.
-// - Go STALE when age >= STALE_ON_SEC
-// - Return FRESH only when age <= STALE_OFF_SEC
+// ---- Age ticker + stable stale badge ----
+//
+// Hysteresis so we don't chatter at the edge:
+// - stale when age > STALE_ON_SEC
+// - fresh again when age < STALE_OFF_SEC
 const STALE_ON_SEC = 20;
 const STALE_OFF_SEC = 10;
 
@@ -229,11 +191,6 @@ function startAgeTicker(container) {
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
     container.__rtAgeTimer = null;
-  }
-
-  // Track state on the container so it survives re-renders inside the same node
-  if (typeof container.__rtWpsdIsStale !== "boolean") {
-    container.__rtWpsdIsStale = false;
   }
 
   container.__rtAgeTimer = setInterval(() => {
@@ -247,23 +204,23 @@ function startAgeTicker(container) {
     const ageEl = container.querySelector("[data-rt-age-text]");
     if (ageEl) ageEl.textContent = ageTxt;
 
-    // Hysteresis logic
-    let isStale = !!container.__rtWpsdIsStale;
+    // stable stale state
+    const prev = container.__rtIsStale === true;
+    let isStale = prev;
+
     if (age == null) {
-      // If unknown, don't flap: keep prior state
-    } else if (!isStale && age >= STALE_ON_SEC) {
       isStale = true;
-    } else if (isStale && age <= STALE_OFF_SEC) {
+    } else if (!prev && age > STALE_ON_SEC) {
+      isStale = true;
+    } else if (prev && age < STALE_OFF_SEC) {
       isStale = false;
     }
 
-    if (isStale !== container.__rtWpsdIsStale) {
-      container.__rtWpsdIsStale = isStale;
+    container.__rtIsStale = isStale;
+    container.classList.toggle("stale", isStale);
 
-      container.classList.toggle("stale", isStale);
-      const badge = container.querySelector("[data-rt-stale-badge]");
-      if (badge) badge.innerHTML = isStale ? pillHtml("warn", "STALE") : pillHtml("ok", "FRESH");
-    }
+    const badge = container.querySelector("[data-rt-stale-badge]");
+    if (badge) badge.innerHTML = isStale ? pillHtml("warn", "STALE") : pillHtml("ok", "FRESH");
   }, 1000);
 }
 
@@ -278,17 +235,13 @@ export function renderWpsdStatus(container, panel, data) {
   const lastUpdateMs = rfSlots?.last_update_ms ?? rfRecent?.last_update_ms ?? null;
   const ageTxt = fmtAge(ageSecFromMs(lastUpdateMs));
 
-  // If this renderer is called repeatedly, keep the hysteresis state.
-  // (We store it on `container`, not inside DOM.)
-  const isStale = !!container.__rtWpsdIsStale;
-
   container.innerHTML = `
     <div class="rt-wpsd" data-rt-last-update-ms="${lastUpdateMs ?? ""}">
       <div class="rt-wpsd-hd">
         <div class="rt-wpsd-title">WPSD RF</div>
         <div class="rt-wpsd-meta">
           <span class="rt-subtle">Age:</span> <span data-rt-age-text>${ageTxt}</span>
-          <span data-rt-stale-badge style="margin-left:10px;">${isStale ? pillHtml("warn", "STALE") : pillHtml("ok", "FRESH")}</span>
+          <span data-rt-stale-badge style="margin-left:10px;">${pillHtml("ok", "FRESH")}</span>
         </div>
       </div>
 
@@ -317,11 +270,18 @@ export function renderWpsdStatus(container, panel, data) {
           </table>
         </div>
       </div>
+
+      <style>
+        /* Inline styles so it's truly drop-in without touching global CSS */
+        .rt-callrow { display:flex; gap:10px; align-items:flex-start; }
+        .rt-flagwrap { width:28px; min-width:28px; display:flex; align-items:center; justify-content:center; }
+        .rt-flagimg { width:26px; height:18px; object-fit:cover; border-radius:3px; }
+        .rt-flagemoji { font-size:18px; line-height:18px; }
+        .rt-calltext { display:flex; flex-direction:column; }
+        .rt-callsign { font-weight:700; }
+      </style>
     </div>
   `;
-
-  // Apply stale class immediately based on current hysteresis state
-  container.classList.toggle("stale", !!container.__rtWpsdIsStale);
 
   startAgeTicker(container);
 }
