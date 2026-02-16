@@ -1,0 +1,24 @@
+{
+  "id": "wpsd",
+  "order": 40,
+  "title": "WPSD",
+  "layout": {
+    "top": ["topbar_core"],
+    "middle": [
+      ["wpsd_status"],
+      ["wpsd_rf_summary"],
+      ["wpsd_errors"]
+    ],
+    "bottom": []
+  },
+  "requires": ["wpsd_poll"],
+  "optional": ["wpsd_integration"],
+  "controls": {
+    "allowedIntents": ["ui.page.next","ui.page.prev","ui.focus.next","ui.focus.prev"]
+  },
+  "focusPolicy": {
+    "defaultPanel": "wpsd_rf_summary",
+    "rotation": ["wpsd_rf_summary","wpsd_status","wpsd_errors"]
+  },
+  "meta": { "purpose": "Operational insight into external WPSD appliance (read-only)." }
+}

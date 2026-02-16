@@ -224,5 +224,44 @@
 
   "meta": {
     "notes": "Skeleton only. Populate services/pages/panels next."
-  }
+  },
+
+  "wpsd_poll": {
+    "id": "wpsd_poll",
+    "scope": "page_scoped",
+    "ownerNode": "rt-controller",
+    "dependsOn": ["redis_state", "mqtt_bus"],
+    "lifecycle": {
+      "startPolicy": "onPageEnter",
+      "stopPolicy": "onLastUserExit",
+      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+    },
+    "health": {
+      "type": "state_freshness",
+      "target": { "key": "rt:wpsd:snapshot", "namespace": "globals.state.namespace" },
+      "staleAfterMs": 3000
+    },
+    "provides": ["state.wpsd.snapshot", "state.wpsd.rf.last_call", "state.wpsd.activity", "state.wpsd.errors"]
+  },
+
+"wpsd_log_ingestor": {
+  "id": "wpsd_log_ingestor",
+  "scope": "page_scoped",
+  "ownerNode": "rt-controller",
+  "dependsOn": ["redis_state", "mqtt_bus"],
+  "lifecycle": {
+    "startPolicy": "onPageEnter",
+    "stopPolicy": "onLastUserExit",
+    "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 15000 }
+  },
+  "health": {
+    "type": "state_freshness",
+    "target": { "key": "rt:wpsd:rf:slots", "namespace": "globals.state.namespace" },
+    "staleAfterMs": 8000
+  },
+  "provides": ["state.wpsd.rf"]
+}
+
+
+
 }

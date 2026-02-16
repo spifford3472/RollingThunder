@@ -1,0 +1,10 @@
+{
+  "id": "wpsd_recent",
+  "type": "wpsd_recent",
+  "focusable": true,
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 1500 },
+  "bindings": [
+    { "id": "recent", "source": "state", "key": "rt:wpsd:rf:recent" }
+  ],
+  "meta": { "title": "Recent DMR Activity" }
+}

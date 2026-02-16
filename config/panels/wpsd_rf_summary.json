@@ -1,0 +1,10 @@
+{
+  "id": "wpsd_rf_summary",
+  "type": "wpsd_rf_summary",
+  "focusable": true,
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 1500 },
+  "bindings": [
+    { "id": "slots", "source": "state", "key": "rt:wpsd:rf:slots" }
+  ],
+  "meta": { "title": "RF Summary (TS1/TS2)" }
+}

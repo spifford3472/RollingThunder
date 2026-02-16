@@ -102,3 +102,15 @@
   white-space:nowrap;
 }
 .rt-slot-body { min-width:0; }
+
+/* Panel for WPSD */
+.rt-ts-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rt-ts-card { border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 10px; }
+.rt-ts-head { display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px; }
+.rt-ts-title { font-weight: 700; }
+.rt-ts-callsign a { font-size: 1.6em; font-weight: 800; text-decoration: none; }
+.rt-ts-line { display:flex; justify-content:space-between; gap: 10px; margin-top: 4px; }
+.rt-ts-line .k { opacity: 0.7; }
+.rt-ts-line .v { text-align:right; }
+.rt-flag { height: 20px; vertical-align: middle; margin-right: 6px; }
+.rt-muted { opacity: 0.7; }

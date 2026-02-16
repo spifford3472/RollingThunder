@@ -1,0 +1,10 @@
+{
+  "id": "wpsd_status",
+  "type": "wpsd_status",
+  "focusable": false,
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
+  "bindings": [
+    { "id": "snapshot", "source": "state", "key": "rt:wpsd:snapshot" }
+  ],
+  "meta": { "title": "WPSD Status" }
+}
