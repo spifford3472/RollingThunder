@@ -3,4 +3,5 @@
 "node_health_summary.json", 
 "deploy_drift_summary.json", 
 "hf_status.json",
-"controller_services_summary.json"] }
+"controller_services_summary.json",
+"wpsd_status.json"] }
