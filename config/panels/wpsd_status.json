@@ -15,6 +15,7 @@
   "meta": {
     "title": "WPSD RF Status",
     "purpose": "DMR RF activity summary for TS1/TS2 and recent transmissions.",
+    "flagBaseURL": "/proxy/wpsd",
     "contract": {
       "requiredBindings": ["rf_slots", "rf_recent"]
     }

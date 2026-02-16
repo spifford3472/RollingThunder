@@ -127,3 +127,5 @@
 .rt-subtle { opacity:0.7; font-size:0.95em; }
 .rt-right { text-align:right; }
 .rt-wpsd.stale { opacity:0.75; }
+.rt-callwrap { display: inline-flex; align-items: center; gap: 8px; }
+.rt-flag { height: 18px; width: auto; border-radius: 2px; opacity: 0.95; }
