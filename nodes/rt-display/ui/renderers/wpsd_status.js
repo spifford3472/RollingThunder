@@ -240,16 +240,36 @@ export function renderWpsdStatus(container, panel, data) {
   const s1 = slots?.["1"] || slots?.[1] || {};
   const s2 = slots?.["2"] || slots?.[2] || {};
 
-  const lastUpdateMs = rfSlots?.last_update_ms ?? rfRecent?.last_update_ms ?? null;
-  const ageTxt = fmtAge(ageSecFromMs(lastUpdateMs));
+  // --- STABLE lastUpdateMs: never overwrite with null/"" ---
+  const newMs = (rfSlots?.last_update_ms ?? rfRecent?.last_update_ms);
+  const prevMs = container.__rtLastUpdateMs;
+
+  const chosenMs =
+    Number.isFinite(Number(newMs)) ? Number(newMs) :
+    Number.isFinite(Number(prevMs)) ? Number(prevMs) :
+    null;
+
+  container.__rtLastUpdateMs = chosenMs;
+
+  const age = ageSecFromMs(chosenMs);
+  const ageTxt = fmtAge(age);
+
+  // Initialize badge based on age (not always FRESH)
+  const initialIsStale =
+    age == null ? true :
+    (container.__rtIsStale === true) ? (age > STALE_OFF_SEC) : (age > STALE_ON_SEC);
+
+  container.__rtIsStale = initialIsStale;
 
   container.innerHTML = `
-    <div class="rt-wpsd" data-rt-last-update-ms="${lastUpdateMs ?? ""}">
+    <div class="rt-wpsd" data-rt-last-update-ms="${chosenMs ?? ""}">
       <div class="rt-wpsd-hd">
         <div class="rt-wpsd-title">WPSD RF</div>
         <div class="rt-wpsd-meta">
           <span class="rt-subtle">Age:</span> <span data-rt-age-text>${ageTxt}</span>
-          <span data-rt-stale-badge style="margin-left:10px;">${pillHtml("ok", "FRESH")}</span>
+          <span data-rt-stale-badge style="margin-left:10px;">
+            ${initialIsStale ? pillHtml("warn","STALE") : pillHtml("ok","FRESH")}
+          </span>
         </div>
       </div>
 
@@ -289,6 +309,9 @@ export function renderWpsdStatus(container, panel, data) {
       </style>
     </div>
   `;
+
+  // optional: set class immediately too
+  container.classList.toggle("stale", initialIsStale);
 
   startAgeTicker(container);
 }
