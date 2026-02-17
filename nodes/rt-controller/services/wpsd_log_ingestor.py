@@ -495,13 +495,16 @@ def main() -> None:
         nowt = now_ms()
 
         if kind == "header":
+            prev_call = s.callsign
+            new_call = payload.get("callsign")
+            if prev_call and new_call and prev_call != new_call:
+                s.alias = None            
             # Mark active briefly; store basics
             s.active = True
             s.since_ms = nowt
             s.direction = payload.get("src")
             s.callsign = payload.get("callsign")
             s.cc = get_cc_for_callsign(s.callsign, cc_cache)
-
             s.tg = payload.get("tg")
             # don't reset alias/dur/ber/loss; those reflect last completed TX
             changed_keys.append(KEY_SLOTS)

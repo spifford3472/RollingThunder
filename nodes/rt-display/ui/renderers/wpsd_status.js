@@ -44,6 +44,38 @@ function fmtAge(ageSec) {
 
 // ---- Flag helpers ----
 
+function normalizeCall(cs) {
+  return String(cs || "").trim().toUpperCase();
+}
+
+// Accept alias only if it clearly belongs to the callsign.
+// Common formats seen:
+// - "KB1VXH George"
+// - "KQ4GEO Frank"
+// Sometimes alias can be null or unrelated; we drop it.
+function aliasForCall(callsign, alias) {
+  const cs = normalizeCall(callsign);
+  const a = String(alias || "").trim();
+  if (!cs || !a) return null;
+
+  const aUp = a.toUpperCase();
+
+  // If alias starts with the same callsign, strip it and return the remainder.
+  if (aUp.startsWith(cs)) {
+    const rest = a.slice(cs.length).trim();
+    return rest || null;
+  }
+
+  // If alias contains the callsign as a token, keep it (rare, but safe)
+  // e.g. "Name (CALL)" types.
+  const re = new RegExp(`(^|\\s)${cs}(\\s|$)`, "i");
+  if (re.test(a)) return a;
+
+  // Otherwise: mismatch -> suppress
+  return null;
+}
+
+
 // Same-origin static path served by rt-controller ui_snapshot_api.py:
 // /ui/*  -> /opt/rollingthunder/ui/*
 function flagUrlFromCC(cc) {
@@ -65,17 +97,17 @@ function flagEmojiFromCC(cc) {
   return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
-function callWithFlagHtml(callsign, cc, alias) {
-  const cs = String(callsign || "").trim().toUpperCase();
+function callWithFlagHtml(callsign, countryCode, alias) {
+  const cs = normalizeCall(callsign);
   if (!cs) return "—";
 
-  const code = String(cc || "").trim().toLowerCase();
-  const url = flagUrlFromCC(code);
-  const emoji = flagEmojiFromCC(code);
+  const cleanAlias = aliasForCall(cs, alias);
+  const aliasTxt = cleanAlias ? `<div class="rt-subtle">${safeText(cleanAlias)}</div>` : "";
 
-  const aliasTxt = alias ? `<div class="rt-subtle">${safeText(alias)}</div>` : "";
+  const cc = String(countryCode || "").trim().toUpperCase();
+  const emoji = flagEmojiFromCountryCode(cc);
+  const url = flagUrlFromCountryCode(cc);
 
-  // If we have a URL, try image first; if missing, swap to emoji.
   if (url) {
     return `
       <div class="rt-callrow">
@@ -92,7 +124,6 @@ function callWithFlagHtml(callsign, cc, alias) {
     `;
   }
 
-  // No URL known → emoji only
   return `
     <div class="rt-callrow">
       <span class="rt-flagwrap" aria-hidden="true">
@@ -105,6 +136,7 @@ function callWithFlagHtml(callsign, cc, alias) {
     </div>
   `;
 }
+
 
 // ---- Slot rendering ----
 
@@ -176,16 +208,24 @@ function recentRows(items) {
 // ---- Age ticker + stable stale badge ----
 //
 // Hysteresis so we don't chatter at the edge:
-// - stale when age > STALE_ON_SEC
-// - fresh again when age < STALE_OFF_SEC
+// Treat stale/fresh as "needs to be true for a few consecutive ticks".
+// This kills 1Hz flip-flop even if last_update_ms alternates null/real or hovers on a threshold.
 const STALE_ON_SEC = 20;
 const STALE_OFF_SEC = 10;
+
+// how many consecutive 1s ticks before we commit the state change
+const STALE_CONFIRM_TICKS = 3;
+const FRESH_CONFIRM_TICKS = 3;
 
 function startAgeTicker(container) {
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
     container.__rtAgeTimer = null;
   }
+
+  // init counters (persist across re-renders because they live on container)
+  if (typeof container.__rtStaleCount !== "number") container.__rtStaleCount = 0;
+  if (typeof container.__rtFreshCount !== "number") container.__rtFreshCount = 0;
 
   container.__rtAgeTimer = setInterval(() => {
     const root = container.querySelector("[data-rt-last-update-ms]");
@@ -198,24 +238,51 @@ function startAgeTicker(container) {
     const ageEl = container.querySelector("[data-rt-age-text]");
     if (ageEl) ageEl.textContent = ageTxt;
 
-    const prev = container.__rtIsStale === true;
-    let isStale = prev;
-
+    // IMPORTANT: if age is null/unknown, DO NOT flip state — keep previous
+    // (this is the #1 cause of fresh<->stale chatter when data arrives intermittently)
     if (age == null) {
-      isStale = true;
-    } else if (!prev && age > STALE_ON_SEC) {
-      isStale = true;
-    } else if (prev && age < STALE_OFF_SEC) {
-      isStale = false;
+      // still update badge text? no — stability first
+      return;
     }
 
-    container.__rtIsStale = isStale;
+    const prev = container.__rtIsStale === true;
+
+    // Determine *candidate* state using hysteresis
+    let wantStale = prev;
+    if (!prev && age > STALE_ON_SEC) wantStale = true;
+    if (prev && age < STALE_OFF_SEC) wantStale = false;
+
+    // Debounce with consecutive confirmations
+    if (wantStale !== prev) {
+      if (wantStale) {
+        container.__rtStaleCount += 1;
+        container.__rtFreshCount = 0;
+        if (container.__rtStaleCount >= STALE_CONFIRM_TICKS) {
+          container.__rtIsStale = true;
+          container.__rtStaleCount = 0;
+        }
+      } else {
+        container.__rtFreshCount += 1;
+        container.__rtStaleCount = 0;
+        if (container.__rtFreshCount >= FRESH_CONFIRM_TICKS) {
+          container.__rtIsStale = false;
+          container.__rtFreshCount = 0;
+        }
+      }
+    } else {
+      // state matches; reset counters
+      container.__rtStaleCount = 0;
+      container.__rtFreshCount = 0;
+    }
+
+    const isStale = container.__rtIsStale === true;
     container.classList.toggle("stale", isStale);
 
     const badge = container.querySelector("[data-rt-stale-badge]");
     if (badge) badge.innerHTML = isStale ? pillHtml("warn", "STALE") : pillHtml("ok", "FRESH");
   }, 1000);
 }
+
 
 export function renderWpsdStatus(container, panel, data) {
   const rfSlots = data?.rf_slots || null;
