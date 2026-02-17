@@ -97,6 +97,18 @@ function flagEmojiFromCC(cc) {
   return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
+// Emoji fallback (regional indicator symbols)
+function flagEmojiFromCountryCode(cc) {
+  const code = String(cc || "").trim().toUpperCase();
+  if (!code || code.length !== 2) return "🏳️";
+  const A = 0x1F1E6;
+  const base = "A".charCodeAt(0);
+  const c1 = code.charCodeAt(0);
+  const c2 = code.charCodeAt(1);
+  if (c1 < 65 || c1 > 90 || c2 < 65 || c2 > 90) return "🏳️";
+  return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
+}
+
 function callWithFlagHtml(callsign, countryCode, alias) {
   const cs = normalizeCall(callsign);
   if (!cs) return "—";
