@@ -1,15 +1,10 @@
 // wpsd_status.js
 //
-// Drop-in replacement:
-// - No links (car-friendly)
-// - Adds country flag (image + emoji fallback) next to callsign
-// - Removes BER
-// - Stabilizes FRESH/STALE badge with hysteresis (no 1s flip-flop)
-// - Age ticker updates in-place
-//
-// Expects ingestor fields:
-// - slot.cc (e.g. "us", "gb-eng", "jp")
-// - recent_item.cc
+// Drop-in replacement (self-contained):
+// - Adds flag next to callsign (img, emoji fallback)
+// - Keeps alias only when it matches the callsign (prevents mismatched name)
+// - Stable FRESH/STALE (hysteresis)
+// - No external dependencies
 
 function safeText(s) {
   return String(s ?? "")
@@ -42,59 +37,14 @@ function fmtAge(ageSec) {
   return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
-// ---- Flag helpers ----
+// ---------------- Flag helpers ----------------
 
-function normalizeCall(cs) {
-  return String(cs || "").trim().toUpperCase();
-}
-
-// Accept alias only if it clearly belongs to the callsign.
-// Common formats seen:
-// - "KB1VXH George"
-// - "KQ4GEO Frank"
-// Sometimes alias can be null or unrelated; we drop it.
-function aliasForCall(callsign, alias) {
-  const cs = normalizeCall(callsign);
-  const a = String(alias || "").trim();
-  if (!cs || !a) return null;
-
-  const aUp = a.toUpperCase();
-
-  // If alias starts with the same callsign, strip it and return the remainder.
-  if (aUp.startsWith(cs)) {
-    const rest = a.slice(cs.length).trim();
-    return rest || null;
-  }
-
-  // If alias contains the callsign as a token, keep it (rare, but safe)
-  // e.g. "Name (CALL)" types.
-  const re = new RegExp(`(^|\\s)${cs}(\\s|$)`, "i");
-  if (re.test(a)) return a;
-
-  // Otherwise: mismatch -> suppress
-  return null;
-}
-
-
-// Same-origin static path served by rt-controller ui_snapshot_api.py:
-// /ui/*  -> /opt/rollingthunder/ui/*
-function flagUrlFromCC(cc) {
+// Your planned proxy endpoint (same-origin):
+// ui_snapshot_api.py should serve /ui/flags/<cc>.png by proxying from rt-wpsd.
+function flagUrlFromCountryCode(cc) {
   const code = String(cc || "").trim().toLowerCase();
-  // allow "us", "gb-eng", etc.
-  if (!code || !/^[a-z0-9-]+$/.test(code)) return null;
+  if (!code || code.length !== 2) return null;
   return `/ui/flags/${code}.png`;
-}
-
-// Emoji fallback only works for 2-letter ISO-ish codes
-function flagEmojiFromCC(cc) {
-  const code = String(cc || "").trim().toUpperCase();
-  if (!code || code.length !== 2) return "🏳️";
-  const A = 0x1F1E6;
-  const base = "A".charCodeAt(0);
-  const c1 = code.charCodeAt(0);
-  const c2 = code.charCodeAt(1);
-  if (c1 < 65 || c1 > 90 || c2 < 65 || c2 > 90) return "🏳️";
-  return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
 // Emoji fallback (regional indicator symbols)
@@ -109,16 +59,34 @@ function flagEmojiFromCountryCode(cc) {
   return String.fromCodePoint(A + (c1 - base), A + (c2 - base));
 }
 
+// Only show alias when it "belongs" to the callsign we’re showing.
+// Your ingestor can misassociate alias lines; this stops bad UI.
+function aliasForCall(alias, callsign) {
+  const a = String(alias || "").trim();
+  const cs = String(callsign || "").trim().toUpperCase();
+  if (!a || !cs) return null;
+
+  // accept if alias begins with the callsign (common Pi-Star format)
+  const aUp = a.toUpperCase();
+  if (aUp.startsWith(cs)) return a;
+
+  // or if alias contains the callsign as a whole token
+  const re = new RegExp(`\\b${cs.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b`, "i");
+  if (re.test(a)) return a;
+
+  return null;
+}
+
 function callWithFlagHtml(callsign, countryCode, alias) {
-  const cs = normalizeCall(callsign);
+  const cs = String(callsign || "").trim().toUpperCase();
   if (!cs) return "—";
 
-  const cleanAlias = aliasForCall(cs, alias);
-  const aliasTxt = cleanAlias ? `<div class="rt-subtle">${safeText(cleanAlias)}</div>` : "";
-
-  const cc = String(countryCode || "").trim().toUpperCase();
-  const emoji = flagEmojiFromCountryCode(cc);
+  const cc = String(countryCode || "").trim().toLowerCase();
   const url = flagUrlFromCountryCode(cc);
+  const emoji = flagEmojiFromCountryCode(cc);
+
+  const goodAlias = aliasForCall(alias, cs);
+  const aliasHtml = goodAlias ? `<div class="rt-subtle">${safeText(goodAlias)}</div>` : "";
 
   if (url) {
     return `
@@ -130,7 +98,7 @@ function callWithFlagHtml(callsign, countryCode, alias) {
         </span>
         <div class="rt-calltext">
           <div class="rt-callsign">${safeText(cs)}</div>
-          ${aliasTxt}
+          ${aliasHtml}
         </div>
       </div>
     `;
@@ -143,14 +111,13 @@ function callWithFlagHtml(callsign, countryCode, alias) {
       </span>
       <div class="rt-calltext">
         <div class="rt-callsign">${safeText(cs)}</div>
-        ${aliasTxt}
+        ${aliasHtml}
       </div>
     </div>
   `;
 }
 
-
-// ---- Slot rendering ----
+// ---------------- Rendering ----------------
 
 function slotSummary(slotNum, slot) {
   const active = !!slot?.active;
@@ -171,7 +138,11 @@ function slotSummary(slotNum, slot) {
   const endAge = fmtAge(ageSecFromMs(lastEndMs));
   const timeLabel = active ? "Since" : "Last";
 
-  const callHtml = callWithFlagHtml(slot?.callsign, slot?.cc, slot?.alias);
+  const callHtml = callWithFlagHtml(
+    slot?.callsign,
+    slot?.country_code || slot?.cc || null,
+    slot?.alias
+  );
 
   return `
     <div class="rt-wpsd-slot">
@@ -196,7 +167,11 @@ function recentRows(items) {
   const arr = Array.isArray(items) ? items : [];
   const rows = arr.slice(0, 8).map((it) => {
     const slot = it?.slot != null ? `TS${safeText(it.slot)}` : "—";
-    const callHtml = callWithFlagHtml(it?.callsign, it?.cc, it?.alias);
+    const callHtml = callWithFlagHtml(
+      it?.callsign,
+      it?.country_code || it?.cc || null,
+      it?.alias
+    );
     const tg = it?.tg != null ? `TG ${safeText(it.tg)}` : "—";
     const dur = it?.dur_s != null ? `${safeText(it.dur_s)}s` : "—";
     const loss = it?.loss_pct != null ? `${safeText(it.loss_pct)}%` : "—";
@@ -217,27 +192,15 @@ function recentRows(items) {
   return rows || `<tr><td colspan="6">No recent activity</td></tr>`;
 }
 
-// ---- Age ticker + stable stale badge ----
-//
-// Hysteresis so we don't chatter at the edge:
-// Treat stale/fresh as "needs to be true for a few consecutive ticks".
-// This kills 1Hz flip-flop even if last_update_ms alternates null/real or hovers on a threshold.
+// Hysteresis: stale if >20s, fresh again if <10s
 const STALE_ON_SEC = 20;
 const STALE_OFF_SEC = 10;
-
-// how many consecutive 1s ticks before we commit the state change
-const STALE_CONFIRM_TICKS = 3;
-const FRESH_CONFIRM_TICKS = 3;
 
 function startAgeTicker(container) {
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
     container.__rtAgeTimer = null;
   }
-
-  // init counters (persist across re-renders because they live on container)
-  if (typeof container.__rtStaleCount !== "number") container.__rtStaleCount = 0;
-  if (typeof container.__rtFreshCount !== "number") container.__rtFreshCount = 0;
 
   container.__rtAgeTimer = setInterval(() => {
     const root = container.querySelector("[data-rt-last-update-ms]");
@@ -250,51 +213,24 @@ function startAgeTicker(container) {
     const ageEl = container.querySelector("[data-rt-age-text]");
     if (ageEl) ageEl.textContent = ageTxt;
 
-    // IMPORTANT: if age is null/unknown, DO NOT flip state — keep previous
-    // (this is the #1 cause of fresh<->stale chatter when data arrives intermittently)
-    if (age == null) {
-      // still update badge text? no — stability first
-      return;
-    }
-
     const prev = container.__rtIsStale === true;
+    let isStale = prev;
 
-    // Determine *candidate* state using hysteresis
-    let wantStale = prev;
-    if (!prev && age > STALE_ON_SEC) wantStale = true;
-    if (prev && age < STALE_OFF_SEC) wantStale = false;
-
-    // Debounce with consecutive confirmations
-    if (wantStale !== prev) {
-      if (wantStale) {
-        container.__rtStaleCount += 1;
-        container.__rtFreshCount = 0;
-        if (container.__rtStaleCount >= STALE_CONFIRM_TICKS) {
-          container.__rtIsStale = true;
-          container.__rtStaleCount = 0;
-        }
-      } else {
-        container.__rtFreshCount += 1;
-        container.__rtStaleCount = 0;
-        if (container.__rtFreshCount >= FRESH_CONFIRM_TICKS) {
-          container.__rtIsStale = false;
-          container.__rtFreshCount = 0;
-        }
-      }
-    } else {
-      // state matches; reset counters
-      container.__rtStaleCount = 0;
-      container.__rtFreshCount = 0;
+    if (age == null) {
+      isStale = true;
+    } else if (!prev && age > STALE_ON_SEC) {
+      isStale = true;
+    } else if (prev && age < STALE_OFF_SEC) {
+      isStale = false;
     }
 
-    const isStale = container.__rtIsStale === true;
+    container.__rtIsStale = isStale;
     container.classList.toggle("stale", isStale);
 
     const badge = container.querySelector("[data-rt-stale-badge]");
     if (badge) badge.innerHTML = isStale ? pillHtml("warn", "STALE") : pillHtml("ok", "FRESH");
   }, 1000);
 }
-
 
 export function renderWpsdStatus(container, panel, data) {
   const rfSlots = data?.rf_slots || null;
@@ -344,7 +280,6 @@ export function renderWpsdStatus(container, panel, data) {
       </div>
 
       <style>
-        /* Inline styles so it's truly drop-in without touching global CSS */
         .rt-callrow { display:flex; gap:10px; align-items:flex-start; }
         .rt-flagwrap { width:28px; min-width:28px; display:flex; align-items:center; justify-content:center; }
         .rt-flagimg { width:26px; height:18px; object-fit:cover; border-radius:3px; }
