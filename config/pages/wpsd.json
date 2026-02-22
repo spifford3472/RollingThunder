@@ -8,7 +8,7 @@
       ["wpsd_status"],
       ["wpsd_rf_summary"]
     ],
-    "bottom": []
+    "bottom": ["alerts_overlay"]
   },
   "requires": [ ],
   "optional": ["wpsd_integration"],
