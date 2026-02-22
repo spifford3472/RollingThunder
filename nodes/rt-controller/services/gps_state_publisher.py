@@ -2,50 +2,77 @@
 """
 RollingThunder - GPS State Publisher (rt-controller)
 
-Green-path goals:
-- Publish GPS-derived UTC time as soon as fix_type >= 1 (time-only), even before location lock.
-- Keep UI read-only. UI binds to Redis state only.
-- Restart-safe, bounded, and resilient to gpsd/device loss (clean fallback to system time).
+Long-term "GPS oracle" implementation:
+- Persistent gpsd connection (WATCH JSON)
+- Cache last TPV + SKY in memory
+- Publish snapshots to Redis on a fixed cadence
+- Deterministic behavior when GPS is lost (underground, unplugged, gpsd down)
+- Provides time, fix, speed, and position/nav (lat/lon/alt/track/grid)
 
-Keys written (hashes):
-- rt:gps:time  { utc_iso, source, last_update_ms, gps_last_seen_ms }
-- rt:gps:fix   { has_fix, fix_type, sats, source, last_update_ms, gps_last_seen_ms }
-- rt:gps:speed { mps, mph, kph, last_update_ms, gps_last_seen_ms }
+Redis hashes (authoritative):
+- rt:gps:time   { utc_iso, source, last_update_ms, gps_last_seen_ms }
+- rt:gps:fix    { has_fix, fix_type, sats, source, last_update_ms, gps_last_seen_ms }
+- rt:gps:speed  { mps, mph, kph, last_update_ms, gps_last_seen_ms }
+- rt:gps:pos    { valid, lat, lon, alt_m, alt_ft, track_deg, track_cardinal, grid4, grid6,
+                  last_update_ms, gps_last_seen_ms, pos_last_good_ms }
 
-Notes:
-- last_update_ms is publisher heartbeat (freshness of publisher).
-- gps_last_seen_ms is "last time we got real gpsd data" (freshness of GPS feed).
+Semantics:
+- fix_type:
+    0 = no fix / unknown
+    1 = time-only / searching (time may be valid)
+    2 = 2D fix (lat/lon)
+    3 = 3D fix (lat/lon/alt)
+- has_fix = (fix_type >= 2)
+- Time is "GPS" as soon as fix_type >= 1 AND gpsd provides TPV.time.
+- Position is valid only when fix_type >= 2 and TPV is fresh.
+- Speed:
+    mph is clamped: mph < 2 -> 0
+    If TPV is stale, speed reports 0 (avoid stale-motion lies).
+- Direction and Maidenhead:
+    last known values are retained when fix is lost; never empty after first publish.
+
+Restart safety:
+- Service starts and publishes immediately (system time + no-fix).
+- If gpsd drops/hangs, reconnect with bounded backoff.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import socket
 import time
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 import redis
+import gps  # gpsd python bindings (from gpsd package)
 
+
+# -------------------- Config --------------------
 REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
 REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
 REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
 
 POLL_MS = int(os.environ.get("RT_GPS_PUBLISH_INTERVAL_MS", "1000"))
+POLL_MS = max(200, POLL_MS)
 
 KEY_GPS_TIME = os.environ.get("RT_KEY_GPS_TIME", "rt:gps:time")
 KEY_GPS_FIX = os.environ.get("RT_KEY_GPS_FIX", "rt:gps:fix")
 KEY_GPS_SPEED = os.environ.get("RT_KEY_GPS_SPEED", "rt:gps:speed")
+KEY_GPS_POS = os.environ.get("RT_KEY_GPS_POS", "rt:gps:pos")
 
 GPSD_HOST = os.environ.get("RT_GPSD_HOST", "127.0.0.1")
-GPSD_PORT = int(os.environ.get("RT_GPSD_PORT", "2947"))
-GPSD_TIMEOUT_S = float(os.environ.get("RT_GPSD_TIMEOUT_S", "1.0"))
+GPSD_PORT = os.environ.get("RT_GPSD_PORT", "2947")
 
-# If you want to hard-disable gpsd reads for testing:
-GPSD_ENABLED = os.environ.get("RT_GPSD_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+# Freshness thresholds (milliseconds)
+TPV_STALE_MS = int(os.environ.get("RT_GPS_TPV_STALE_MS", "3000"))     # TPV is chatty
+SKY_STALE_MS = int(os.environ.get("RT_GPS_SKY_STALE_MS", "15000"))   # SKY is slower
+
+# Internal safety: if publish loop is blocked too long, exit so systemd restarts us.
+HANG_EXIT_SEC = float(os.environ.get("RT_GPS_HANG_EXIT_SEC", "30"))
 
 
+# -------------------- Helpers --------------------
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -69,142 +96,149 @@ def hset_dict(r: redis.Redis, key: str, fields: Dict[str, Any]) -> None:
     r.hset(key, mapping=safe)
 
 
-def _gpsd_connect() -> socket.socket:
-    s = socket.create_connection((GPSD_HOST, GPSD_PORT), timeout=GPSD_TIMEOUT_S)
-    s.settimeout(GPSD_TIMEOUT_S)
-    return s
-
-
-def _gpsd_watch(sock: socket.socket) -> None:
-    # Ask for JSON streaming; gpsd will send \n-delimited JSON objects.
-    cmd = '?WATCH={"enable":true,"json":true};\n'
-    sock.sendall(cmd.encode("ascii", errors="ignore"))
-
-
-def _readline(sock: socket.socket, buf: bytearray) -> Optional[bytes]:
-    """
-    Read a single '\n' terminated line from gpsd, bounded by timeouts.
-    Returns the line bytes (without guaranteeing validity) or None on timeout.
-    """
-    deadline = time.time() + GPSD_TIMEOUT_S
-    while time.time() < deadline:
-        # Do we already have a full line?
-        nl = buf.find(b"\n")
-        if nl != -1:
-            line = bytes(buf[:nl])
-            del buf[: nl + 1]
-            return line
-
-        try:
-            chunk = sock.recv(4096)
-            if not chunk:
-                return None
-            buf.extend(chunk)
-        except socket.timeout:
-            return None
-        except OSError:
-            return None
+def num(v: Any) -> Optional[float]:
+    if isinstance(v, (int, float)):
+        return float(v)
     return None
 
 
-def _parse_gpsd_time_to_iso(t: Any) -> Optional[str]:
+def clamp_mph(mph: float) -> float:
+    return 0.0 if mph < 2.0 else mph
+
+
+def cardinal_from_deg(deg: float) -> str:
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    d = deg % 360.0
+    idx = int((d + 22.5) / 45.0) % 8
+    return dirs[idx]
+
+
+def maidenhead(lat: float, lon: float, precision: int = 6) -> str:
     """
-    gpsd TPV.time is usually ISO-8601 like '2026-02-20T02:34:56.000Z'
-    Normalize to '...Z' (keep milliseconds if present; UI parseIso can handle it).
+    Convert lat/lon to Maidenhead locator.
+    precision must be 4 or 6 (EM79 or EM79xm).
     """
-    if not isinstance(t, str) or not t:
-        return None
-    # Minimal sanity: must contain 'T' and end with 'Z' or have timezone.
-    if "T" not in t:
-        return None
-    # If it has offset, Date() can parse it too, but we prefer Z.
-    return t
+    if precision not in (4, 6):
+        raise ValueError("precision must be 4 or 6")
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        raise ValueError("lat/lon out of range")
+
+    A = lon + 180.0
+    B = lat + 90.0
+
+    field_lon = int(A / 20)
+    field_lat = int(B / 10)
+    a = chr(ord("A") + field_lon)
+    b = chr(ord("A") + field_lat)
+
+    A -= field_lon * 20
+    B -= field_lat * 10
+    square_lon = int(A / 2)
+    square_lat = int(B / 1)
+    c = str(square_lon)
+    d = str(square_lat)
+
+    if precision == 4:
+        return f"{a}{b}{c}{d}"
+
+    A -= square_lon * 2
+    B -= square_lat * 1
+    subs_lon = int(A * 24 / 2)
+    subs_lat = int(B * 24 / 1)
+    e = chr(ord("a") + subs_lon)
+    f = chr(ord("a") + subs_lat)
+
+    return f"{a}{b}{c}{d}{e}{f}"
 
 
-def _gpsd_sample() -> Optional[Dict[str, Any]]:
+# -------------------- GPSD reader thread --------------------
+class GpsCache:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.tpv: Optional[Dict[str, Any]] = None
+        self.sky: Optional[Dict[str, Any]] = None
+        self.tpv_ms: int = 0
+        self.sky_ms: int = 0
+        self.connected: bool = False
+
+    def update_tpv(self, d: Dict[str, Any], ts_ms: int) -> None:
+        with self.lock:
+            self.tpv = d
+            self.tpv_ms = ts_ms
+
+    def update_sky(self, d: Dict[str, Any], ts_ms: int) -> None:
+        with self.lock:
+            self.sky = d
+            self.sky_ms = ts_ms
+
+    def set_connected(self, v: bool) -> None:
+        with self.lock:
+            self.connected = v
+
+    def snapshot(self) -> Tuple[Optional[Dict[str, Any]], int, Optional[Dict[str, Any]], int, bool]:
+        with self.lock:
+            return self.tpv, self.tpv_ms, self.sky, self.sky_ms, self.connected
+
+
+def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
     """
-    Try to obtain a recent TPV and SKY snapshot from gpsd quickly.
-    Returns dict with: fix_type, utc_iso, speed_mps, sats_used, lat, lon, alt (optional)
-    or None if unavailable.
+    Persistent gpsd session reader. Reconnects on failure with bounded backoff.
     """
-    if not GPSD_ENABLED:
-        return None
+    backoff = 0.5
+    while not stop.is_set():
+        sess = None
+        try:
+            cache.set_connected(False)
 
-    sock: Optional[socket.socket] = None
-    buf = bytearray()
-    try:
-        sock = _gpsd_connect()
-        _gpsd_watch(sock)
+            # gps.gps() supports host/port
+            sess = gps.gps(host=GPSD_HOST, port=GPSD_PORT)
+            # enable JSON watch
+            sess.stream(gps.WATCH_ENABLE | gps.WATCH_JSON)
 
-        tpv: Optional[dict] = None
-        sky: Optional[dict] = None
-
-        # Bounded loop: read up to N lines, then give up for this tick.
-        for _ in range(20):
-            line = _readline(sock, buf)
-            if not line:
-                continue
+            # Set socket timeout so we can notice stop events and reconnect cleanly.
             try:
-                msg = json.loads(line.decode("utf-8", errors="ignore"))
+                sess.sock.settimeout(2.0)  # type: ignore[attr-defined]
             except Exception:
-                continue
+                pass
 
-            cls = msg.get("class")
-            if cls == "TPV":
-                tpv = msg
-            elif cls == "SKY":
-                sky = msg
+            cache.set_connected(True)
+            backoff = 0.5
 
-            # As soon as we have TPV, we can proceed; SKY is "nice to have".
-            if tpv is not None and (sky is not None or _ >= 3):
-                break
+            while not stop.is_set():
+                try:
+                    report = sess.next()
+                except StopIteration:
+                    raise OSError("gpsd stream ended")
+                except Exception as e:
+                    # timeout or socket errors -> reconnect
+                    raise OSError(f"gpsd read error: {e}")
 
-        if not tpv:
-            return None
+                if not isinstance(report, dict):
+                    continue
 
-        mode = tpv.get("mode")  # 0/1/2/3
-        try:
-            fix_type = int(mode) if mode is not None else 0
-        except Exception:
-            fix_type = 0
+                cls = report.get("class")
+                ts = now_ms()
+                if cls == "TPV":
+                    cache.update_tpv(report, ts)
+                elif cls == "SKY":
+                    cache.update_sky(report, ts)
 
-        utc_iso = _parse_gpsd_time_to_iso(tpv.get("time"))
-        speed_mps = tpv.get("speed")
-
-        # Satellites used: gpsd SKY has "uSat" (used) or we can count those with "used": true
-        sats_used = 0
-        if isinstance(sky, dict):
-            if isinstance(sky.get("uSat"), (int, float)):
-                sats_used = int(sky["uSat"])
-            else:
-                sats = sky.get("satellites")
-                if isinstance(sats, list):
-                    sats_used = sum(1 for s in sats if isinstance(s, dict) and s.get("used") is True)
-
-        out: Dict[str, Any] = {
-            "fix_type": fix_type,
-            "utc_iso": utc_iso,
-            "speed_mps": float(speed_mps) if isinstance(speed_mps, (int, float)) else None,
-            "sats_used": sats_used,
-            # Optional, cheap if present (can be used later without schema change)
-            "lat": tpv.get("lat"),
-            "lon": tpv.get("lon"),
-            "alt": tpv.get("alt"),
-        }
-        return out
-
-    except Exception:
-        return None
-    finally:
-        try:
-            if sock:
-                sock.close()
-        except Exception:
-            pass
+        except Exception as e:
+            cache.set_connected(False)
+            print(f"[gps_state_publisher] gpsd_reader reconnecting: {e}", flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 5.0)
+        finally:
+            try:
+                if sess is not None:
+                    sess.close()
+            except Exception:
+                pass
 
 
+# -------------------- Main publish loop --------------------
 def main() -> None:
-    interval = max(100, POLL_MS) / 1000.0
+    interval_s = POLL_MS / 1000.0
 
     r = redis.Redis(
         host=REDIS_HOST,
@@ -217,78 +251,145 @@ def main() -> None:
         retry_on_timeout=True,
     )
 
-    backoff = 0.5
-    gps_last_seen_ms: int = 0  # when we last got real gpsd data (time/fix/speed)
+    cache = GpsCache()
+    stop = threading.Event()
+    t = threading.Thread(target=gpsd_reader, args=(cache, stop), daemon=True)
+    t.start()
+
+    # Last-known derived state (prevents oscillation when SKY/TPV arrives at different rates)
+    last_sats_used = 0
+    last_track_deg = 0.0
+    last_track_cardinal = "N"
+    last_grid4 = ""
+    last_grid6 = ""
+    pos_last_good_ms = 0
+    gps_last_seen_ms = 0  # last time we saw *fresh* TPV
+
+    last_loop_progress = time.time()
 
     while True:
+        loop_start = time.time()
         ts = now_ms()
+
+        # Detect a true hang (should never happen, but if it does, exit so systemd restarts us)
+        if (loop_start - last_loop_progress) > HANG_EXIT_SEC:
+            raise SystemExit(f"gps_state_publisher hung for > {HANG_EXIT_SEC}s; exiting for restart")
+
         try:
-            sample = _gpsd_sample()
+            tpv, tpv_ms, sky, sky_ms, connected = cache.snapshot()
 
-            # Defaults: safe fallback
+            tpv_age = (ts - tpv_ms) if tpv_ms else 10_000_000
+            sky_age = (ts - sky_ms) if sky_ms else 10_000_000
+
+            tpv_fresh = tpv is not None and tpv_ms > 0 and tpv_age <= TPV_STALE_MS
+            sky_fresh = sky is not None and sky_ms > 0 and sky_age <= SKY_STALE_MS
+
+            # Derive fix_type
             fix_type = 0
-            sats = 0
-            has_fix = False
-            clock_source = "system"
+            if tpv_fresh:
+                try:
+                    fix_type = int(tpv.get("mode") or 0)  # type: ignore[union-attr]
+                except Exception:
+                    fix_type = 0
+
+            has_fix = fix_type >= 2
+
+            # Satellite used count
+            sats_used = last_sats_used
+            if sky_fresh and isinstance(sky, dict):
+                # gpsd SKY typically has "uSat" (used satellites)
+                if isinstance(sky.get("uSat"), (int, float)):
+                    sats_used = int(sky["uSat"])
+                else:
+                    sats = sky.get("satellites")
+                    if isinstance(sats, list):
+                        sats_used = sum(
+                            1 for s in sats
+                            if isinstance(s, dict) and s.get("used") is True
+                        )
+            last_sats_used = sats_used
+
+            # Time
+            time_source = "system"
             utc_iso = now_iso_utc()
+            if tpv_fresh and fix_type >= 1 and isinstance(tpv, dict):
+                t_iso = tpv.get("time")
+                if isinstance(t_iso, str) and t_iso.strip():
+                    # gpsd usually gives ISO ending in Z; keep as-is (UI Date() parses it fine)
+                    utc_iso = t_iso.strip()
+                    time_source = "gps"
 
+            if tpv_fresh:
+                gps_last_seen_ms = ts
+
+            # Speed (m/s -> mph/kph), clamp mph < 2 to 0
             speed_mps = 0.0
-
-            if sample:
-                ft = sample.get("fix_type")
-                if isinstance(ft, int):
-                    fix_type = ft
-
-                # Time is authoritative as soon as fix_type >= 1 *and* gpsd provided time
-                gps_time = sample.get("utc_iso")
-                if fix_type >= 1 and isinstance(gps_time, str) and gps_time:
-                    utc_iso = gps_time
-                    clock_source = "gpsd"
-                    gps_last_seen_ms = ts  # we saw real GPS time
-
-                # Location fix truth is fix_type >= 2
-                has_fix = fix_type >= 2
-
-                su = sample.get("sats_used")
-                if isinstance(su, int) and su >= 0:
-                    sats = su
-
-                sm = sample.get("speed_mps")
-                if isinstance(sm, (int, float)) and sm >= 0:
+            if tpv_fresh and isinstance(tpv, dict):
+                sm = num(tpv.get("speed"))
+                if sm is not None and sm >= 0:
                     speed_mps = float(sm)
-                    # speed is also "real gpsd data"
-                    gps_last_seen_ms = max(gps_last_seen_ms, ts)
 
-            mph = speed_mps * 2.2369362920544
+            mph = clamp_mph(speed_mps * 2.2369362920544)
             kph = speed_mps * 3.6
 
-            # Publish time
+            # Position/nav
+            valid_pos = False
+            lat = None
+            lon = None
+            alt_m = None
+
+            if tpv_fresh and has_fix and isinstance(tpv, dict):
+                la = num(tpv.get("lat"))
+                lo = num(tpv.get("lon"))
+                if la is not None and lo is not None:
+                    lat = la
+                    lon = lo
+                    valid_pos = True
+                    pos_last_good_ms = ts
+
+                    if fix_type >= 3:
+                        am = num(tpv.get("alt"))
+                        if am is not None:
+                            alt_m = am
+
+                    # Track/course (degrees). Keep last known if missing.
+                    tr = num(tpv.get("track"))
+                    if tr is not None:
+                        last_track_deg = float(tr) % 360.0
+                        last_track_cardinal = cardinal_from_deg(last_track_deg)
+
+                    # Maidenhead grids (keep last known if compute fails)
+                    try:
+                        last_grid4 = maidenhead(lat, lon, 4)
+                        last_grid6 = maidenhead(lat, lon, 6)
+                    except Exception:
+                        pass
+
+            # Always publish heartbeat, even if gpsd is down.
             hset_dict(
                 r,
                 KEY_GPS_TIME,
                 {
                     "utc_iso": utc_iso,
-                    "source": clock_source if clock_source != "gpsd" else "gps",
+                    "source": time_source,
                     "last_update_ms": ts,
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                 },
             )
 
-            # Publish fix
             hset_dict(
                 r,
                 KEY_GPS_FIX,
                 {
                     "has_fix": has_fix,
                     "fix_type": fix_type,
-                    "sats": sats,
-                    "source": "gpsd" if sample else "system",
+                    "sats": sats_used,
+                    "source": "gpsd" if connected else "system",
                     "last_update_ms": ts,
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                 },
             )
 
-            # Publish speed
             hset_dict(
                 r,
                 KEY_GPS_SPEED,
@@ -301,13 +402,39 @@ def main() -> None:
                 },
             )
 
-            backoff = 0.5
-            time.sleep(interval)
+            alt_ft = (alt_m * 3.280839895013123) if isinstance(alt_m, (int, float)) else None
+
+            hset_dict(
+                r,
+                KEY_GPS_POS,
+                {
+                    "valid": valid_pos,
+                    "lat": lat if valid_pos else "",
+                    "lon": lon if valid_pos else "",
+                    "alt_m": alt_m if alt_m is not None else "",
+                    "alt_ft": alt_ft if alt_ft is not None else "",
+                    "track_deg": round(last_track_deg, 1),
+                    "track_cardinal": last_track_cardinal or "N",
+                    "grid4": last_grid4,
+                    "grid6": last_grid6,
+                    "last_update_ms": ts,
+                    "gps_last_seen_ms": gps_last_seen_ms or "",
+                    "pos_last_good_ms": pos_last_good_ms or "",
+                },
+            )
+
+            last_loop_progress = time.time()
 
         except Exception as e:
-            print(f"[gps_state_publisher] ERROR: {e}", flush=True)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 5.0)
+            # Log and continue with backoff so we don't spin if Redis is down.
+            print(f"[gps_state_publisher] ERROR: {type(e).__name__}: {e}", flush=True)
+            time.sleep(0.5)
+
+        # Maintain cadence
+        elapsed = time.time() - loop_start
+        sleep_s = interval_s - elapsed
+        if sleep_s > 0:
+            time.sleep(sleep_s)
 
 
 if __name__ == "__main__":
