@@ -122,7 +122,43 @@ function coerceBindings(panel) {
     if (panel && panel.focusable === true) focusablePanelIds.push(panelId);
   });
 
-  nav.setPageModel({ focusablePanelIds, slotByPanelId });
+  // Determine initial focus using page.focusPolicy
+  const fp = page.focusPolicy || null;
+
+  // Helper: normalize list of ids
+  const normIds = (arr) => (Array.isArray(arr) ? arr.map(x => String(x||"").trim()).filter(Boolean) : []);
+
+  let initialPanelId = null;
+
+  if (fp) {
+    const rotation = normIds(fp.rotation);
+    const def = String(fp.defaultPanel || "").trim();
+
+    if (rotation.length > 0) {
+      // Prefer rotation order: pick first focusable in that rotation
+      const rotFirst = rotation.find(id => focusablePanelIds.includes(id));
+      initialPanelId = rotFirst || null;
+
+      // Also: override focus order itself to the rotation (filtered to focusables)
+      const rotated = rotation.filter(id => focusablePanelIds.includes(id));
+      // If rotated is empty, we still start with no focus.
+      // Swap focusablePanelIds to the rotated list.
+      focusablePanelIds.length = 0;
+      rotated.forEach(id => focusablePanelIds.push(id));
+    } else if (def) {
+      // defaultPanel provided: focus it if it is focusable
+      initialPanelId = focusablePanelIds.includes(def) ? def : null;
+    } else {
+      // focusPolicy exists but is empty => explicit "no focus"
+      initialPanelId = null;
+      // keep focusablePanelIds as-is, but don't auto-focus
+    }
+  } else {
+    // No focusPolicy: keep v1 behavior of auto-focusing first focusable
+    initialPanelId = focusablePanelIds[0] || null;
+  }
+
+  nav.setPageModel({ focusablePanelIds, slotByPanelId, initialPanelId });
 
   // Keyboard: [ and ] as prev/next panel for now (won't collide much)
   window.addEventListener("keydown", (e) => {

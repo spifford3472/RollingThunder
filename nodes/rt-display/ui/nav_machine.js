@@ -1,6 +1,4 @@
 // nav_machine.js
-// Minimal v1: roving focus only (PANEL_NEXT/PREV).
-// No page switching, no panel-mode, no modal.
 
 function uniq(arr) {
   const out = [];
@@ -15,9 +13,9 @@ function uniq(arr) {
 }
 
 export function createNavMachine() {
-  let _order = [];          // ordered focusable panelIds
-  let _slotById = new Map(); // panelId -> slotEl
-  let _idx = -1;            // -1 means "no focus"
+  let _order = [];
+  let _slotById = new Map();
+  let _idx = -1;
   let _activeId = null;
 
   function _clearActiveClass() {
@@ -36,28 +34,44 @@ export function createNavMachine() {
     }
   }
 
-  function setPageModel({ focusablePanelIds, slotByPanelId }) {
+  // NEW: allow specifying initial focus (or none)
+  function setPageModel({ focusablePanelIds, slotByPanelId, initialPanelId = null }) {
     _order = uniq(focusablePanelIds || []);
     _slotById = slotByPanelId || new Map();
-    _idx = _order.length ? 0 : -1;
-    _setActive(_idx >= 0 ? _order[_idx] : null);
+
+    if (initialPanelId && _order.includes(initialPanelId)) {
+      _idx = _order.indexOf(initialPanelId);
+      _setActive(initialPanelId);
+      return;
+    }
+
+    // IMPORTANT: if initialPanelId is null/empty, start with NO focus
+    _idx = -1;
+    _setActive(null);
   }
 
   function panelNext() {
     if (_order.length === 0) return;
-    _idx = (_idx + 1) % _order.length;
+    if (_idx < 0) _idx = 0;
+    else _idx = (_idx + 1) % _order.length;
     _setActive(_order[_idx]);
   }
 
   function panelPrev() {
     if (_order.length === 0) return;
-    _idx = (_idx - 1 + _order.length) % _order.length;
+    if (_idx < 0) _idx = _order.length - 1;
+    else _idx = (_idx - 1 + _order.length) % _order.length;
     _setActive(_order[_idx]);
+  }
+
+  function clearFocus() {
+    _idx = -1;
+    _setActive(null);
   }
 
   function getState() {
     return { activePanelId: _activeId, hasFocus: _idx >= 0, focusableCount: _order.length };
   }
 
-  return { setPageModel, panelNext, panelPrev, getState };
+  return { setPageModel, panelNext, panelPrev, clearFocus, getState };
 }
