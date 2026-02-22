@@ -203,8 +203,6 @@ def main() -> None:
 
     unit_map = load_unit_map()
 
-    while True:
-    unit_map = load_unit_map()  # keep for non-rt services like redis/mosquitto
     last_discover = 0.0
     discovered_services: Dict[str, str] = {}  # sid -> unit
 
