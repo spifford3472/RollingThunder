@@ -4,4 +4,12 @@ Description=RollingThunder Alert Writer for %I
 [Service]
 Type=oneshot
 User=spiff
-ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rt_emit_alert.py --source systemd --service "%I" --level bad --message "Service failed and was stopped after restart limits"
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rt_emit_alert.py \
+  --source systemd \
+  --kind service \
+  --severity bad \
+  --service "%I" \
+  --title "Service failed" \
+  --message "Service failed and was stopped after restart limits"
+  
