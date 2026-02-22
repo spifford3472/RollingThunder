@@ -45,7 +45,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import redis
 import gps  # gpsd python bindings (from gpsd package)
-from collections import Mapping
+from collections.abc import Mapping
 
 
 # -------------------- Config --------------------
