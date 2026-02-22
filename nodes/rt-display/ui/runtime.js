@@ -1,8 +1,10 @@
+import { createNavMachine } from "./nav_machine.js";
 import { loadConfigBundle } from "./config_loader.js";
 import { createRendererRegistry } from "./renderer_registry.js";
 import { createBindingStore } from "./binding_store.js";
 import { startPanelRefresh } from "./refresh.js";
 import { renderPanelError } from "./renderers/panel_error.js";
+
 
 function normalizeLayout(layout) {
   return {
@@ -100,6 +102,34 @@ function coerceBindings(panel) {
 
   const registry = createRendererRegistry();
   const store = createBindingStore();
+
+  // --- NAV v1: roving focus (panel highlight only) ---
+  const nav = createNavMachine();
+
+  // Build slot map panelId -> slot element
+  const slotByPanelId = new Map();
+  root.querySelectorAll(".rt-slot").forEach((slot) => {
+    const pid = String(slot.dataset.panelId || "").trim();
+    if (pid) slotByPanelId.set(pid, slot);
+  });
+
+  // Focusable panels in deterministic visual order:
+  // Use DOM order of slots (top -> mid columns -> bottom, already built that way)
+  const focusablePanelIds = [];
+  root.querySelectorAll(".rt-slot").forEach((slot) => {
+    const panelId = String(slot.dataset.panelId || "").trim();
+    const panel = bundle.panelsById[panelId];
+    if (panel && panel.focusable === true) focusablePanelIds.push(panelId);
+  });
+
+  nav.setPageModel({ focusablePanelIds, slotByPanelId });
+
+  // Keyboard: [ and ] as prev/next panel for now (won't collide much)
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "]") { e.preventDefault(); nav.panelNext(); }
+    if (e.key === "[") { e.preventDefault(); nav.panelPrev(); }
+  });
+  // --- end NAV v1 ---
 
   root.querySelectorAll(".rt-slot").forEach((slot) => {
   const panelId = slot.dataset.panelId;

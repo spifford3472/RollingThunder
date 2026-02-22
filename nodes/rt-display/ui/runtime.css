@@ -1,7 +1,4 @@
 .rt-app { height: 100vh; display: flex; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; }
-/*.rt-region { display: flex; gap: 12px; }*/
-/*.rt-top, .rt-bot { flex-wrap: wrap; }*/
-
 /* Default: stack (top/bottom want this) */
 .rt-region { display:flex; flex-direction:column; gap:12px; }
 .rt-slot { width:100%; box-sizing:border-box; }
@@ -137,3 +134,13 @@
 .rt-wpsd.stale { opacity:0.75; }
 .rt-callwrap { display: inline-flex; align-items: center; gap: 8px; }
 .rt-flag { height: 18px; width: auto; border-radius: 2px; opacity: 0.95; }
+
+/* runtime-owned focus highlight */
+.rt-slot.rt-active {
+  outline: 2px solid rgba(255,255,255,0.85);
+  outline-offset: 2px;
+}
+
+.rt-slot.rt-active .rt-slot-hdr::before {
+  content: "▶ ";
+}
