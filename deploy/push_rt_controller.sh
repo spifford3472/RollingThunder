@@ -89,6 +89,7 @@ fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
+fail_missing "${ALERT_UNIT_SRC}"
 
 # Thin-client runtime assets must exist locally in repo
 fail_missing_dir "${UI_SRC_DIR}"
