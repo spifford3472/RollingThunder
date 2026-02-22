@@ -30,8 +30,8 @@
   },
 
   "focusPolicy": {
-    "defaultPanel": "alerts_overlay",
-    "rotation": ["alerts_overlay", "node_health_summary"]
+    "defaultPanel": "",
+    "rotation": []
   },
 
   "meta": {
