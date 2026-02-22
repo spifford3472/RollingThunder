@@ -24,6 +24,7 @@ echo "[push] Repo:   ${REPO_ROOT}"
 
 UNIT_DIR="${REPO_ROOT}/deploy/nodes/rt-controller/systemd"
 GPS_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-gps-state-publisher.service"
+ALERT_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-alert@.service"
 
 # --- Source roots (authoritative) ---
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
@@ -57,6 +58,7 @@ UNITS=(
   "rt-env-temp-publisher.service"
   "rt-wpsd-log-ingestor.service"
   "rt-wpsd-poller.service"
+  "rt-alert@.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
@@ -196,6 +198,8 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   for u in "${UNITS[@]}"; do
     if [[ "${u}" == "rt-gps-state-publisher.service" ]]; then
       push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${GPS_UNIT_SRC}" "/etc/systemd/system/${u}" "644"
+    elif [[ "${u}" == "rt-alert@.service" ]]; then
+      push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${ALERT_UNIT_SRC}" "/etc/systemd/system/${u}" "644"
     else
       src="${UNIT_DIR}/${u}"
       fail_missing "${src}"
@@ -205,6 +209,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
 else
   echo "[dry] would push systemd unit files to /etc/systemd/system/"
 fi
+
 
 echo "[guard] rt-node-presence-ingestor ExecStart must point to /opt/rollingthunder/services/"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
