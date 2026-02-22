@@ -1,15 +1,22 @@
 [Unit]
-Description=RollingThunder GPS/Env State Publisher
-After=network.target
-Wants=network.target
+Description=RollingThunder GPS Ingest Publisher
+After=network.target gpsd.socket
+Wants=network.target gpsd.socket
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=rt-alert@%n.service
 
 [Service]
 Type=simple
 User=spiff
 WorkingDirectory=/opt/rollingthunder/nodes/rt-controller/services
 ExecStart=/usr/bin/python3 /opt/rollingthunder/services/gps_state_publisher.py
-Restart=always
-RestartSec=1
+Restart=on-failure
+RestartSec=2
+
+# harden a bit (optional but nice)
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
