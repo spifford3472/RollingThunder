@@ -23,6 +23,11 @@ from typing import Dict, Optional, Tuple
 
 import redis
 
+RT_UNIT_PREFIX = os.environ.get("RT_UNIT_PREFIX", "rt-")          # systemd unit prefix
+RT_UNIT_SUFFIX = os.environ.get("RT_UNIT_SUFFIX", ".service")     # only services
+RT_EXCLUDE_AT = os.environ.get("RT_EXCLUDE_AT", "1") == "1"       # exclude '@' templates/instances
+RT_PRUNE_MISSING = os.environ.get("RT_PRUNE_MISSING", "1") == "1" # delete stale rt:services:* keys
+
 
 REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
@@ -34,6 +39,10 @@ SERVICE_PREFIX = os.environ.get("RT_KEY_SERVICE_PREFIX", "rt:services:")
 LOCAL_NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
 
 POLL_SEC = float(os.environ.get("RT_POLL_SEC", "5.0"))
+POLL_SEC = min(POLL_SEC, 60.0)  # must check at least every 60 seconds
+
+DISCOVER_SEC = float(os.environ.get("RT_DISCOVER_SEC", "30.0"))
+DISCOVER_SEC = min(DISCOVER_SEC, 60.0)  # redis keys must adapt within 60 seconds
 
 UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
 
@@ -52,7 +61,51 @@ DEFAULT_UNIT_MAP: Dict[str, str] = {
     # "noaa_same": ???,
 }
 
+def unit_exists(unit: str) -> bool:
+    info = run_systemctl_show(unit)
+    return bool(info) and info.get("LoadState") != "not-found"
 
+def _unit_to_service_id(unit: str) -> str:
+    # rt-gps-state-publisher.service -> gps_state_publisher
+    name = unit
+    if name.startswith(RT_UNIT_PREFIX):
+        name = name[len(RT_UNIT_PREFIX):]
+    if name.endswith(RT_UNIT_SUFFIX):
+        name = name[: -len(RT_UNIT_SUFFIX)]
+    return name.replace("-", "_")
+
+def discover_rt_units() -> list[str]:
+    """
+    Return list of systemd unit names like: rt-foo.service
+    Excludes '@' templates/instances if RT_EXCLUDE_AT=1.
+    """
+    cmd = [
+        "systemctl",
+        "list-units",
+        "--type=service",
+        "--all",
+        "--no-legend",
+        "--no-pager",
+    ]
+    out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+
+    units: list[str] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # first column is UNIT
+        unit = line.split(None, 1)[0].strip()
+        if not unit.startswith(RT_UNIT_PREFIX):
+            continue
+        if not unit.endswith(RT_UNIT_SUFFIX):
+            continue
+        if RT_EXCLUDE_AT and "@" in unit:
+            continue
+        units.append(unit)
+
+    units.sort()
+    return units
 
 # Optional override via env var containing JSON dict: {"service_id":"unit.service", ...}
 UNIT_MAP_JSON = os.environ.get("RT_UNIT_MAP_JSON", "")
@@ -151,6 +204,11 @@ def main() -> None:
     unit_map = load_unit_map()
 
     while True:
+    unit_map = load_unit_map()  # keep for non-rt services like redis/mosquitto
+    last_discover = 0.0
+    discovered_services: Dict[str, str] = {}  # sid -> unit
+
+    while True:
         start = time.time()
         try:
             r.ping()
@@ -158,48 +216,77 @@ def main() -> None:
             time.sleep(POLL_SEC)
             continue
 
-        # Scan existing service hashes
-        for key in r.scan_iter(match=f"{SERVICE_PREFIX}*"):
+        now_t = time.time()
+
+        # ---- (A) Redis+systemd truth refresh: discover rt-* services at least every DISCOVER_SEC ----
+        if (now_t - last_discover) >= DISCOVER_SEC:
+            last_discover = now_t
+            discovered_services = {}
+
+            # 1) Discover all rt-*.service units (excluding @)
             try:
-                if r.type(key) != "hash":
-                    continue
+                rt_units = discover_rt_units()
+                for unit in rt_units:
+                    sid = _unit_to_service_id(unit)
+                    discovered_services[sid] = unit
+            except Exception:
+                # If discovery fails, keep last known discovered_services (don’t nuke state)
+                pass
 
-                h = r.hgetall(key)
-                sid = (h.get("id") or key.split(":", 2)[-1]).strip()
-                owner = (h.get("ownerNode") or "").strip()
+            # 2) OPTIONAL: include mapped “non-rt” services ONLY if they exist
+            # This keeps mqtt_bus / redis_state if you still want them visible.
+            for sid, unit in unit_map.items():
+                # only include if systemd actually knows the unit
+                if unit and unit_exists(unit):
+                    discovered_services.setdefault(sid, unit)
 
-                # Only update services owned by this node
-                if owner != LOCAL_NODE_ID:
-                    continue
+            # 3) Prune rt:services:* keys that aren’t in discovered_services
+            if RT_PRUNE_MISSING:
+                try:
+                    keep = set(discovered_services.keys())
+                    for key in r.scan_iter(match=f"{SERVICE_PREFIX}*"):
+                        if r.type(key) != "hash":
+                            continue
+                        sid = key.split(":", 2)[-1]
+                        if sid not in keep:
+                            r.delete(key)
+                except Exception:
+                    pass
 
-                unit = unit_map.get(sid)
-                if not unit:
-                    r.hset(key, mapping={
-                        "state": "unknown",
-                        "last_update_ms": str(now_ms()),
-                        "publisher_error": f"no_unit_mapping_for_id:{sid}",
-                    })
-                    r.hdel(key, "publisher_error")
-                    continue
+        # ---- (B) Publish state for everything in discovered_services ----
+        for sid, unit in discovered_services.items():
+            key = f"{SERVICE_PREFIX}{sid}"
 
-
+            try:
                 info = run_systemctl_show(unit)
                 state = normalize_state(info)
 
                 mapping = {
+                    "id": sid,                       # safe; helps when hashes are newly created
+                    "ownerNode": LOCAL_NODE_ID,      # safe; allows your UI to filter by node
                     "state": state,
                     "last_update_ms": str(now_ms()),
                 }
 
-                # If we have a unit mapping but systemd can't find it, record it.
                 if state == "missing":
-                    mapping["publisher_error"] = f"mapped_unit_missing: {unit}"
+                    mapping["publisher_error"] = f"unit_missing: {unit}"
                 else:
-                    # Clear any previous error on a healthy observation
-                    r.hdel(key, "publisher_error")
+                    # clear any previous error
+                    try:
+                        r.hdel(key, "publisher_error")
+                    except Exception:
+                        pass
 
-                prev_state = (h.get("state") or "").strip()
-                prev_error = (h.get("publisher_error") or "").strip()
+                # Read prev state for eventing
+                prev = {}
+                try:
+                    if r.type(key) == "hash":
+                        prev = r.hgetall(key)
+                except Exception:
+                    prev = {}
+
+                prev_state = (prev.get("state") or "").strip()
+                prev_error = (prev.get("publisher_error") or "").strip()
                 new_error = (mapping.get("publisher_error") or "").strip()
 
                 state_changed = (state != prev_state)
@@ -223,10 +310,8 @@ def main() -> None:
                 set_error(r, key, f"{type(e).__name__}: {e}")
                 continue
 
-
         elapsed = time.time() - start
-        sleep_for = max(0.2, POLL_SEC - elapsed)
-        time.sleep(sleep_for)
+        time.sleep(max(0.2, POLL_SEC - elapsed))
 
 
 if __name__ == "__main__":
