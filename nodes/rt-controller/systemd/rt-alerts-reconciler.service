@@ -1,0 +1,14 @@
+[Unit]
+Description=RollingThunder Alerts Reconciler (TTL + clearsOn)
+After=network.target redis.service
+Wants=network.target redis.service
+
+[Service]
+Type=simple
+User=spiff
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rt_alerts_reconciler.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -25,6 +25,7 @@ echo "[push] Repo:   ${REPO_ROOT}"
 UNIT_DIR="${REPO_ROOT}/deploy/nodes/rt-controller/systemd"
 GPS_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-gps-state-publisher.service"
 ALERT_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-alert@.service"
+ALERT_RECONCILE_SRC="${REPO_ROOT}/nodes/rt-controller/ops/rt-alerts-reconciler.py"
 
 # --- Source roots (authoritative) ---
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
@@ -58,6 +59,7 @@ UNITS=(
   "rt-env-temp-publisher.service"
   "rt-wpsd-log-ingestor.service"
   "rt-wpsd-poller.service"
+  "rt-alerts-reconciler.service"
   "rt-alert@.service"
 )
 
@@ -90,6 +92,7 @@ fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
 fail_missing "${ALERT_UNIT_SRC}"
+fail_missing "${ALERT_RECONCILE_SRC}"
 
 # Thin-client runtime assets must exist locally in repo
 fail_missing_dir "${UI_SRC_DIR}"
@@ -201,6 +204,8 @@ if [[ "${DRY_RUN}" != "1" ]]; then
       push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${GPS_UNIT_SRC}" "/etc/systemd/system/${u}" "644"
     elif [[ "${u}" == "rt-alert@.service" ]]; then
       push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${ALERT_UNIT_SRC}" "/etc/systemd/system/${u}" "644"
+    elif [[ "${u}" == "rt-alerts-reconciler.service" ]]; then
+      push_root_file "${TARGET_HOST}" "${TARGET_USER}" "${ALERT_RECONCILE_SRC}" "/etc/systemd/system/${u}" "644"
     else
       src="${UNIT_DIR}/${u}"
       fail_missing "${src}"
