@@ -223,8 +223,28 @@ echo "[push] systemd daemon-reload + enable + restart"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     sudo systemctl daemon-reload
-    sudo systemctl enable ${UNITS_STR}
-    sudo systemctl restart ${UNITS_STR}
+
+    # Split template units (like rt-alert@.service) from normal units.
+    NORMAL_UNITS=()
+    TEMPLATE_UNITS=()
+
+    for u in ${UNITS_STR}; do
+      # UNITS_STR is already shell-escaped by printf %q, so this loop is safe.
+      if [[ \"\$u\" == *@.service ]]; then
+        TEMPLATE_UNITS+=(\"\$u\")
+      else
+        NORMAL_UNITS+=(\"\$u\")
+      fi
+    done
+
+    if (( \${#TEMPLATE_UNITS[@]} )); then
+      echo \"[push] template units installed (not enabling/restarting): \${TEMPLATE_UNITS[*]}\"
+    fi
+
+    if (( \${#NORMAL_UNITS[@]} )); then
+      sudo systemctl enable \${NORMAL_UNITS[*]}
+      sudo systemctl restart \${NORMAL_UNITS[*]}
+    fi
   "
 else
   echo "[dry] would daemon-reload + enable + restart: ${UNITS[*]}"

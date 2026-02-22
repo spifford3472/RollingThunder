@@ -1,5 +1,8 @@
 [Unit]
 Description=RollingThunder Alert Writer for %I
+OnFailure=rt-alert@%n.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
@@ -12,4 +15,5 @@ ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rt_emit_alert.py \
   --service "%I" \
   --title "Service failed" \
   --message "Service failed and was stopped after restart limits"
-  
+Restart=on-failure
+RestartSec=2
