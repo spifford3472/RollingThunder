@@ -261,12 +261,12 @@ def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
                 if not isinstance(report, dict):
                     continue
 
-                cls = rep.get("class")
+                cls = report.get("class")
                 ts = now_ms()
                 if cls == "TPV":
-                    cache.update_tpv(rep, ts)
+                    cache.update_tpv(report, ts)
                 elif cls == "SKY":
-                    cache.update_sky(rep, ts)
+                    cache.update_sky(report, ts)
 
         except Exception as e:
             cache.set_connected(False)
