@@ -45,6 +45,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import redis
 import gps  # gpsd python bindings (from gpsd package)
+from collections import Mapping
 
 
 # -------------------- Config --------------------
@@ -95,6 +96,47 @@ def hset_dict(r: redis.Redis, key: str, fields: Dict[str, Any]) -> None:
     safe = {str(k): _scalarize(v) for k, v in fields.items()}
     r.hset(key, mapping=safe)
 
+def normalize_report(obj: Any) -> Optional[Dict[str, Any]]:
+    """
+    gpsd python binding often returns gps.client.dictwrapper, which is not a dict
+    and (on some builds) not a Mapping either.
+    We normalize to a plain dict so the rest of the code is deterministic.
+    """
+    if obj is None:
+        return None
+
+    # Already a dict
+    if isinstance(obj, dict):
+        return obj
+
+    # Some versions present mapping-like behavior
+    if isinstance(obj, Mapping):
+        try:
+            return dict(obj)
+        except Exception:
+            pass
+
+    # gps.client.dictwrapper: has .get() and keys(), but isn't a Mapping
+    get = getattr(obj, "get", None)
+    keys = getattr(obj, "keys", None)
+    if callable(get) and callable(keys):
+        try:
+            d: Dict[str, Any] = {}
+            for k in list(keys()):
+                try:
+                    d[k] = get(k)
+                except Exception:
+                    continue
+            return d if d else None
+        except Exception:
+            pass
+
+    # Last resort: attribute dict
+    d = getattr(obj, "__dict__", None)
+    if isinstance(d, dict) and d:
+        return d
+
+    return None
 
 def num(v: Any) -> Optional[float]:
     if isinstance(v, (int, float)):
@@ -206,7 +248,10 @@ def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
 
             while not stop.is_set():
                 try:
-                    report = sess.next()
+                    raw = sess.next()
+                    report = normalize_report(raw)
+                    if not report:
+                        continue
                 except StopIteration:
                     raise OSError("gpsd stream ended")
                 except Exception as e:
@@ -216,12 +261,12 @@ def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
                 if not isinstance(report, dict):
                     continue
 
-                cls = report.get("class")
+                cls = rep.get("class")
                 ts = now_ms()
                 if cls == "TPV":
-                    cache.update_tpv(report, ts)
+                    cache.update_tpv(rep, ts)
                 elif cls == "SKY":
-                    cache.update_sky(report, ts)
+                    cache.update_sky(rep, ts)
 
         except Exception as e:
             cache.set_connected(False)
