@@ -6,10 +6,10 @@
   "layout": {
     "top": ["topbar_core"],
     "middle": [
-      ["alerts_overlay", "controller_services_summary"],
+      ["controller_services_summary"],
       ["node_health_summary", "deploy_drift_summary"]
     ],
-    "bottom": []
+    "bottom": ["alerts_overlay"]
   },
 
   "requires": ["redis_state", "mqtt_bus", "gps_ingest"],
