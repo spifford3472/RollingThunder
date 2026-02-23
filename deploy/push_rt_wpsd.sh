@@ -7,6 +7,8 @@ TARGET_USER="${RT_SSH_USER:-pi-star}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
+COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
+COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 
 # --- repo invariants (deploy gate) ---
 deploy_entry
@@ -79,13 +81,18 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo mkdir -p '${RT_ROOT}' '${RT_ROOT}/.deploy' '${RT_NODE}' '${RT_NODE_SERVICES}' '${RT_TOOLS}' /etc/rollingthunder;
   sudo chown -R '${TARGET_USER}:${TARGET_USER}' '${RT_NODE}' '${RT_TOOLS}' '${RT_ROOT}/.deploy' || true
 "
+echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
+  "${COMMON_SERVICES_SRC_DIR}" \
+  "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
 
 echo "[push] Sync tools -> ${RT_TOOLS}/ (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-group --no-perms --omit-dir-times \
   "${RSYNC_EXCLUDES[@]}" \
   "${TOOLS_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
-
 if [[ -d "${SERVICES_SRC_DIR}" ]]; then
   echo "[push] Sync optional python services -> ${RT_NODE_SERVICES}/ (user-owned)"
   rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \

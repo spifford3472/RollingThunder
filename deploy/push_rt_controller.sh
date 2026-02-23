@@ -31,6 +31,7 @@ ALERT_RECONCILE_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-alerts-reconcil
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
 SERVICES_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/services/"
 OPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/ops/"
+COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
 
 # Thin-client UI/runtime sources (served by rt-controller)
 UI_SRC_DIR="${REPO_ROOT}/nodes/rt-display/ui/"
@@ -89,6 +90,8 @@ ls -la "${NODE_SRC_DIR}" || true
 
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
+fail_missing_dir "${COMMON_SERVICES_SRC_DIR}"
+fail_missing "${COMMON_SERVICES_SRC_DIR}/node_presence_publisher.py"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
 fail_missing "${ALERT_UNIT_SRC}"
@@ -131,9 +134,18 @@ else
   TMP_REMOTE="/tmp/rt_services_push.$$"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; rm -rf ${TMP_REMOTE}; mkdir -p ${TMP_REMOTE}"
 
+  # Inject common services into the controller services bundle (single flat dir)
+  rsync -avz --checksum --itemize-changes \
+    "${RSYNC_EXCLUDES[@]}" \
+    "${COMMON_SERVICES_SRC_DIR}/node_presence_publisher.py" \
+    "${TARGET_USER}@${TARGET_HOST}:${TMP_REMOTE}/node_presence_publisher.py"
+
+
   rsync -avz --checksum --itemize-changes \
     "${RSYNC_EXCLUDES[@]}" \
     "${SERVICES_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${TMP_REMOTE}/"
+
+  # Include common presence publisher in controller /opt/rollingthunder/services/
 
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     sudo rsync -a --delete ${TMP_REMOTE}/ ${SERVICES_DST_DIR}/

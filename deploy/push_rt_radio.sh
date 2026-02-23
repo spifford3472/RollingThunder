@@ -7,6 +7,8 @@ TARGET_USER="${RT_SSH_USER:-spiff}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
+COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
+COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 
 # --- repo invariants (deploy gate) ---
 deploy_entry
@@ -106,6 +108,12 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='systemd/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
 
+echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
+  "${COMMON_SERVICES_SRC_DIR}" \
+  "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"  
 # tools: publish_deploy_report.sh goes to /opt/rollingthunder/tools/
 echo "[push] Install deploy report tool -> ${DEPLOY_TOOL_DST} (user-owned)"
 if [[ "${DRY_RUN}" != "1" ]]; then

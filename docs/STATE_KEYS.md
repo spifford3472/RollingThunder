@@ -182,14 +182,14 @@ Example:
 }
 ```
 ---
-`rt:node:<nodeId>`
+`rt:nodes:<nodeId>`
 
 **Type:** object
 **Meaning:** per-node detailed health snapshot
 
 Examples:
-- `rt:node:rt-controller`
-- `rt:node:rt-radio`
+- `rt:nodes:rt-controller`
+- `rt:nodes:rt-radio`
 
 ### 4.4 Services ###
 `rt:services:state`
@@ -298,7 +298,7 @@ To prevent hidden coupling:
 
 **Radio appliance (**`rt-radio`**) writes:**
 - `rt:hf:*`
-- `rt:node:rt-radio` (heartbeat)
+- `rt:nodes:rt-radio` (heartbeat)
 
 **Display (**`rt-display`**) writes:**
 - **nothing**

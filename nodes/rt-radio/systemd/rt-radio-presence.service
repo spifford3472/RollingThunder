@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=spiff
 Group=spiff
-ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/radio_presence.py
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/common/services/node_presence_publisher.py
 Restart=always
 RestartSec=2
 Environment=RT_MQTT_HOST=rt-controller
@@ -16,3 +16,5 @@ Environment=RT_PRESENCE_HTTP_PORT=8787
 
 [Install]
 WantedBy=multi-user.target
+Environment=RT_NODE_ID=rt-radio
+Environment=RT_NODE_ROLE=radio

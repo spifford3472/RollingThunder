@@ -7,6 +7,8 @@ TARGET_USER="${RT_SSH_USER:-spiff}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
+COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
+COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 
 # --- repo invariants (deploy gate) ---
 deploy_entry
@@ -112,7 +114,20 @@ else
   echo "[dry] would ensure venv exists and paho-mqtt installed"
 fi
 
+
+echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
+  "${COMMON_SERVICES_SRC_DIR}" \
+  "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
+  
 # ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
+echo "[push] Sync common python services -> /opt/rollingthunder/nodes/common/services/ (user-owned)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${REPO_ROOT}/nodes/common/services/" \
+  "${TARGET}:/opt/rollingthunder/nodes/common/services/"
+
 echo "[push] Sync services dir -> ${RT_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
