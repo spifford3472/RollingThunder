@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=spiff
 Group=spiff
-ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/common/services/node_presence_publisher.py
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/rt-radio_node_presence_publisher.py
 Restart=always
 RestartSec=2
 Environment=RT_MQTT_HOST=rt-controller
