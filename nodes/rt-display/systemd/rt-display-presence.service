@@ -10,12 +10,12 @@ Group=spiff
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-display/services/rt-display_node_presence_publisher.py
 Restart=always
 RestartSec=2
+
+Environment=RT_NODE_ID=rt-display
+Environment=RT_NODE_ROLE=display
 Environment=RT_MQTT_HOST=rt-controller
 Environment=RT_MQTT_PORT=1883
 Environment=RT_PRESENCE_HTTP_PORT=8787
 
-
 [Install]
 WantedBy=multi-user.target
-Environment=RT_NODE_ID=rt-display
-Environment=RT_NODE_ROLE=display

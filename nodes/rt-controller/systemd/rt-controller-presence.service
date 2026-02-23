@@ -1,0 +1,20 @@
+[Unit]
+Description=RollingThunder rt-controller presence publisher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-controller/rt-controller_node_presence_publisher.py
+Restart=always
+RestartSec=2
+
+Environment=RT_NODE_ID=rt-controller
+Environment=RT_NODE_ROLE=controller
+Environment=RT_MQTT_HOST=127.0.0.1
+Environment=RT_MQTT_PORT=1883
+
+[Install]
+WantedBy=multi-user.target

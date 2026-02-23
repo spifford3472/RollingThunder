@@ -13,8 +13,9 @@ RestartSec=2
 Environment=RT_MQTT_HOST=rt-controller
 Environment=RT_MQTT_PORT=1883
 Environment=RT_PRESENCE_HTTP_PORT=8787
+Environment=RT_NODE_ID=rt-radio
+Environment=RT_NODE_ROLE=radio
 
 [Install]
 WantedBy=multi-user.target
-Environment=RT_NODE_ID=rt-radio
-Environment=RT_NODE_ROLE=radio
+

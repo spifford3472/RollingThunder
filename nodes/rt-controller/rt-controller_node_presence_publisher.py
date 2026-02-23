@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""
+rt-controller_node_presence_publisher.py
+
+Node-local shim: runs the shared common publisher implementation while
+keeping ExecStart allow-list + controller node layout intact.
+"""
+import runpy
+
+def main() -> None:
+    runpy.run_path(
+        "/opt/rollingthunder/nodes/common/services/node_presence_publisher.py",
+        run_name="__main__",
+    )
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,16 @@
 set -euo pipefail
 
 TARGET_HOST="${1:-ki5vnb-dmr2}"
+
 TARGET_USER="${RT_SSH_USER:-pi-star}"
+
+# Guard: refuse empty TARGET_HOST (prevents ssh to pi-star@)
+if [[ -z "${TARGET_HOST}" ]]; then
+  echo "[push][error] TARGET_HOST is empty (check invocation / argument 1)";
+  exit 2;
+fi
+
+echo "[push] Target: ${TARGET_USER}@${TARGET_HOST}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
@@ -82,8 +91,9 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chown -R '${TARGET_USER}:${TARGET_USER}' '${RT_NODE}' '${RT_TOOLS}' '${RT_ROOT}/.deploy' || true
 "
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
-ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; sudo mkdir -p ${COMMON_SERVICES_DST_DIR}; sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+    --no-group --no-perms --omit-dir-times --no-times \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
   "${COMMON_SERVICES_SRC_DIR}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"

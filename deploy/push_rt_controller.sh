@@ -42,6 +42,7 @@ NODE_DST_DIR="/opt/rollingthunder/nodes/rt-controller/"
 SERVICES_DST_DIR="/opt/rollingthunder/services/"
 STATE_ENV_SRC="${OPS_SRC_DIR}/service_state_publisher.env.template"
 STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
+COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 
 # Thin-client UI/runtime destinations (served by rt-controller)
 UI_DST_DIR="/opt/rollingthunder/ui/"
@@ -61,6 +62,7 @@ UNITS=(
   "rt-wpsd-log-ingestor.service"
   "rt-wpsd-poller.service"
   "rt-alerts-reconciler.service"
+  "rt-controller-presence.service"
   "rt-alert@.service"
 )
 
@@ -79,6 +81,21 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config &&
   sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config
 "
+
+echo "[push] Ensure common services dir exists (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  sudo mkdir -p '${COMMON_SERVICES_DST_DIR}';
+  sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/nodes;
+  sudo chmod -R 755 /opt/rollingthunder/nodes
+"
+
+echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --no-group --no-perms --omit-dir-times --no-times \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${COMMON_SERVICES_SRC_DIR}" \
+  "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
+
 
 # Debug / validation
 echo "[debug] NODE_SRC_DIR=${NODE_SRC_DIR}"

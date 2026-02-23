@@ -111,6 +111,7 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+    --no-group --no-perms --omit-dir-times --no-times \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
   "${COMMON_SERVICES_SRC_DIR}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"  
