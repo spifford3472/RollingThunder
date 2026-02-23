@@ -123,10 +123,6 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
   
 # ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
-echo "[push] Sync common python services -> /opt/rollingthunder/nodes/common/services/ (user-owned)"
-rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
-  "${REPO_ROOT}/nodes/common/services/" \
-  "${TARGET}:/opt/rollingthunder/nodes/common/services/"
 
 echo "[push] Sync services dir -> ${RT_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
