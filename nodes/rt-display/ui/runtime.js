@@ -14,6 +14,18 @@
 // - Intents are gated by page.controls.allowedIntents.
 // - This file does NOT write Redis and does NOT implement business logic.
 // - Keyboard is a dev stand-in for ESP32 controls.
+//
+// NAV v2:
+// - LOCAL input capture state machine:
+//     GLOBAL_FOCUS  -> (OK on browse-capable panel) -> PANEL_BROWSE
+//     PANEL_BROWSE  -> (CANCEL) -> GLOBAL_FOCUS
+// - Browse delivers per-tick deltas to the focused panel slot via:
+//     slot.dispatchEvent(new CustomEvent("rt-browse-delta", { detail: { delta } }))
+//
+// Current browse-capable panel(s):
+// - controller_services_summary  (windowed list scroll)
+//
+// Expand later by adding more types to isBrowseCapableType().
 
 import { createNavMachine } from "./nav_machine.js";
 import { loadConfigBundle } from "./config_loader.js";
@@ -82,7 +94,7 @@ function buildPresentPanelIds(layout) {
   // top
   for (const id of normIds(layout?.top)) out.push(id);
 
-  // middle columns (max 3), keep declared order col0 -> col1 -> col2, and within col keep order
+  // middle columns (max 3)
   const mid = Array.isArray(layout?.middle) ? layout.middle.slice(0, 3) : [];
   for (const colPanels of mid) {
     for (const id of normIds(Array.isArray(colPanels) ? colPanels : [])) out.push(id);
@@ -113,13 +125,9 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
       // Focus order is authoritative rotation order, filtered to focusables-present.
       focusOrder = rotation.filter((id) => focusablesPresent.includes(id));
 
-      // Initial focus: first focusable in rotation (unless explicit defaultPanel also present)
-      // (If you want defaultPanel to override rotation-first, flip this priority.)
+      // Initial focus: first focusable in rotation
       const rotFirst = rotation.find((id) => focusablesPresent.includes(id)) || null;
       initialPanelId = rotFirst;
-
-      // If rotation exists but yields empty focusOrder, that means "no focusables here"
-      // and nav will start with no focus.
     } else if (def) {
       // No rotation, but defaultPanel provided: focus it if it's focusable-present
       initialPanelId = focusablesPresent.includes(def) ? def : null;
@@ -127,7 +135,6 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
     } else {
       // focusPolicy exists but empty => explicit "no focus"
       initialPanelId = null;
-      // Keep focusOrder as visual order (still useful for manual [ ] cycling if user wants)
     }
   } else {
     // No focusPolicy: legacy behavior—auto focus first focusable (if any)
@@ -135,6 +142,18 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
   }
 
   return { focusOrder, initialPanelId };
+}
+
+function isBrowseCapableType(panelType) {
+  const t = String(panelType || "").trim();
+  // Today: only the services list is browse-scrollable.
+  // Later: expand this list or move to a registry capability map.
+  return (t === "controller_services_summary");
+}
+
+function dispatchBrowseDelta(slotEl, delta) {
+  if (!slotEl) return;
+  slotEl.dispatchEvent(new CustomEvent("rt-browse-delta", { detail: { delta } }));
 }
 
 (async function main() {
@@ -166,7 +185,6 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
   const layout = normalizeLayout(page.layout);
   const regions = buildRuntimeShell(root);
 
-  // Build slots deterministically from declared layout
   // top
   layout.top.forEach((id) => regions.top.appendChild(mkSlot(id)));
 
@@ -184,7 +202,7 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
   const registry = createRendererRegistry();
   const store = createBindingStore();
 
-  // NAV: deterministic roving focus + (future) browse/modal capture
+  // NAV: deterministic roving focus
   const nav = createNavMachine();
 
   // Build slot map panelId -> slot element
@@ -194,26 +212,18 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
     if (pid) slotByPanelId.set(pid, slot);
   });
 
-  // Present panel ids from page.layout in deterministic visual order
   const presentPanelIds = buildPresentPanelIds(layout);
-
-  // Focus order + initial focus from focusPolicy (authoritative)
   const { focusOrder, initialPanelId } = buildFocusModel({ page, bundle, presentPanelIds });
 
-  // Set page model (pageId enables per-page remembered focus if nav_machine supports it)
   nav.setPageModel({
-    pageId: page.id || pageId,
     focusablePanelIds: focusOrder,
     slotByPanelId,
     initialPanelId,
-    rememberFocus: true,
   });
 
   // -------------------------
-  // Input routing (intent-based)
+  // Input gating (authoritative)
   // -------------------------
-
-  // Page-declared allowed intents (authoritative)
   const allowedIntents = new Set(
     Array.isArray(page?.controls?.allowedIntents) ? page.controls.allowedIntents : []
   );
@@ -222,29 +232,31 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
     return allowedIntents.has(intent);
   }
 
-  // Minimal key -> intent mapping (keyboard is a dev stand-in for ESP32 controls)
-  function keyToIntent(e) {
-    if (e.key === "]") return "ui.focus.next";
-    if (e.key === "[") return "ui.focus.prev";
-    if (e.key === "Enter") return "ui.ok";
-    if (e.key === "Escape") return "ui.cancel";
-    return null;
-  }
-
-  // Emit an intent to controller path.
-  // NOTE: transport is intentionally NOT invented here.
+  // -------------------------
+  // Intent transport (read-only)
+  // -------------------------
   async function emitIntent(intent, params = null) {
-    const s = nav.getState();
-    const res = await store.publishIntent({
-      intent,
-      params,
-      pageId: s.pageId || (page.id || pageId),
-      panelId: s.activePanelId || null,
-      source: "rt-display"
-    });
+    try {
+      if (typeof store.publishIntent !== "function") {
+        // keep deterministic; transport not present in this build
+        return { ok: false, err: "publishIntent_not_available", meta: {} };
+      }
 
-    if (!res.ok) console.warn("publishIntent failed", res.err, res.meta);
-    return res;
+      const s = nav.getState();
+      const res = await store.publishIntent({
+        intent,
+        params,
+        pageId: page.id || pageId,
+        panelId: s.activePanelId || null,
+        source: "rt-display",
+      });
+
+      if (!res.ok) console.warn("publishIntent failed", res.err, res.meta);
+      return res;
+    } catch (e) {
+      console.warn("emitIntent exception", e);
+      return { ok: false, err: String(e?.message || e), meta: {} };
+    }
   }
 
   // Default action for "action panels":
@@ -259,62 +271,119 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
     return { intent, params: a?.params || null };
   }
 
-  function handleNavIntent(intent) {
+  // -------------------------
+  // Local navigation mode (deterministic)
+  // -------------------------
+  let navMode = "GLOBAL_FOCUS"; // GLOBAL_FOCUS | PANEL_BROWSE | MODAL_DIALOG (reserved)
+
+  function activePanelId() {
+    const s = nav.getState();
+    return s?.activePanelId || null;
+  }
+
+  function activeSlotEl() {
+    const pid = activePanelId();
+    return pid ? (slotByPanelId.get(pid) || null) : null;
+  }
+
+  function enterBrowse() {
+    const pid = activePanelId();
+    if (!pid) return false;
+
+    const p = bundle.panelsById[pid];
+    if (!p) return false;
+
+    if (!isBrowseCapableType(p.type)) return false;
+
+    navMode = "PANEL_BROWSE";
+    return true;
+  }
+
+  function exitBrowse() {
+    navMode = "GLOBAL_FOCUS";
+  }
+
+  // -------------------------
+  // Keyboard mapping (dev stand-in)
+  // -------------------------
+  // Minimal mapping:
+  //   [ ]    -> focus prev/next
+  //   Enter  -> OK
+  //   Escape -> CANCEL
+  // Debug browse mapping:
+  //   ArrowUp / ArrowDown -> browse delta (-1 / +1) in PANEL_BROWSE only
+  function keyToIntent(e) {
+    if (e.key === "]") return "ui.focus.next";
+    if (e.key === "[") return "ui.focus.prev";
+    if (e.key === "Enter") return "ui.ok";
+    if (e.key === "Escape") return "ui.cancel";
+    if (e.key === "ArrowDown") return "ui.browse.delta";
+    if (e.key === "ArrowUp") return "ui.browse.delta";
+    return null;
+  }
+
+  function handleGlobalFocus(intent) {
     if (!isAllowed(intent)) return;
 
     if (intent === "ui.focus.next") return nav.panelNext();
     if (intent === "ui.focus.prev") return nav.panelPrev();
 
     if (intent === "ui.cancel") {
-      // Deterministic, low-risk default:
-      // Cancel clears focus when in global focus.
-      // (If you prefer cancel to be a no-op here, swap this out.)
+      // Deterministic, low-risk default: cancel clears focus in GLOBAL_FOCUS.
       return nav.clearFocus();
     }
 
     if (intent === "ui.ok") {
-      const s = nav.getState();
-      const active = s.activePanelId;
+      const pid = activePanelId();
+      if (!pid) return;
 
-      if (!active) return;
+      // Option A rule: browse-capable panels are browse-first.
+      // OK enters browse mode even if the panel has a single default action.
+      const p = bundle.panelsById[pid];
+      if (p && isBrowseCapableType(p.type)) {
+        enterBrowse();
+        return;
+      }
 
-      // Action panels: if exactly one action, run it (if allowed).
-      const def = getPanelDefaultAction(active);
+      // Non-browse panels: if exactly one action, OK triggers it (if allowed).
+      const def = getPanelDefaultAction(pid);
       if (def && isAllowed(def.intent)) {
         return emitIntent(def.intent, def.params);
       }
 
-      // Otherwise, enter browse mode (panel capture).
-      // Browse semantics are panel-owned and will be wired later.
-      nav.beginBrowse?.();
+      // Otherwise: no-op for now (or future modal entry for non-browse panels).
+      return;  
+    }
+  }
+
+  function handleBrowse(intent, rawKey) {
+    if (!isAllowed(intent)) return;
+
+    if (intent === "ui.cancel") return exitBrowse();
+
+    if (intent === "ui.ok") {
+      // Modal transactional flow is next. For now, OK is intentionally a no-op in browse.
+      return;
+    }
+
+    if (intent === "ui.browse.delta") {
+      const slot = activeSlotEl();
+      const delta = (rawKey === "ArrowUp") ? -1 : +1;
+      dispatchBrowseDelta(slot, delta);
       return;
     }
   }
 
-  function handlePanelIntent(panelId, intent) {
+  function handleModal(intent) {
     if (!isAllowed(intent)) return;
-
-    // Minimal browse semantics until panel controllers exist:
-    if (intent === "ui.cancel") return nav.endBrowse?.();
-
-    if (intent === "ui.ok") {
-      console.debug("[panel]", panelId, "OK (browse) — TODO: dispatch to panel controller / open modal");
-      return;
-    }
-
-    // Future: route rotary/up/down etc. through the same intent path once defined.
-  }
-
-  function handleModalIntent(modalId, intent) {
-    if (!isAllowed(intent)) return;
-
-    if (intent === "ui.ok") {
-      console.debug("[modal]", modalId, "commit — TODO: modal commit semantics");
-      return nav.closeModal?.();
-    }
+    // Reserved for transactional modal work; keep deterministic for now.
     if (intent === "ui.cancel") {
-      console.debug("[modal]", modalId, "cancel — TODO: modal rollback semantics");
-      return nav.closeModal?.();
+      navMode = "PANEL_BROWSE";
+      return;
+    }
+    if (intent === "ui.ok") {
+      navMode = "PANEL_BROWSE";
+      return;
     }
   }
 
@@ -322,27 +391,21 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
     const intent = keyToIntent(e);
     if (!intent) return;
 
-    // prevent browser default behavior for our control keys
     e.preventDefault();
 
-    // Gate early by allowedIntents (authoritative)
     if (!isAllowed(intent)) return;
 
-    const owner = nav.getInputOwner?.() || { owner: "nav", id: nav.getState().activePanelId, state: "GLOBAL_FOCUS" };
-
-    if (owner.owner === "modal") return handleModalIntent(owner.id, intent);
-    if (owner.owner === "panel") return handlePanelIntent(owner.id, intent);
-    return handleNavIntent(intent);
+    if (navMode === "MODAL_DIALOG") return handleModal(intent);
+    if (navMode === "PANEL_BROWSE") return handleBrowse(intent, e.key);
+    return handleGlobalFocus(intent);
   });
 
   // -------------------------
   // Panel mounting + refresh
   // -------------------------
-
   root.querySelectorAll(".rt-slot").forEach((slot) => {
     const panelId = slot.dataset.panelId;
 
-    // Renderer-owned body (never render into slot root)
     const bodyEl = slot.querySelector(".rt-slot-body") || slot;
 
     const panel = bundle.panelsById[panelId];

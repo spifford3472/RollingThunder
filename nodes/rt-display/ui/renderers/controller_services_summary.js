@@ -1,11 +1,16 @@
 // controller_services_summary.js
 //
-// Drop-in replacement:
-// - Renders ONLY what scan finds
-// - Hides services whose state is "unknown" (and also blank/null), so you don’t see
-//   logging / meshtastic_c2 / noaa_same / node_health until they’re real.
+// Drop-in replacement (v2):
+// - Keeps prior behavior: renders ONLY what scan finds
+// - Keeps prior behavior: hides services whose state is "unknown" or blank
 // - Stable sort by id/key
 // - Age ticker updates in-place
+// - NEW: windowed list (max 11 visible rows)
+// - NEW: if > 11 services, show scroll hint and support browse scrolling via:
+//        slot.dispatchEvent(new CustomEvent("rt-browse-delta", { detail: { delta: +/-1 } }))
+//   (runtime.js dispatches this when in PANEL_BROWSE for the focused panel)
+//
+// No controller changes required. Pure UI behavior.
 
 function pillHtml(kind, label) {
   const cls =
@@ -50,6 +55,35 @@ function fmtAge(ageSec) {
   return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
+function safeText(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function clamp(n, lo, hi) {
+  const x = Number(n ?? 0);
+  const v = Number.isFinite(x) ? x : 0;
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function stableId(svc) {
+  return String(svc?.id || svc?.key || "").trim();
+}
+
+function sortServices(all) {
+  return all
+    .slice()
+    .sort((a, b) => {
+      const as = stableId(a);
+      const bs = stableId(b);
+      return as.localeCompare(bs);
+    });
+}
+
 function startAgeTicker(container) {
   if (container.__rtAgeTimer) {
     try { clearInterval(container.__rtAgeTimer); } catch (_) {}
@@ -72,30 +106,17 @@ function startAgeTicker(container) {
   }, 1000);
 }
 
-function safeText(s) {
-  return String(s ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+function renderWindowedTable(container, servicesSorted, offset, windowSize) {
+  const total = servicesSorted.length;
+  const maxOffset = Math.max(0, total - windowSize);
+  const off = clamp(offset, 0, maxOffset);
 
-export function renderControllerServicesSummary(container, panel, data) {
-  const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
+  const visible = servicesSorted.slice(off, off + windowSize);
+  const hasMore = total > windowSize;
 
-  // Key change: hide unknown/unset states entirely
-  const services = all.filter(shouldShowService);
-
-  const rows = services
-    .slice()
-    .sort((a, b) => {
-      const as = String(a?.id || a?.key || "");
-      const bs = String(b?.id || b?.key || "");
-      return as.localeCompare(bs);
-    })
+  const rows = visible
     .map((svc) => {
-      const id = String(svc?.id || svc?.key || "unknown");
+      const id = stableId(svc) || "unknown";
       const pill = stateToPill(svc?.state);
 
       const ms = svc?.last_update_ms ?? null;
@@ -115,8 +136,19 @@ export function renderControllerServicesSummary(container, panel, data) {
     })
     .join("");
 
+  // Scroll affordance: shape-first and calm.
+  // Uses text-only so it works even if CSS is minimal.
+  const hint = hasMore
+    ? `<div class="rt-small rt-muted rt-scroll-hint">
+         ↕ ${off + 1}-${Math.min(off + windowSize, total)} of ${total} (focus + scroll)
+       </div>`
+    : `<div class="rt-small rt-muted rt-scroll-hint">
+         ${total} service${total === 1 ? "" : "s"}
+       </div>`;
+
   container.innerHTML = `
     <div class="rt-table-wrap">
+      ${hint}
       <table class="rt-table">
         <thead>
           <tr>
@@ -131,6 +163,66 @@ export function renderControllerServicesSummary(container, panel, data) {
       </table>
     </div>
   `;
+
+  return off;
+}
+
+// Ensure we keep per-panel UI-only state without leaking globals.
+// Stored on the container element (safe in this kiosk runtime).
+function ensureLocalState(container) {
+  if (!container.__rtSvcState) {
+    container.__rtSvcState = {
+      offset: 0,
+      windowSize: 11,
+      lastSorted: [],
+      wired: false,
+    };
+  }
+  return container.__rtSvcState;
+}
+
+export function renderControllerServicesSummary(container, panel, data) {
+  const st = ensureLocalState(container);
+
+  const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
+
+  // Keep prior behavior: hide unknown/unset states entirely
+  const services = all.filter(shouldShowService);
+
+  const sorted = sortServices(services);
+  st.lastSorted = sorted;
+
+  // Clamp offset if list shrank
+  const maxOffset = Math.max(0, sorted.length - st.windowSize);
+  st.offset = clamp(st.offset, 0, maxOffset);
+
+  // Wire browse-delta listener once.
+  // We listen on the slot (preferred) so events dispatched to slot are captured
+  // even if the renderer replaces container.innerHTML.
+  if (!st.wired) {
+    const slot = container.closest(".rt-slot");
+    if (slot) {
+      st.wired = true;
+      slot.addEventListener("rt-browse-delta", (ev) => {
+        const delta = Number(ev?.detail?.delta || 0);
+        if (!delta) return;
+
+        const total = st.lastSorted.length;
+        const maxOff = Math.max(0, total - st.windowSize);
+
+        // Interpret delta as "one row per tick"
+        st.offset = clamp(st.offset + (delta > 0 ? 1 : -1), 0, maxOff);
+
+        // Re-render immediately using the cached list
+        st.offset = renderWindowedTable(container, panel, st.lastSorted, st.offset, st.windowSize);
+        // Keep age ticker alive (it is cheap; ensures new rows get age updates)
+        startAgeTicker(container);
+      });
+    }
+  }
+
+  // Initial / refresh render
+  st.offset = renderWindowedTable(container, panel, sorted, st.offset, st.windowSize);
 
   startAgeTicker(container);
 }
