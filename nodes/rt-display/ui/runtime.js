@@ -169,16 +169,18 @@ function clearAllBrowseIndicators(rootEl) {
   });
 }
 
-function syncBrowseIndicator() {
-  // If not browsing, ensure nothing claims browse
+function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) {
+  if (!rootEl) return;
+
+  // Not browsing? Ensure nothing claims browse.
   if (navMode !== "PANEL_BROWSE" || !browsePanelId) {
-    clearAllBrowseIndicators(root);
+    clearAllBrowseIndicators(rootEl);
     return;
   }
 
-  // Re-assert pill on the browse owner slot (even if header was rebuilt)
-  clearAllBrowseIndicators(root);
-  const slot = slotByPanelId.get(browsePanelId) || null;
+  // Browsing: clear then re-assert on the browse owner slot.
+  clearAllBrowseIndicators(rootEl);
+  const slot = slotByPanelId?.get(browsePanelId) || null;
   setBrowseIndicator(slot, true);
 }
 // ---------------------------------------------------------------
@@ -318,14 +320,14 @@ function syncBrowseIndicator() {
     navMode = "PANEL_BROWSE";
     browsePanelId = pid;
 
-    syncBrowseIndicator();
+    syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
     return true;
   }
 
   function exitBrowse() {
     navMode = "GLOBAL_FOCUS";
     browsePanelId = null;
-    syncBrowseIndicator();
+    syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
   }
 
   // -------------------------
@@ -355,17 +357,17 @@ function syncBrowseIndicator() {
     if (intent === "ui.focus.next") {
       nav.panelNext();
       // If we were browsing, moving focus should also clear browse indicator; but in GLOBAL_FOCUS it should be off.
-      syncBrowseIndicator();
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
     if (intent === "ui.focus.prev") {
       nav.panelPrev();
-      syncBrowseIndicator();
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId }););
       return;
     }
 
     if (intent === "ui.cancel") {
-      syncBrowseIndicator();
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return nav.clearFocus();
     }
 
@@ -457,7 +459,8 @@ function syncBrowseIndicator() {
         // only when that panel is the current browse owner
         if (navMode === "PANEL_BROWSE" && browsePanelId === panelId) {
           // Defer one tick in case renderer’s update is multi-phase
-          queueMicrotask(() => syncBrowseIndicator());
+          queueMicrotask(() =>
+            syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId }));
         }
       },
     });
