@@ -87,7 +87,6 @@ function normIds(arr) {
 
 function buildPresentPanelIds(layout) {
   const out = [];
-
   for (const id of normIds(layout?.top)) out.push(id);
 
   const mid = Array.isArray(layout?.middle) ? layout.middle.slice(0, 3) : [];
@@ -96,7 +95,6 @@ function buildPresentPanelIds(layout) {
   }
 
   for (const id of normIds(layout?.bottom)) out.push(id);
-
   return out;
 }
 
@@ -140,6 +138,38 @@ function dispatchBrowseDelta(slotEl, delta) {
   slotEl.dispatchEvent(new CustomEvent("rt-browse-delta", { detail: { delta } }));
 }
 
+// ---------- Browse indicator (runtime-owned, header-only) ----------
+function setBrowseIndicator(slotEl, enabled) {
+  if (!slotEl) return;
+  const hdr = slotEl.querySelector(".rt-slot-hdr");
+  if (!hdr) return;
+
+  // Keep it minimal and deterministic; do not stomp other header contents.
+  let badge = hdr.querySelector('[data-rt-browse-indicator="1"]');
+
+  if (enabled) {
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.setAttribute("data-rt-browse-indicator", "1");
+      badge.className = "rt-pill warn"; // reuses existing pill styles
+      badge.textContent = "↕ BROWSE";
+      hdr.appendChild(badge);
+    }
+    slotEl.classList.add("rt-browse-mode");
+  } else {
+    if (badge) badge.remove();
+    slotEl.classList.remove("rt-browse-mode");
+  }
+}
+
+function clearAllBrowseIndicators(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll(".rt-slot").forEach((slot) => {
+    setBrowseIndicator(slot, false);
+  });
+}
+// ---------------------------------------------------------------
+
 (async function main() {
   const params = new URLSearchParams(location.search);
   const pageId = params.get("page") || "home";
@@ -169,7 +199,6 @@ function dispatchBrowseDelta(slotEl, delta) {
   const layout = normalizeLayout(page.layout);
   const regions = buildRuntimeShell(root);
 
-  // Build slots deterministically from declared layout
   layout.top.forEach((id) => regions.top.appendChild(mkSlot(id)));
 
   layout.middle.slice(0, 3).forEach((colPanels) => {
@@ -184,7 +213,6 @@ function dispatchBrowseDelta(slotEl, delta) {
   const registry = createRendererRegistry();
   const store = createBindingStore();
 
-  // NAV: deterministic roving focus
   const nav = createNavMachine();
 
   // Build slot map panelId -> slot element
@@ -220,7 +248,6 @@ function dispatchBrowseDelta(slotEl, delta) {
   async function emitIntent(intent, params = null) {
     try {
       if (typeof store.publishIntent !== "function") {
-        // Deterministic: transport not present in this build
         return { ok: false, err: "publishIntent_not_available", meta: {} };
       }
 
@@ -241,8 +268,6 @@ function dispatchBrowseDelta(slotEl, delta) {
     }
   }
 
-  // Default action for "action panels":
-  // If panel declares exactly one action, OK triggers it (when allowed by page).
   function getPanelDefaultAction(panelId) {
     const panel = bundle.panelsById[panelId];
     const actions = Array.isArray(panel?.actions) ? panel.actions : [];
@@ -277,11 +302,15 @@ function dispatchBrowseDelta(slotEl, delta) {
 
     if (!isBrowseCapableType(p.type)) return false;
 
+    clearAllBrowseIndicators(root);
+    setBrowseIndicator(getActiveSlotEl(), true);
+
     navMode = "PANEL_BROWSE";
     return true;
   }
 
   function exitBrowse() {
+    clearAllBrowseIndicators(root);
     navMode = "GLOBAL_FOCUS";
   }
 
@@ -289,22 +318,17 @@ function dispatchBrowseDelta(slotEl, delta) {
   // Keyboard mapping (dev stand-in)
   // -------------------------
   function keyToLocal(e) {
-    // Global focus
     if (e.key === "]") return { intent: "ui.focus.next" };
     if (e.key === "[") return { intent: "ui.focus.prev" };
-
-    // OK / Cancel
     if (e.key === "Enter") return { intent: "ui.ok" };
     if (e.key === "Escape") return { intent: "ui.cancel" };
 
-    // Browse scrolling (dev stand-in for rotary)
     if (e.key === "ArrowDown") return { intent: "ui.browse.delta", params: { delta: +1 } };
     if (e.key === "ArrowUp") return { intent: "ui.browse.delta", params: { delta: -1 } };
 
     return null;
   }
 
-  // Local intents (never leave UI; not gated)
   const LOCAL_INTENTS = new Set([
     "ui.focus.next",
     "ui.focus.prev",
@@ -314,11 +338,20 @@ function dispatchBrowseDelta(slotEl, delta) {
   ]);
 
   function handleGlobalFocusIntent(intent, params) {
-    if (intent === "ui.focus.next") return nav.panelNext();
-    if (intent === "ui.focus.prev") return nav.panelPrev();
+    if (intent === "ui.focus.next") {
+      nav.panelNext();
+      // If we were browsing, moving focus should also clear browse indicator; but in GLOBAL_FOCUS it should be off.
+      clearAllBrowseIndicators(root);
+      return;
+    }
+    if (intent === "ui.focus.prev") {
+      nav.panelPrev();
+      clearAllBrowseIndicators(root);
+      return;
+    }
 
     if (intent === "ui.cancel") {
-      // Deterministic, low-risk default: cancel clears focus in GLOBAL_FOCUS.
+      clearAllBrowseIndicators(root);
       return nav.clearFocus();
     }
 
@@ -326,14 +359,12 @@ function dispatchBrowseDelta(slotEl, delta) {
       const pid = getActivePanelId();
       if (!pid) return;
 
-      // Option A: browse-capable panels are browse-first.
       const p = bundle.panelsById[pid];
       if (p && isBrowseCapableType(p.type)) {
         enterBrowseIfCapable();
         return;
       }
 
-      // Non-browse panels: if exactly one action, OK triggers it (if allowed).
       const def = getPanelDefaultAction(pid);
       if (def && isAllowed(def.intent)) {
         return emitIntent(def.intent, def.params);
@@ -341,14 +372,10 @@ function dispatchBrowseDelta(slotEl, delta) {
 
       return;
     }
-
-    // ignore browse.delta in global mode
   }
 
   function handleBrowseIntent(intent, params) {
     if (intent === "ui.cancel") return exitBrowse();
-
-    // For now OK is a no-op in browse (modal comes later)
     if (intent === "ui.ok") return;
 
     if (intent === "ui.browse.delta") {
@@ -360,11 +387,10 @@ function dispatchBrowseDelta(slotEl, delta) {
       return;
     }
 
-    // In browse mode, ignore focus.next/prev so we don't accidentally move focus while scrolling.
+    // ignore focus.next/prev while browsing
   }
 
   function handleModalIntent(intent, params) {
-    // Reserved for transactional modal work; deterministic placeholder.
     if (intent === "ui.cancel") {
       navMode = "PANEL_BROWSE";
       return;
@@ -384,7 +410,6 @@ function dispatchBrowseDelta(slotEl, delta) {
 
     e.preventDefault();
 
-    // Gate only controller-bound intents.
     if (!LOCAL_INTENTS.has(intent) && !isAllowed(intent)) return;
 
     if (navMode === "MODAL_DIALOG") return handleModalIntent(intent, params);
@@ -397,7 +422,6 @@ function dispatchBrowseDelta(slotEl, delta) {
   // -------------------------
   root.querySelectorAll(".rt-slot").forEach((slot) => {
     const panelId = slot.dataset.panelId;
-
     const bodyEl = slot.querySelector(".rt-slot-body") || slot;
 
     const panel = bundle.panelsById[panelId];
