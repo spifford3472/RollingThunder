@@ -362,7 +362,7 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     }
     if (intent === "ui.focus.prev") {
       nav.panelPrev();
-      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId }););
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
 
