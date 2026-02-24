@@ -357,7 +357,18 @@ function dispatchBrowseDelta(slotEl, delta) {
   }
 
   function handleBrowse(intent, rawKey) {
-    if (!isAllowed(intent)) return;
+    //if (!isAllowed(intent)) return;
+    // Only gate controller-bound intents.
+    // Local navigation intents are always allowed.
+    if (
+      intent !== "ui.focus.next" &&
+      intent !== "ui.focus.prev" &&
+      intent !== "ui.ok" &&
+      intent !== "ui.cancel" &&
+      intent !== "ui.browse.delta"
+    ) {
+      if (!isAllowed(intent)) return;
+    }
 
     if (intent === "ui.cancel") return exitBrowse();
 
