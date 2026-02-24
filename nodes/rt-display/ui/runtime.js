@@ -11,21 +11,19 @@
 //
 // Notes:
 // - UI is representational only (ARCHITECTURE.md / UI_SEMANTICS.md).
-// - Intents are gated by page.controls.allowedIntents.
+// - Controller-bound intents are gated by page.controls.allowedIntents.
 // - This file does NOT write Redis and does NOT implement business logic.
 // - Keyboard is a dev stand-in for ESP32 controls.
 //
-// NAV v2:
+// NAV v2 (Option A):
 // - LOCAL input capture state machine:
 //     GLOBAL_FOCUS  -> (OK on browse-capable panel) -> PANEL_BROWSE
 //     PANEL_BROWSE  -> (CANCEL) -> GLOBAL_FOCUS
 // - Browse delivers per-tick deltas to the focused panel slot via:
 //     slot.dispatchEvent(new CustomEvent("rt-browse-delta", { detail: { delta } }))
 //
-// Current browse-capable panel(s):
+// Browse-capable panel types (today):
 // - controller_services_summary  (windowed list scroll)
-//
-// Expand later by adding more types to isBrowseCapableType().
 
 import { createNavMachine } from "./nav_machine.js";
 import { loadConfigBundle } from "./config_loader.js";
@@ -83,7 +81,6 @@ function coerceBindings(panel) {
   return [];
 }
 
-// Helper: normalize list of ids
 function normIds(arr) {
   return Array.isArray(arr) ? arr.map((x) => String(x || "").trim()).filter(Boolean) : [];
 }
@@ -91,23 +88,19 @@ function normIds(arr) {
 function buildPresentPanelIds(layout) {
   const out = [];
 
-  // top
   for (const id of normIds(layout?.top)) out.push(id);
 
-  // middle columns (max 3)
   const mid = Array.isArray(layout?.middle) ? layout.middle.slice(0, 3) : [];
   for (const colPanels of mid) {
     for (const id of normIds(Array.isArray(colPanels) ? colPanels : [])) out.push(id);
   }
 
-  // bottom
   for (const id of normIds(layout?.bottom)) out.push(id);
 
   return out;
 }
 
 function buildFocusModel({ page, bundle, presentPanelIds }) {
-  // focusable panels present on the page
   const focusablesPresent = presentPanelIds.filter((panelId) => {
     const p = bundle.panelsById[panelId];
     return p && p.focusable === true;
@@ -117,27 +110,20 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
   const rotation = normIds(fp?.rotation);
   const def = String(fp?.defaultPanel || "").trim() || null;
 
-  let focusOrder = focusablesPresent.slice(); // default: visual order
+  let focusOrder = focusablesPresent.slice();
   let initialPanelId = null;
 
   if (fp) {
     if (rotation.length > 0) {
-      // Focus order is authoritative rotation order, filtered to focusables-present.
       focusOrder = rotation.filter((id) => focusablesPresent.includes(id));
-
-      // Initial focus: first focusable in rotation
       const rotFirst = rotation.find((id) => focusablesPresent.includes(id)) || null;
       initialPanelId = rotFirst;
     } else if (def) {
-      // No rotation, but defaultPanel provided: focus it if it's focusable-present
       initialPanelId = focusablesPresent.includes(def) ? def : null;
-      // Keep focusOrder as visual order
     } else {
-      // focusPolicy exists but empty => explicit "no focus"
       initialPanelId = null;
     }
   } else {
-    // No focusPolicy: legacy behavior—auto focus first focusable (if any)
     initialPanelId = focusOrder[0] || null;
   }
 
@@ -146,9 +132,7 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
 
 function isBrowseCapableType(panelType) {
   const t = String(panelType || "").trim();
-  // Today: only the services list is browse-scrollable.
-  // Later: expand this list or move to a registry capability map.
-  return (t === "controller_services_summary");
+  return t === "controller_services_summary";
 }
 
 function dispatchBrowseDelta(slotEl, delta) {
@@ -185,10 +169,9 @@ function dispatchBrowseDelta(slotEl, delta) {
   const layout = normalizeLayout(page.layout);
   const regions = buildRuntimeShell(root);
 
-  // top
+  // Build slots deterministically from declared layout
   layout.top.forEach((id) => regions.top.appendChild(mkSlot(id)));
 
-  // middle columns (max 3)
   layout.middle.slice(0, 3).forEach((colPanels) => {
     const col = document.createElement("div");
     col.className = "rt-col";
@@ -196,7 +179,6 @@ function dispatchBrowseDelta(slotEl, delta) {
     regions.mid.appendChild(col);
   });
 
-  // bottom
   layout.bottom.forEach((id) => regions.bot.appendChild(mkSlot(id)));
 
   const registry = createRendererRegistry();
@@ -238,7 +220,7 @@ function dispatchBrowseDelta(slotEl, delta) {
   async function emitIntent(intent, params = null) {
     try {
       if (typeof store.publishIntent !== "function") {
-        // keep deterministic; transport not present in this build
+        // Deterministic: transport not present in this build
         return { ok: false, err: "publishIntent_not_available", meta: {} };
       }
 
@@ -272,22 +254,22 @@ function dispatchBrowseDelta(slotEl, delta) {
   }
 
   // -------------------------
-  // Local navigation mode (deterministic)
+  // Local nav state machine (Option A)
   // -------------------------
   let navMode = "GLOBAL_FOCUS"; // GLOBAL_FOCUS | PANEL_BROWSE | MODAL_DIALOG (reserved)
 
-  function activePanelId() {
+  function getActivePanelId() {
     const s = nav.getState();
     return s?.activePanelId || null;
   }
 
-  function activeSlotEl() {
-    const pid = activePanelId();
+  function getActiveSlotEl() {
+    const pid = getActivePanelId();
     return pid ? (slotByPanelId.get(pid) || null) : null;
   }
 
-  function enterBrowse() {
-    const pid = activePanelId();
+  function enterBrowseIfCapable() {
+    const pid = getActivePanelId();
     if (!pid) return false;
 
     const p = bundle.panelsById[pid];
@@ -306,25 +288,32 @@ function dispatchBrowseDelta(slotEl, delta) {
   // -------------------------
   // Keyboard mapping (dev stand-in)
   // -------------------------
-  // Minimal mapping:
-  //   [ ]    -> focus prev/next
-  //   Enter  -> OK
-  //   Escape -> CANCEL
-  // Debug browse mapping:
-  //   ArrowUp / ArrowDown -> browse delta (-1 / +1) in PANEL_BROWSE only
-  function keyToIntent(e) {
-    if (e.key === "]") return "ui.focus.next";
-    if (e.key === "[") return "ui.focus.prev";
-    if (e.key === "Enter") return "ui.ok";
-    if (e.key === "Escape") return "ui.cancel";
-    if (e.key === "ArrowDown") return "ui.browse.delta";
-    if (e.key === "ArrowUp") return "ui.browse.delta";
+  function keyToLocal(e) {
+    // Global focus
+    if (e.key === "]") return { intent: "ui.focus.next" };
+    if (e.key === "[") return { intent: "ui.focus.prev" };
+
+    // OK / Cancel
+    if (e.key === "Enter") return { intent: "ui.ok" };
+    if (e.key === "Escape") return { intent: "ui.cancel" };
+
+    // Browse scrolling (dev stand-in for rotary)
+    if (e.key === "ArrowDown") return { intent: "ui.browse.delta", params: { delta: +1 } };
+    if (e.key === "ArrowUp") return { intent: "ui.browse.delta", params: { delta: -1 } };
+
     return null;
   }
 
-  function handleGlobalFocus(intent) {
-    if (!isAllowed(intent)) return;
+  // Local intents (never leave UI; not gated)
+  const LOCAL_INTENTS = new Set([
+    "ui.focus.next",
+    "ui.focus.prev",
+    "ui.ok",
+    "ui.cancel",
+    "ui.browse.delta",
+  ]);
 
+  function handleGlobalFocusIntent(intent, params) {
     if (intent === "ui.focus.next") return nav.panelNext();
     if (intent === "ui.focus.prev") return nav.panelPrev();
 
@@ -334,14 +323,13 @@ function dispatchBrowseDelta(slotEl, delta) {
     }
 
     if (intent === "ui.ok") {
-      const pid = activePanelId();
+      const pid = getActivePanelId();
       if (!pid) return;
 
-      // Option A rule: browse-capable panels are browse-first.
-      // OK enters browse mode even if the panel has a single default action.
+      // Option A: browse-capable panels are browse-first.
       const p = bundle.panelsById[pid];
       if (p && isBrowseCapableType(p.type)) {
-        enterBrowse();
+        enterBrowseIfCapable();
         return;
       }
 
@@ -351,43 +339,32 @@ function dispatchBrowseDelta(slotEl, delta) {
         return emitIntent(def.intent, def.params);
       }
 
-      // Otherwise: no-op for now (or future modal entry for non-browse panels).
-      return;  
-    }
-  }
-
-  function handleBrowse(intent, rawKey) {
-    //if (!isAllowed(intent)) return;
-    // Only gate controller-bound intents.
-    // Local navigation intents are always allowed.
-    if (
-      intent !== "ui.focus.next" &&
-      intent !== "ui.focus.prev" &&
-      intent !== "ui.ok" &&
-      intent !== "ui.cancel" &&
-      intent !== "ui.browse.delta"
-    ) {
-      if (!isAllowed(intent)) return;
-    }
-
-    if (intent === "ui.cancel") return exitBrowse();
-
-    if (intent === "ui.ok") {
-      // Modal transactional flow is next. For now, OK is intentionally a no-op in browse.
       return;
     }
 
+    // ignore browse.delta in global mode
+  }
+
+  function handleBrowseIntent(intent, params) {
+    if (intent === "ui.cancel") return exitBrowse();
+
+    // For now OK is a no-op in browse (modal comes later)
+    if (intent === "ui.ok") return;
+
     if (intent === "ui.browse.delta") {
-      const slot = activeSlotEl();
-      const delta = (rawKey === "ArrowUp") ? -1 : +1;
+      const delta = Number(params?.delta ?? 0);
+      if (!Number.isFinite(delta) || delta === 0) return;
+
+      const slot = getActiveSlotEl();
       dispatchBrowseDelta(slot, delta);
       return;
     }
+
+    // In browse mode, ignore focus.next/prev so we don't accidentally move focus while scrolling.
   }
 
-  function handleModal(intent) {
-    if (!isAllowed(intent)) return;
-    // Reserved for transactional modal work; keep deterministic for now.
+  function handleModalIntent(intent, params) {
+    // Reserved for transactional modal work; deterministic placeholder.
     if (intent === "ui.cancel") {
       navMode = "PANEL_BROWSE";
       return;
@@ -399,16 +376,20 @@ function dispatchBrowseDelta(slotEl, delta) {
   }
 
   window.addEventListener("keydown", (e) => {
-    const intent = keyToIntent(e);
-    if (!intent) return;
+    const mapped = keyToLocal(e);
+    if (!mapped) return;
+
+    const intent = mapped.intent;
+    const params = mapped.params || null;
 
     e.preventDefault();
 
-    if (!isAllowed(intent)) return;
+    // Gate only controller-bound intents.
+    if (!LOCAL_INTENTS.has(intent) && !isAllowed(intent)) return;
 
-    if (navMode === "MODAL_DIALOG") return handleModal(intent);
-    if (navMode === "PANEL_BROWSE") return handleBrowse(intent, e.key);
-    return handleGlobalFocus(intent);
+    if (navMode === "MODAL_DIALOG") return handleModalIntent(intent, params);
+    if (navMode === "PANEL_BROWSE") return handleBrowseIntent(intent, params);
+    return handleGlobalFocusIntent(intent, params);
   });
 
   // -------------------------
