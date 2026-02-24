@@ -79,6 +79,9 @@ export function createBindingStore(opts = {}) {
   // Controller SSE endpoint (shared connection)
   const busSubscribeUrl = opts.busSubscribeUrl || "/api/v1/ui/bus/subscribe";
 
+  // NEW: UI -> controller intent endpoint (HTTP POST)
+  const uiIntentUrl = opts.uiIntentUrl || "/api/v1/ui/intent";
+
   // topic -> Set<fn>
   const _handlers = new Map();
   const _topics = new Map(); // topic -> refs
@@ -236,10 +239,36 @@ export function createBindingStore(opts = {}) {
     });
   }
 
+  // NEW: publish an intent to the controller (bounded, auditable)
+  async function publishIntent({ intent, params = null, pageId = null, panelId = null, source = "rt-display" }, timeoutMs = 1500) {
+    const started = Date.now();
+    const it = String(intent || "").trim();
+    if (!it) return mkResult({ ok: false, err: "missing_intent", meta: { source: "intent", locator: uiIntentUrl, ms: 0 } });
+
+    const body = {
+      intent: it,
+      params: safeObj(params) || null,
+      page_id: pageId ? String(pageId) : null,
+      panel_id: panelId ? String(panelId) : null,
+      source: String(source || "rt-display"),
+      ts_ms: Date.now(),
+    };
+
+    try {
+      const resp = await postJson(uiIntentUrl, body, timeoutMs);
+      // Expect { ok:true } or { ok:false, err:"..." }. If controller returns something else, still treat HTTP 200 as ok.
+      const ok = resp?.ok !== false;
+      return mkResult({ ok, value: resp, meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started } });
+    } catch (e) {
+      return mkResult({ ok: false, err: e?.message || e, meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started } });
+    }
+  }
+
   return {
     subscribe,
     on,
     unsubscribe,
+    publishIntent,
 
     async resolve(binding) {
       const src = String(binding?.source || "").trim().toLowerCase();

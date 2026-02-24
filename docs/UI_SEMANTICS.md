@@ -283,6 +283,95 @@ Update this document if:
 - Badge semantics change
 - UI rendering logic changes meaningfully
 
+---
+
+## 11. Navigation & Input Semantics (Authoritative) ##
+
+This section defines the **authoritative input → intent → behavior** contract for the RollingThunder UI.
+It exists to prevent “keyboard hacks” and to keep navigation deterministic across:
+- physical controls (ESP32 buttons + rotary encoder)
+- developer keyboard bindings (debug only)
+
+The UI is **read-only**. It may highlight focus locally, but must not invent state transitions
+or bypass controller rules.
+
+### 11.1 Input Devices (Conceptual) ###
+
+Physical controls (authoritative set):
+- **Page Next / Page Prev**
+- **Focus Next / Focus Prev**
+- **Rotary Encoder Turn** (selection delta)
+- **Rotary Press** (enter)
+- **OK**
+- **CANCEL**
+
+Developer keyboard mappings are allowed for testing but MUST map to the same intent IDs.
+
+---
+
+### 11.2 Navigation State Machine ###
+
+Navigation is a three-state machine:
+
+1) **GLOBAL_FOCUS**
+   - User is selecting *which panel* is active (highlighted).
+   - No panel-internal selection changes occur.
+
+2) **PANEL_BROWSE**
+   - User is interacting *within the focused panel* (e.g., scrolling a list).
+   - Rotary turn changes panel-local selection.
+   - Panels may “preview-on-selection” (e.g., tune radio as selection changes) via controller-mediated intents.
+
+3) **MODAL_DIALOG**
+   - A modal confirmation/details dialog is open.
+   - Input is captured: only OK/CANCEL are meaningful.
+
+State transitions are deterministic:
+
+| Current State  | Input / Intent | Next State | Notes |
+|---|---|---|---|
+| GLOBAL_FOCUS | `ui.ok` | PANEL_BROWSE or MODAL_DIALOG | Depends on panel capability (see 11.6) |
+| GLOBAL_FOCUS | `ui.cancel` | GLOBAL_FOCUS (no-op) or Clear Focus | Page policy decides (see 11.5) |
+| PANEL_BROWSE | `ui.cancel` | GLOBAL_FOCUS | Exit panel browse (rollback preview-only) |
+| PANEL_BROWSE | `ui.ok` | MODAL_DIALOG | Enter modal confirm/details |
+| MODAL_DIALOG | `ui.ok` | PANEL_BROWSE | Commit action, close modal |
+| MODAL_DIALOG | `ui.cancel` | PANEL_BROWSE | Abort action, close modal |
+
+---
+
+### 11.3 Canonical UI Intent IDs ###
+
+The UI emits only intent events. The controller is the authority that interprets them.
+
+Required navigation intents:
+
+- `ui.page.next`
+- `ui.page.prev`
+- `ui.focus.next`
+- `ui.focus.prev`
+- `ui.ok`
+- `ui.cancel`
+
+Optional “panel browse” intents (panel-specific, if supported):
+
+- `ui.browse.delta` with params: `{ "delta": <int> }`
+- `ui.browse.select` (equivalent to “enter/press” when in browse mode)
+
+Notes:
+- `ui.ok` and `ui.cancel` MUST be treated as semantic commits/aborts, not generic “buttons”.
+- Panels MUST NOT invent new ad-hoc intent strings; all new intents must be added to `docs/INTENTS.md`.
+
+---
+
+### 11.4 Page Controls Allowlist (Non-Negotiable) ###
+
+Each page declares:
+
+```json
+"controls": { "allowedIntents": [ ... ] }
+
+
+
 If a future reader cannot answer:
 `
 “What does this color or badge mean?”

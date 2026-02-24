@@ -24,4 +24,6 @@
         "requiredBindings": ["controller_services"]
       }
     }
-  }
+
+
+}

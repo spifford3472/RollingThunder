@@ -15,6 +15,10 @@ Add-on:
 Phase 15:
 - SSE UI bus subscribe endpoint: /api/v1/ui/bus/subscribe (read-only)
 - ThreadingHTTPServer to avoid blocking the entire server on SSE connections
+
+Phase 15b:
+- UI intent ingest endpoint: POST /api/v1/ui/intent
+  (rt-display -> rt-controller event ingest; bounded; republished onto Redis PubSub bus)
 """
 
 from __future__ import annotations
@@ -48,9 +52,11 @@ DEPLOY_PATHS = ("/api/v1/ui/deploy", "/api/v1/ui/deploy/")
 STATE_BATCH_PATHS = ("/api/v1/ui/state/batch", "/api/v1/ui/state/batch/")
 STATE_SCAN_PATHS = ("/api/v1/ui/state/scan", "/api/v1/ui/state/scan/")
 
-
-# NEW: SSE bus subscribe endpoint (read-only)
+# SSE bus subscribe endpoint (read-only)
 BUS_SUBSCRIBE_PATHS = ("/api/v1/ui/bus/subscribe", "/api/v1/ui/bus/subscribe/")
+
+# UI intent ingest endpoint (event-only)
+INTENT_PATHS = ("/api/v1/ui/intent", "/api/v1/ui/intent/")
 
 HEALTHZ_PATHS = ("/healthz", "/healthz/")
 
@@ -88,18 +94,26 @@ MAX_STATE_KEYS = int(os.environ.get("RT_MAX_STATE_KEYS", "200"))
 MAX_KEY_LEN = int(os.environ.get("RT_MAX_STATE_KEY_LEN", "256"))
 MAX_BODY_BYTES = int(os.environ.get("RT_MAX_UI_BODY_BYTES", "65536"))  # 64KB
 
-# NEW: SSE safety bounds
+# SSE safety bounds
 SSE_MAX_STREAM_SEC = float(os.environ.get("RT_SSE_MAX_STREAM_SEC", "55"))  # hard cap per connection
 SSE_MAX_EVENTS = int(os.environ.get("RT_SSE_MAX_EVENTS", "250"))          # hard cap per connection
 SSE_POLL_SEC = float(os.environ.get("RT_SSE_POLL_SEC", "0.5"))            # pubsub poll interval
 SSE_HEARTBEAT_SEC = float(os.environ.get("RT_SSE_HEARTBEAT_SEC", "15"))   # keepalive comment
 SSE_MAX_DATA_BYTES = int(os.environ.get("RT_SSE_MAX_DATA_BYTES", "16384"))  # per event data cap
 
-# NEW: PubSub channel defaults (read-only)
-# Keep it conservative: one channel by default, optional override via query if allowed.
+# PubSub channel defaults (read-only)
 UI_BUS_DEFAULT_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
 UI_BUS_ALLOW_QUERY_CHANNEL = (os.environ.get("RT_UI_BUS_ALLOW_QUERY_CHANNEL", "0").strip() == "1")
 UI_BUS_CHANNEL_PREFIX = os.environ.get("RT_UI_BUS_CHANNEL_PREFIX", "rt:")  # must start with this
+
+# Intents: conservative bounds + validation
+MAX_INTENT_LEN = int(os.environ.get("RT_MAX_INTENT_LEN", "80"))
+MAX_INTENT_PARAMS_BYTES = int(os.environ.get("RT_MAX_INTENT_PARAMS_BYTES", "4096"))
+INTENT_DOT_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$")
+INTENT_UNDERSCORE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+# Publish UI intents onto this redis pubsub channel (default: same bus channel UI subscribes to)
+UI_INTENT_CHANNEL = os.environ.get("RT_UI_INTENT_CHANNEL", UI_BUS_DEFAULT_CHANNEL)
 
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
@@ -394,7 +408,17 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                         h = r.hgetall(ks)
                         # bounded preview: pick a few stable fields
                         keep = {}
-                        for fld in ("id", "role", "status", "state", "age_sec", "last_seen_ms", "last_update_ms", "ownerNode", "publisher_error"):
+                        for fld in (
+                            "id",
+                            "role",
+                            "status",
+                            "state",
+                            "age_sec",
+                            "last_seen_ms",
+                            "last_update_ms",
+                            "ownerNode",
+                            "publisher_error",
+                        ):
                             if fld in h:
                                 keep[fld] = _truncate(_coerce_scalar(h.get(fld)))
                         preview = keep
@@ -525,6 +549,129 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         if len(k) == 0 or len(k) > MAX_KEY_LEN:
             return False
         return k.startswith("rt:")
+
+    # ---------- Intents ----------
+    def _is_valid_intent(self, intent: Any) -> bool:
+        if not isinstance(intent, str):
+            return False
+        it = intent.strip()
+        if not it or len(it) > MAX_INTENT_LEN:
+            return False
+        if "\n" in it or "\r" in it:
+            return False
+        return bool(INTENT_DOT_RE.match(it) or INTENT_UNDERSCORE_RE.match(it))
+
+    def _publish_bus_event(self, channel: str, obj: Dict[str, Any]) -> bool:
+        """
+        Publish a JSON envelope to Redis PubSub.
+
+        NOTE:
+        binding_store.js expects the published JSON (decoded) to include a 'topic'
+        field so it can route events deterministically.
+        """
+        try:
+            if not isinstance(channel, str) or not channel.strip():
+                return False
+            ch = channel.strip()
+            if len(ch) > MAX_KEY_LEN:
+                return False
+            if not ch.startswith(UI_BUS_CHANNEL_PREFIX):
+                return False
+            if "\n" in ch or "\r" in ch:
+                return False
+
+            r = self._redis_pubsub_client()
+            payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+            r.publish(ch, payload)
+            return True
+        except Exception:
+            return False
+
+    def _handle_ui_intent(self) -> None:
+        """
+        POST /api/v1/ui/intent
+        Body: { intent: str, params?: object, page_id?: str, panel_id?: str, source?: str, ts_ms?: int }
+
+        Semantics:
+        - Accepts UI intents as events (NOT state writes).
+        - Validates shape + bounds.
+        - Republishes onto Redis PubSub bus as:
+            { topic:"ui.intent", intent:"...", params:{...}, page_id:"...", panel_id:"...", source:"...", ts_ms:..., server_time_ms:... }
+        """
+        payload: Dict[str, Any] = {
+            "source": "rt-controller",
+            "endpoint": "/api/v1/ui/intent",
+            "ts": now_iso_utc(),
+            "server_time_ms": now_ms(),
+            "ok": False,
+            "errors": [],
+        }
+
+        body = self._read_json_body()
+        if body.get("_error"):
+            payload["errors"].append(f"bad_request: {body['_error']}")
+            return self._write_json(400, payload)
+
+        intent = body.get("intent")
+        if not self._is_valid_intent(intent):
+            payload["errors"].append("bad_request: invalid_intent")
+            return self._write_json(400, payload)
+
+        params = body.get("params")
+        if params is not None and not isinstance(params, dict):
+            payload["errors"].append("bad_request: params_must_be_object")
+            return self._write_json(400, payload)
+
+        # Bound params size (conservative)
+        try:
+            params_json = json.dumps(params or {}, ensure_ascii=False, separators=(",", ":"))
+            if len(params_json.encode("utf-8")) > MAX_INTENT_PARAMS_BYTES:
+                payload["errors"].append("bad_request: params_too_large")
+                return self._write_json(400, payload)
+        except Exception:
+            payload["errors"].append("bad_request: params_not_jsonable")
+            return self._write_json(400, payload)
+
+        def _opt_str(name: str, max_len: int = 128) -> Optional[str]:
+            v = body.get(name)
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s:
+                return None
+            if len(s) > max_len:
+                return None
+            if "\n" in s or "\r" in s:
+                return None
+            return s
+
+        page_id = _opt_str("page_id", 64)
+        panel_id = _opt_str("panel_id", 64)
+        source = _opt_str("source", 64) or "rt-display"
+
+        ts_ms = body.get("ts_ms")
+        if not isinstance(ts_ms, int):
+            ts_ms = now_ms()
+
+        event_obj = {
+            "topic": "ui.intent",
+            "intent": str(intent).strip(),
+            "params": params or {},
+            "page_id": page_id,
+            "panel_id": panel_id,
+            "source": source,
+            "ts_ms": ts_ms,
+            "server_time_ms": now_ms(),
+        }
+
+        ok = self._publish_bus_event(UI_INTENT_CHANNEL, event_obj)
+        if not ok:
+            payload["errors"].append("publish_failed")
+            return self._write_json(503, payload)
+
+        payload["ok"] = True
+        payload["data"] = {"published": True, "channel": UI_INTENT_CHANNEL}
+        return self._write_json(200, payload)
 
     # ---------- Static serving (/ui/* and /config/*) ----------
     def _serve_static(self, url_prefix: str, fs_root: Path, default_doc: str) -> bool:
@@ -783,7 +930,6 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 pass
         finally:
             try:
-                # Close pubsub cleanly if it exists in locals
                 if "pubsub" in locals():
                     pubsub.close()  # type: ignore[name-defined]
             except Exception:
@@ -1051,6 +1197,9 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path in STATE_BATCH_PATHS:
             return self._handle_state_batch()
+
+        if self.path in INTENT_PATHS:
+            return self._handle_ui_intent()
 
         self.send_response(404)
         self._cors()

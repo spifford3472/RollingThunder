@@ -30,8 +30,8 @@
   },
 
   "focusPolicy": {
-    "defaultPanel": "",
-    "rotation": []
+    "defaultPanel": "controller_services_summary",
+    "rotation": ["controller_services_summary","node_health_summary"]
   },
 
   "meta": {
