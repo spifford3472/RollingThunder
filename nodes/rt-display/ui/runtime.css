@@ -192,11 +192,11 @@
 .rt-btn { padding: 6px 10px; background: transparent; color: inherit; border: 1px solid rgba(255,255,255,0.25); }
 .rt-btn-ok { font-weight: 700; }
 
-/* Selected row highlight while browsing */
+/* Selected row highlight while browsing 
 .rt-slot.rt-browse-mode .rt-row.rt-selected td {
   outline: 2px solid currentColor;
   outline-offset: -2px;
-}
+}*/
 
 /* Optional: make it a bit calmer */
 .rt-slot.rt-browse-mode .rt-row.rt-selected {
@@ -204,11 +204,11 @@
   filter: brightness(2.0);
 }
 
-/* Make selected row unmistakable in browse mode 
+/* Make selected row unmistakable in browse mode */
 .rt-slot.rt-browse-mode tr.rt-selected {
   outline: 3px solid currentColor;
   outline-offset: -3px;
-}*/
+}
 
 /*.rt-slot.rt-browse-mode tr.rt-selected td:first-child { */
 /*  text-decoration: underline; */
