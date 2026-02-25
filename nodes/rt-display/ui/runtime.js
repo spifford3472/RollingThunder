@@ -465,7 +465,7 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     if (intent === "ui.cancel") return exitBrowse();
     if (intent === "ui.ok") {
       // Deliver OK to the browsing panel
-      const slot = getActiveSlotEl();
+      const slot = browsePanelId ? (slotByPanelId.get(browsePanelId) || null) : null;
       if (slot) slot.dispatchEvent(new CustomEvent("rt-browse-ok"));
       return;
     }
@@ -476,7 +476,7 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
 
       const slot = browsePanelId ? (slotByPanelId.get(browsePanelId) || null) : null;
       dispatchBrowseDelta(slot, delta);
-      syncBrowseIndicator(); // optional, but nice: keeps pill asserted if DOM changed
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
 

@@ -25,7 +25,8 @@
       "ui.cancel",
       "alert.ack",
       "alert.silence",
-      "host.status"
+      "host.status",
+      "service.restart"
     ]
   },
 

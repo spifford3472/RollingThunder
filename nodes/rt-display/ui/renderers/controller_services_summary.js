@@ -1,11 +1,12 @@
 // controller_services_summary.js
 //
-// v2:
+// v3:
 // - Windowed list: show at most 11 rows at a time
-// - Scrollable when in browse mode: runtime dispatches "rt-browse-delta" to the slot
-// - Adaptive unknown filtering:
-//     - If ANY real service states exist, hide unknown/blank (keeps the panel clean)
-//     - If NONE exist, show unknown so the panel isn't empty and you can debug upstream
+// - Browse mode:
+//     ArrowUp/ArrowDown moves a *cursor highlight* through the full list
+//     (offset auto-adjusts to keep cursor inside the 11-row window)
+// - Enter in browse dispatches rt-open-modal confirm (“Restart service X?”)
+// - Adaptive unknown filtering (same as v2)
 // - Stable sort by id/key
 // - Age ticker updates in-place
 // - Footer: "Showing X/Y" and "scroll" hint if Y > WINDOW
@@ -91,24 +92,66 @@ function clamp(n, lo, hi) {
 
 function getModel(container) {
   if (!container.__rtModel) {
-    container.__rtModel = { offset: 0, lastKey: "" };
+    container.__rtModel = {
+      offset: 0,
+      cursor: 0,         // NEW: selected index in full list
+      selectedId: null,  // NEW: stable selection by service id if possible
+      lastKey: "",
+      lastServices: [],
+    };
   }
   return container.__rtModel;
 }
 
 function computeStableKey(list) {
-  // cheap stability marker so we can reset offset when the list shape changes
-  // (ids only, in sorted order)
-  const ids = list.map(x => String(x?.id || x?.key || "")).join("|");
-  return ids;
+  // stable marker so we can reset browse state when the list shape changes
+  return list.map(x => String(x?.id || x?.key || "")).join("|");
 }
 
-function renderWindow(container, services, offset) {
+function ensureCursorInWindow(m, total) {
+  // Clamp cursor
+  m.cursor = clamp(m.cursor || 0, 0, Math.max(0, total - 1));
+
+  // Clamp offset bounds
+  const maxOff = Math.max(0, total - WINDOW);
+  m.offset = clamp(m.offset || 0, 0, maxOff);
+
+  // Adjust offset so cursor stays visible
+  if (m.cursor < m.offset) m.offset = m.cursor;
+  if (m.cursor >= m.offset + WINDOW) m.offset = m.cursor - WINDOW + 1;
+
+  // Re-clamp after adjustment
+  m.offset = clamp(m.offset, 0, maxOff);
+}
+
+function openRestartConfirm(slot, serviceId) {
+  if (!slot || !serviceId) return;
+
+  slot.dispatchEvent(new CustomEvent("rt-open-modal", {
+    bubbles: true,
+    detail: {
+      kind: "confirm",
+      title: "Restart service?",
+      body: `Restart service ${serviceId}?`,
+      confirmLabel: "Restart",
+      cancelLabel: "Cancel",
+      action: {
+        intent: "service.restart",
+        params: { service_id: serviceId },
+      },
+    },
+  }));
+}
+
+function renderWindow(container, services, m) {
   const total = services.length;
-  const off = clamp(offset, 0, Math.max(0, total - WINDOW));
+
+  ensureCursorInWindow(m, total);
+
+  const off = m.offset;
   const view = services.slice(off, off + WINDOW);
 
-  const rows = view.map((svc) => {
+  const rows = view.map((svc, i) => {
     const id = String(svc?.id || svc?.key || "unknown");
     const pill = stateToPill(svc?.state);
 
@@ -117,10 +160,18 @@ function renderWindow(container, services, offset) {
     const ageTxt = fmtAge(age);
 
     const stale = (age != null && age > 12);
-    const rowCls = stale ? "rt-row stale" : "rt-row";
+
+    const absoluteIndex = off + i;
+    const isSelected = (absoluteIndex === m.cursor);
+
+    const cls = [
+      "rt-row",
+      stale ? "stale" : "",
+      isSelected ? "rt-selected" : "",
+    ].filter(Boolean).join(" ");
 
     return `
-      <tr class="${rowCls}">
+      <tr class="${cls}" data-rt-service-id="${safeText(id)}">
         <td class="rt-cell-name">${safeText(id)}</td>
         <td class="rt-cell-status">${pill}</td>
         <td class="rt-cell-age" data-rt-age-ms="${ms ?? ""}">${ageTxt}</td>
@@ -152,10 +203,9 @@ function renderWindow(container, services, offset) {
   `;
 
   startAgeTicker(container);
-  return off;
 }
 
-function attachBrowseHandlerOnce(container) {
+function attachBrowseHandlersOnce(container) {
   if (container.__rtBrowseAttached) return;
   container.__rtBrowseAttached = true;
 
@@ -167,16 +217,43 @@ function attachBrowseHandlerOnce(container) {
     if (!Number.isFinite(delta) || delta === 0) return;
 
     const m = getModel(container);
-    m.offset = (m.offset || 0) + (delta > 0 ? 1 : -1);
-
-    // Re-render with the last computed list snapshot if present
     const services = Array.isArray(m.lastServices) ? m.lastServices : [];
-    m.offset = renderWindow(container, services, m.offset);
+    const total = services.length;
+
+    if (total <= 0) return;
+
+    // Move cursor by 1 per tick
+    m.cursor = (m.cursor || 0) + (delta > 0 ? 1 : -1);
+    m.cursor = clamp(m.cursor, 0, total - 1);
+
+    // Update selectedId for stability across refreshes
+    const cur = services[m.cursor];
+    m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
+
+    // Keep cursor visible within window, then re-render
+    ensureCursorInWindow(m, total);
+    renderWindow(container, services, m);
+  });
+
+  slot.addEventListener("rt-browse-ok", () => {
+    const m = getModel(container);
+    const services = Array.isArray(m.lastServices) ? m.lastServices : [];
+    const total = services.length;
+    if (total <= 0) return;
+
+    // Clamp cursor defensively
+    m.cursor = clamp(m.cursor || 0, 0, total - 1);
+
+    const svc = services[m.cursor];
+    const id = String(svc?.id || svc?.key || "").trim();
+    if (!id) return;
+
+    openRestartConfirm(slot, id);
   });
 }
 
 export function renderControllerServicesSummary(container, panel, data) {
-  attachBrowseHandlerOnce(container);
+  attachBrowseHandlersOnce(container);
 
   const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
 
@@ -187,24 +264,48 @@ export function renderControllerServicesSummary(container, panel, data) {
     return as.localeCompare(bs);
   });
 
-  // Adaptive unknown filtering:
-  // If anything has a real state, hide unknown/blank.
+  // Adaptive unknown filtering
   const anyReal = sorted.some(svc => isRealState(svc?.state));
   const services = anyReal
     ? sorted.filter(svc => isRealState(svc?.state))
-    : sorted; // show unknown so panel is not empty
+    : sorted;
 
   const m = getModel(container);
 
-  // Reset offset if the list identity changed
+  // Reset browse state if list identity changed
   const key = computeStableKey(services);
   if (m.lastKey !== key) {
     m.lastKey = key;
     m.offset = 0;
+
+    // Try to preserve selection by selectedId when possible,
+    // otherwise reset to top.
+    if (m.selectedId) {
+      const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
+      m.cursor = idx >= 0 ? idx : 0;
+    } else {
+      m.cursor = 0;
+    }
+  } else {
+    // If list is stable, still try to keep cursor attached to selectedId
+    if (m.selectedId) {
+      const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
+      if (idx >= 0) m.cursor = idx;
+    }
   }
 
   // Save snapshot for browse re-render
   m.lastServices = services;
 
-  m.offset = renderWindow(container, services, m.offset);
+  // Ensure cursor/offset valid and render
+  if (services.length <= 0) {
+    m.cursor = 0;
+    m.offset = 0;
+  } else {
+    ensureCursorInWindow(m, services.length);
+    const cur = services[m.cursor];
+    m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
+  }
+
+  renderWindow(container, services, m);
 }
