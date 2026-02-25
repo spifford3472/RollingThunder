@@ -205,8 +205,8 @@
 
 /* Make selected row unmistakable in browse mode */
 .rt-slot.rt-browse-mode tr.rt-selected {
-  outline: 2px solid currentColor;
-  outline-offset: -2px;
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
 }
 
 /*.rt-slot.rt-browse-mode tr.rt-selected td:first-child { */
