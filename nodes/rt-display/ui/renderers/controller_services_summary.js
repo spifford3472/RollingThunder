@@ -179,7 +179,17 @@ function renderWindow(container, services, m) {
     `;
   }).join("");
 
-  const showing = total === 0 ? "0/0" : `${Math.min(WINDOW, total)}/${total}`;
+  const selected = (total > 0) ? (clamp(m.cursor ?? 0, 0, total - 1) + 1) : 0;
+
+  // Default (non-browse): viewport info
+  let footerLeft = total === 0 ? "Showing 0/0" : `Showing ${Math.min(WINDOW, total)}/${total}`;
+
+  // Browse mode: cursor info (slot gets rt-browse-mode from runtime)
+  const slot = container.closest(".rt-slot");
+  if (slot && slot.classList.contains("rt-browse-mode")) {
+    footerLeft = total === 0 ? "Selected Service —" : `Selected Service #${selected} of ${total}`;
+  }
+
   const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
 
   container.innerHTML = `
@@ -197,7 +207,7 @@ function renderWindow(container, services, m) {
         </tbody>
       </table>
       <div class="rt-footer">
-        <span class="rt-muted">Showing ${showing}</span>${hint}
+        <span class="rt-muted">${footerLeft}</span>${hint}
       </div>
     </div>
   `;

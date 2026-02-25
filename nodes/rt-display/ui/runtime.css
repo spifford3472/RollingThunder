@@ -209,6 +209,6 @@
   outline-offset: -3px;
 }
 
-.rt-slot.rt-browse-mode tr.rt-selected td:first-child {
-  text-decoration: underline;
-}
+/*.rt-slot.rt-browse-mode tr.rt-selected td:first-child { */
+/*  text-decoration: underline; */
+/*} */
