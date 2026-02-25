@@ -40,211 +40,217 @@
       "noTextEntryWhenDriving": true
     }
   },
+
   "services": {
-  "redis_state": {
+    "redis_state": {
       "id": "redis_state",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
       },
       "health": {
-      "type": "redis_ping",
-      "target": "globals.state.redisUrl",
-      "staleAfterMs": 5000
+        "type": "redis_ping",
+        "target": "globals.state.redisUrl",
+        "staleAfterMs": 5000
       },
       "provides": ["state.core"]
-  },
+    },
 
-  "mqtt_bus": {
+    "mqtt_bus": {
       "id": "mqtt_bus",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
       },
       "health": {
-      "type": "mqtt_ping",
-      "target": "globals.bus.mqttUrl",
-      "staleAfterMs": 10000
+        "type": "mqtt_ping",
+        "target": "globals.bus.mqttUrl",
+        "staleAfterMs": 10000
       },
       "provides": ["bus.core"]
-  },
+    },
 
-  "gps_ingest": {
+    "gps_ingest": {
       "id": "gps_ingest",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
       },
       "health": {
-      "type": "state_freshness",
-      "target": { "key": "rt:gps:fix", "namespace": "globals.state.namespace" },
-      "staleAfterMs": 3000
+        "type": "state_freshness",
+        "target": { "key": "rt:gps:fix", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 3000
       },
       "provides": ["state.gps.fix", "state.gps.time", "state.gps.speed"],
       "consumes": []
-  },
+    },
 
-  "logging": {
+    "logging": {
       "id": "logging",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
       },
       "health": {
-      "type": "state_freshness",
-      "target": { "key": "rt:logging:alive", "namespace": "globals.state.namespace" },
-      "staleAfterMs": 10000
+        "type": "state_freshness",
+        "target": { "key": "rt:logging:alive", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 10000
       },
       "provides": ["state.logging", "logs.events"]
-  },
+    },
 
-  "node_health": {
+    "node_health": {
       "id": "node_health",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
       },
       "health": {
-      "type": "http_json",
-      "target": "http://rt-controller.local:8787/health",
-      "okRules": [{ "path": "$.ok", "equals": true }],
-      "staleAfterMs": 5000
+        "type": "http_json",
+        "target": "http://rt-controller.local:8787/health",
+        "okRules": [{ "path": "$.ok", "equals": true }],
+        "staleAfterMs": 5000
       },
       "provides": ["state.nodes.health"]
-  },
+    },
 
-  "noaa_same": {
+    "noaa_same": {
       "id": "noaa_same",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state", "mqtt_bus", "gps_ingest"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 5000, "maxBackoffMs": 60000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 5000, "maxBackoffMs": 60000 }
       },
       "health": {
-      "type": "state_freshness",
-      "target": { "key": "rt:noaa:decoder", "namespace": "globals.state.namespace" },
-      "staleAfterMs": 15000
+        "type": "state_freshness",
+        "target": { "key": "rt:noaa:decoder", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 15000
       },
       "provides": ["alerts.noaa", "state.noaa.station", "state.noaa.county"]
-  },
+    },
 
-  "meshtastic_c2": {
+    "meshtastic_c2": {
       "id": "meshtastic_c2",
       "scope": "always_on",
       "ownerNode": "rt-controller",
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
-      "startPolicy": "onBoot",
-      "stopPolicy": "never",
-      "restartPolicy": { "mode": "onFailure", "backoffMs": 5000, "maxBackoffMs": 60000 }
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 5000, "maxBackoffMs": 60000 }
       },
       "health": {
-      "type": "state_freshness",
-      "target": { "key": "rt:meshtastic:link", "namespace": "globals.state.namespace" },
-      "staleAfterMs": 30000
+        "type": "state_freshness",
+        "target": { "key": "rt:meshtastic:link", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 30000
       },
       "permissions": {
-      "default": "read_only",
-      "allowListedSenders": [],
-      "writeCapabilities": {
+        "default": "read_only",
+        "allowListedSenders": [],
+        "writeCapabilities": {
           "serviceControl": { "enabled": false, "allowServices": [] },
           "pageChange": { "enabled": false, "allowPages": [] }
-      }
+        }
       },
       "rateLimits": {
-      "statusPerMinute": 12,
-      "alertsPerMinute": 6,
-      "maxMessageBytes": 180
+        "statusPerMinute": 12,
+        "alertsPerMinute": 6,
+        "maxMessageBytes": 180
       },
       "provides": ["bus.meshtastic.status", "alerts.meshtastic"]
-  },
+    },
 
-  "hf_radio_proxy": {
+    "hf_radio_proxy": {
       "id": "hf_radio_proxy",
       "scope": "page_scoped",
       "ownerNode": "rt-radio",
       "dependsOn": [],
       "lifecycle": {
-      "startPolicy": "onPageEnter",
-      "stopPolicy": "onLastUserExit",
-      "restartPolicy": { "mode": "never" }
+        "startPolicy": "onPageEnter",
+        "stopPolicy": "onLastUserExit",
+        "restartPolicy": { "mode": "never" }
       },
       "health": {
-      "type": "http_json",
-      "target": "http://rt-radio.local:8801/health",
-      "okRules": [{ "path": "$.ok", "equals": true }],
-      "staleAfterMs": 5000
+        "type": "http_json",
+        "target": "http://rt-radio.local:8801/health",
+        "okRules": [{ "path": "$.ok", "equals": true }],
+        "staleAfterMs": 5000
       },
       "provides": ["state.hf.snapshot"]
-  },
+    },
 
-  "wpsd_integration": {
+    "wpsd_integration": {
       "id": "wpsd_integration",
       "scope": "page_scoped",
       "ownerNode": "external",
       "lifecycle": {
-      "startPolicy": "manualOnly",
-      "stopPolicy": "onPageExit",
-      "restartPolicy": { "mode": "never" }
+        "startPolicy": "manualOnly",
+        "stopPolicy": "onPageExit",
+        "restartPolicy": { "mode": "never" }
       },
       "health": {
-      "type": "external_api",
-      "target": "http://rt-wpsd.local/",
-      "staleAfterMs": 15000
+        "type": "external_api",
+        "target": "http://rt-wpsd.local/",
+        "staleAfterMs": 15000
       },
       "provides": ["state.dmr.snapshot"]
-   }
-  }, 
+    },
+
+    "wpsd_log_ingestor": {
+      "id": "wpsd_log_ingestor",
+      "scope": "page_scoped",
+      "ownerNode": "rt-controller",
+      "dependsOn": ["redis_state", "mqtt_bus"],
+      "lifecycle": {
+        "startPolicy": "onPageEnter",
+        "stopPolicy": "onLastUserExit",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 15000 }
+      },
+      "health": {
+        "type": "state_freshness",
+        "target": { "key": "rt:wpsd:rf:slots", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 8000
+      },
+      "provides": ["state.wpsd.rf"]
+    }
+  },
+
   "pages": { "include": ["config/pages/*.json"] },
   "panels": { "include": ["config/panels/*.json"] },
+
   "inputs": { "sources": {}, "maps": [] },
-  "alerts": { "normalization": {}, "dedup": { "rules": [] }, "routing": [], "acknowledgement": {}, "rateLimits": {} },
+
+  "alerts": {
+    "normalization": {},
+    "dedup": { "rules": [] },
+    "routing": [],
+    "acknowledgement": {},
+    "rateLimits": {}
+  },
 
   "meta": {
     "notes": "Skeleton only. Populate services/pages/panels next."
-  },
-
-
-"wpsd_log_ingestor": {
-  "id": "wpsd_log_ingestor",
-  "scope": "page_scoped",
-  "ownerNode": "rt-controller",
-  "dependsOn": ["redis_state", "mqtt_bus"],
-  "lifecycle": {
-    "startPolicy": "onPageEnter",
-    "stopPolicy": "onLastUserExit",
-    "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 15000 }
-  },
-  "health": {
-    "type": "state_freshness",
-    "target": { "key": "rt:wpsd:rf:slots", "namespace": "globals.state.namespace" },
-    "staleAfterMs": 8000
-  },
-  "provides": ["state.wpsd.rf"]
-}
-
-
-
+  }
 }

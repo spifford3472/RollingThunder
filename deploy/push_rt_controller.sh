@@ -63,7 +63,7 @@ UNITS=(
   "rt-wpsd-poller.service"
   "rt-alerts-reconciler.service"
   "rt-controller-presence.service"
-  "rt-ui-intent-worker.servi"
+  "rt-ui-intent-worker.service"
   "rt-alert@.service"
 )
 
