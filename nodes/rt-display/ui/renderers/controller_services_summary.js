@@ -206,50 +206,51 @@ function renderWindow(container, services, m) {
 }
 
 function attachBrowseHandlersOnce(container) {
-  if (container.__rtBrowseAttached) return;
-  container.__rtBrowseAttached = true;
-
   const slot = container.closest(".rt-slot");
   if (!slot) return;
 
-  slot.addEventListener("rt-browse-delta", (ev) => {
+  // If older code attached listeners, they may still be active.
+  // We version our attachment and also ensure we don't double-add.
+  if (slot.__rtCssBrowseV3Attached) return;
+  slot.__rtCssBrowseV3Attached = true;
+
+  // Handler refs stored so we can remove if needed later
+  const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
     if (!Number.isFinite(delta) || delta === 0) return;
 
     const m = getModel(container);
     const services = Array.isArray(m.lastServices) ? m.lastServices : [];
     const total = services.length;
-
     if (total <= 0) return;
 
-    // Move cursor by 1 per tick
-    m.cursor = (m.cursor || 0) + (delta > 0 ? 1 : -1);
-    m.cursor = clamp(m.cursor, 0, total - 1);
+    m.cursor = clamp((m.cursor ?? 0) + (delta > 0 ? 1 : -1), 0, total - 1);
 
-    // Update selectedId for stability across refreshes
     const cur = services[m.cursor];
     m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
 
-    // Keep cursor visible within window, then re-render
     ensureCursorInWindow(m, total);
     renderWindow(container, services, m);
-  });
+  };
 
-  slot.addEventListener("rt-browse-ok", () => {
+  const onOk = () => {
     const m = getModel(container);
     const services = Array.isArray(m.lastServices) ? m.lastServices : [];
     const total = services.length;
     if (total <= 0) return;
 
-    // Clamp cursor defensively
-    m.cursor = clamp(m.cursor || 0, 0, total - 1);
-
+    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
     const svc = services[m.cursor];
     const id = String(svc?.id || svc?.key || "").trim();
     if (!id) return;
 
     openRestartConfirm(slot, id);
-  });
+  };
+
+  slot.addEventListener("rt-browse-delta", onDelta);
+  slot.addEventListener("rt-browse-ok", onOk);
+
+  slot.__rtCssBrowseV3Handlers = { onDelta, onOk };
 }
 
 export function renderControllerServicesSummary(container, panel, data) {
