@@ -237,8 +237,8 @@
     }
   },
 
-  "pages": { "include": ["config/pages/*.json"] },
-  "panels": { "include": ["config/panels/*.json"] },
+  "pages": { "include": ["pages.manifest.json"] },
+  "panels": { "include": ["panels.manifest.json"] },
 
   "inputs": { "sources": {}, "maps": [] },
 
