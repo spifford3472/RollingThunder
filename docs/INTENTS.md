@@ -145,6 +145,21 @@ Example:
 { "intent": "service.restart", "params": { "serviceId": "gps_ingest" } }
 }
 ```
+### Service Control Parameters (Authoritative) ###
+
+All `service.*` intents MUST use the following parameter schema.
+
+#### Required params ####
+- `serviceId` (string): Logical RollingThunder service ID from the config service catalog
+  - Example: `gps_ingest`, `mqtt_bus`, `noaa_same`
+  - MUST NOT be a systemd unit name
+  - MUST be allow-listed by the controller based on `services.*` config
+  - MUST be owned by the executing node (e.g. `ownerNode: rt-controller`) unless explicitly enabled otherwise
+
+#### Forbidden params ####
+- `unit`, `systemdUnit`, `command`, `args`, or any OS-level identifier
+  - The UI must never request a unit name or a shell command.
+  - Mapping `serviceId -> systemd unit` is controller-owned configuration.
 
 ## 4.5 Radio Control (radio.*) ##
 

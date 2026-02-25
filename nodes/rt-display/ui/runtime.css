@@ -144,3 +144,50 @@
 .rt-slot.rt-active .rt-slot-hdr::before {
   content: "▶ ";
 }
+
+/* Selected row highlight (browse cursor) */
+.rt-services .rt-selected td {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* Cursor column */
+.rt-cell-cursor, .rt-th-cursor {
+  width: 1.2em;
+  text-align: center;
+  opacity: 0.9;
+}
+
+/* List hint */
+.rt-list-hint {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* Modal */
+.rt-modal-root { position: relative; }
+.rt-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 999;
+}
+.rt-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  background: #111;
+  border: 1px solid rgba(255,255,255,0.2);
+  padding: 14px;
+  min-width: 320px;
+}
+.rt-modal-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.rt-modal-body { margin-bottom: 12px; opacity: 0.95; }
+.rt-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.rt-btn { padding: 6px 10px; background: transparent; color: inherit; border: 1px solid rgba(255,255,255,0.25); }
+.rt-btn-ok { font-weight: 700; }

@@ -1,0 +1,60 @@
+# /etc/systemd/system/rt-ui-intent-worker.service
+#
+# RollingThunder - UI Intent Worker (rt-controller)
+# Purpose:
+# - Subscribes to rt:ui:intents (Redis PubSub)
+# - Executes allow-listed write-capable intents (e.g. service.restart)
+# - Publishes results to rt:ui:bus (Redis PubSub) for UI SSE streaming
+#
+# Read-only UI remains read-only; write actions happen here, on the controller.
+
+[Unit]
+Description=RollingThunder UI Intent Worker (Redis PubSub -> system actions)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+
+# Where the script lives
+WorkingDirectory=/opt/rollingthunder
+
+# Environment (override via /etc/default/rollingthunder if you like)
+Environment=RT_NODE_ID=rt-controller
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+# Environment=RT_REDIS_PASSWORD=   # uncomment if you use one
+
+Environment=RT_UI_INTENTS_CHANNEL=rt:ui:intents
+Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
+
+Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
+Environment=RT_SYSTEMCTL_TIMEOUT_SEC=8.0
+
+# Optional: allow admin overrides without editing the unit
+EnvironmentFile=-/etc/default/rollingthunder
+
+# Start command
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/ui_intent_worker.py
+
+# Hardening (kept practical—systemctl requires privileges)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Restart policy
+Restart=on-failure
+RestartSec=1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
