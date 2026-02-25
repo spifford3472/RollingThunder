@@ -200,14 +200,15 @@
 
 /* Optional: make it a bit calmer */
 .rt-slot.rt-browse-mode .rt-row.rt-selected {
-  filter: brightness(1.15);
+/*  filter: brightness(1.15); */
+  filter: brightness(2.0);
 }
 
-/* Make selected row unmistakable in browse mode */
+/* Make selected row unmistakable in browse mode 
 .rt-slot.rt-browse-mode tr.rt-selected {
   outline: 3px solid currentColor;
   outline-offset: -3px;
-}
+}*/
 
 /*.rt-slot.rt-browse-mode tr.rt-selected td:first-child { */
 /*  text-decoration: underline; */
