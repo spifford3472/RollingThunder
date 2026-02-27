@@ -81,6 +81,7 @@
       "id": "gps_ingest",
       "scope": "always_on",
       "ownerNode": "rt-controller",
+      "systemd": {"unit": "rt-gps-ingest.service" },
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
         "startPolicy": "onBoot",
@@ -205,6 +206,7 @@
       "id": "wpsd_integration",
       "scope": "page_scoped",
       "ownerNode": "external",
+      "systemd": {"unit": "rt-wpsd-poller.service" },
       "lifecycle": {
         "startPolicy": "manualOnly",
         "stopPolicy": "onPageExit",
@@ -222,9 +224,10 @@
       "id": "wpsd_log_ingestor",
       "scope": "page_scoped",
       "ownerNode": "rt-controller",
+      "systemd": {"unit": "rt-wpsd-log-ingestor.service" },
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
-        "startPolicy": "onPageEnter",
+        "startPolicy": "onBoot",
         "stopPolicy": "onLastUserExit",
         "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 15000 }
       },
@@ -236,6 +239,25 @@
       "provides": ["state.wpsd.rf"]
     }
   },
+
+  "alerts_reconciler": {
+      "id": "alerts_reconciler",
+      "scope": "always_on",
+      "ownerNode": "rt-controller",
+      "systemd": {"unit": "rt-alerts-reconciler.service" },
+      "lifecycle": {
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+      },
+      "health": {
+        "type": "http_json",
+        "target": "http://rt-controller.local:8787/alerts_health",
+        "okRules": [{ "path": "$.ok", "equals": true }],
+        "staleAfterMs": 5000
+      },
+      "provides": ["state.nodes.alerts_reconciler"]
+    },
 
   "pages": { "include": ["pages.manifest.json"] },
   "panels": { "include": ["panels.manifest.json"] },
