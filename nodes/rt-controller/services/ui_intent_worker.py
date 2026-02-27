@@ -125,7 +125,7 @@ def main() -> None:
         if intent != "service.restart":
             continue
 
-        service_id = str(params.get("serviceId") or "").strip()
+        service_id = str(params.get("serviceId") or params.get("service_id") or "").strip()
         unit = allow.get(service_id)
 
         if not unit:

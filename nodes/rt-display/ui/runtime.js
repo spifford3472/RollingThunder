@@ -191,6 +191,14 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
 
   const root = document.getElementById("rt_mount") || document.body;
 
+  // Local nav state
+  let navMode = "GLOBAL_FOCUS"; // GLOBAL_FOCUS | PANEL_BROWSE | MODAL_DIALOG
+  let browsePanelId = null;     // which panel owns browse right now
+
+  // Current modal hooks so key handler can drive the active modal
+  // { ok: fn, cancel: fn, close: fn, prevNavMode: string }
+  let _activeModal = null;
+
   function ensureModalRoot() {
     let m = root.querySelector("#rt_modal_root");
     if (!m) {
@@ -202,36 +210,11 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     return m;
   }
 
-  root.addEventListener("rt-open-modal", (ev) => {
-    const d = ev?.detail || {};
-    if (d.kind !== "confirm") return;
-
-    openConfirmModal({
-      title: String(d.title || "Confirm"),
-      body: String(d.body || ""),
-      confirmLabel: String(d.confirmLabel || "OK"),
-      cancelLabel: String(d.cancelLabel || "Cancel"),
-      onConfirm: async () => {
-        const intent = String(d?.action?.intent || "").trim();
-        const params = d?.action?.params || null;
-
-        // Gate controller-bound intents (this one is controller-bound)
-        if (!intent) return;
-        if (!isAllowed(intent)) {
-          console.warn("Intent not allowed on this page:", intent);
-          return;
-        }
-        await emitIntent(intent, params);
-      },
-      onCancel: () => {},
-    });
-  });
-
-  function openConfirmModal({ title, body, confirmLabel="OK", cancelLabel="Cancel", onConfirm, onCancel }) {
+  function openConfirmModal({ title, body, confirmLabel = "OK", cancelLabel = "Cancel", onConfirm, onCancel }) {
     const mroot = ensureModalRoot();
     mroot.innerHTML = `
       <div class="rt-modal-backdrop"></div>
-      <div class="rt-modal">
+      <div class="rt-modal" role="dialog" aria-modal="true">
         <div class="rt-modal-title">${title}</div>
         <div class="rt-modal-body">${body}</div>
         <div class="rt-modal-actions">
@@ -241,6 +224,7 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
       </div>
     `;
 
+    const prevNavMode = navMode;
     navMode = "MODAL_DIALOG";
 
     const okBtn = mroot.querySelector(".rt-btn-ok");
@@ -248,19 +232,30 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
 
     function close() {
       mroot.innerHTML = "";
-      // Return to browse mode (not global focus)
-      navMode = "PANEL_BROWSE";
+      _activeModal = null;
+
+      // Restore mode we came from (browse stays browse, global stays global)
+      navMode = prevNavMode;
+
+      // Re-assert browse indicator if appropriate
       syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
     }
 
-    okBtn?.addEventListener("click", async () => {
+    async function ok() {
       try { await onConfirm?.(); } finally { close(); }
-    });
-    cancelBtn?.addEventListener("click", () => {
-      try { onCancel?.(); } finally { close(); }
-    });
-  }
+    }
 
+    function cancel() {
+      try { onCancel?.(); } finally { close(); }
+    }
+
+    _activeModal = { ok, cancel, close, prevNavMode };
+
+    okBtn?.addEventListener("click", ok);
+    cancelBtn?.addEventListener("click", cancel);
+
+    okBtn?.focus?.();
+  }
 
   // attach runtime css
   const css = document.createElement("link");
@@ -298,7 +293,6 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
 
   const registry = createRendererRegistry();
   const store = createBindingStore();
-
   const nav = createNavMachine();
 
   // Build slot map panelId -> slot element
@@ -354,6 +348,33 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     }
   }
 
+  // -------------------------
+  // Modal open contract (panel -> runtime)
+  // -------------------------
+  root.addEventListener("rt-open-modal", (ev) => {
+    const d = ev?.detail || {};
+    if (d.kind !== "confirm") return;
+
+    openConfirmModal({
+      title: String(d.title || "Confirm"),
+      body: String(d.body || ""),
+      confirmLabel: String(d.confirmLabel || "OK"),
+      cancelLabel: String(d.cancelLabel || "Cancel"),
+      onConfirm: async () => {
+        const intent = String(d?.action?.intent || "").trim();
+        const params = d?.action?.params || null;
+
+        if (!intent) return;
+        if (!isAllowed(intent)) {
+          console.warn("Intent not allowed on this page:", intent);
+          return;
+        }
+        await emitIntent(intent, params);
+      },
+      onCancel: () => {},
+    });
+  });
+
   function getPanelDefaultAction(panelId) {
     const panel = bundle.panelsById[panelId];
     const actions = Array.isArray(panel?.actions) ? panel.actions : [];
@@ -364,20 +385,9 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     return { intent, params: a?.params || null };
   }
 
-  // -------------------------
-  // Local nav state machine (Option A)
-  // -------------------------
-  let navMode = "GLOBAL_FOCUS"; // GLOBAL_FOCUS | PANEL_BROWSE | MODAL_DIALOG (reserved)
-  let browsePanelId = null; // <-- NEW: which panel owns browse right now
-  
   function getActivePanelId() {
     const s = nav.getState();
     return s?.activePanelId || null;
-  }
-
-  function getActiveSlotEl() {
-    const pid = getActivePanelId();
-    return pid ? (slotByPanelId.get(pid) || null) : null;
   }
 
   function enterBrowseIfCapable() {
@@ -427,7 +437,6 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   function handleGlobalFocusIntent(intent, params) {
     if (intent === "ui.focus.next") {
       nav.panelNext();
-      // If we were browsing, moving focus should also clear browse indicator; but in GLOBAL_FOCUS it should be off.
       syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
@@ -463,8 +472,8 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
 
   function handleBrowseIntent(intent, params) {
     if (intent === "ui.cancel") return exitBrowse();
+
     if (intent === "ui.ok") {
-      // Deliver OK to the browsing panel
       const slot = browsePanelId ? (slotByPanelId.get(browsePanelId) || null) : null;
       if (slot) slot.dispatchEvent(new CustomEvent("rt-browse-ok"));
       return;
@@ -479,17 +488,16 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
       syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
-
-    // ignore focus.next/prev while browsing
   }
 
   function handleModalIntent(intent, params) {
+    // Keyboard must drive the modal; don't just flip navMode
     if (intent === "ui.cancel") {
-      navMode = "PANEL_BROWSE";
+      if (_activeModal) return _activeModal.cancel();
       return;
     }
     if (intent === "ui.ok") {
-      navMode = "PANEL_BROWSE";
+      if (_activeModal) return _activeModal.ok();
       return;
     }
   }
@@ -531,12 +539,11 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
       render: (data) => {
         renderer(bodyEl, panel, data);
 
-        // BUGFIX: panel refreshes may rebuild DOM; re-assert runtime-owned browse pill
-        // only when that panel is the current browse owner
+        // Re-assert runtime-owned browse pill if panel refresh rebuilds DOM
         if (navMode === "PANEL_BROWSE" && browsePanelId === panelId) {
-          // Defer one tick in case renderer’s update is multi-phase
           queueMicrotask(() =>
-            syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId }));
+            syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId })
+          );
         }
       },
     });

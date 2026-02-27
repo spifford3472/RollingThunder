@@ -200,15 +200,4 @@
 .rt-slot.rt-browse-mode tr.rt-selected td {
   font-weight: 600;
 }
-/* Optional: make it a bit calmer 
-.rt-slot.rt-browse-mode .rt-row.rt-selected {
-  filter: brightness(1.15); 
-}
-  */
 
-/* Make selected row unmistakable in browse mode 
-.rt-slot.rt-browse-mode tr.rt-selected {
-  outline: 1px solid currentColor;
-  outline-offset: -1px;
-}
-*/

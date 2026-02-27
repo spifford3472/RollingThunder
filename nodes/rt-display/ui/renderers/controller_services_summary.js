@@ -137,7 +137,7 @@ function openRestartConfirm(slot, serviceId) {
       cancelLabel: "Cancel",
       action: {
         intent: "service.restart",
-        params: { service_id: serviceId },
+        params: { serviceId: serviceId },
       },
     },
   }));
