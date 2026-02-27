@@ -423,6 +423,11 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     if (e.key === "ArrowDown") return { intent: "ui.browse.delta", params: { delta: +1 } };
     if (e.key === "ArrowUp") return { intent: "ui.browse.delta", params: { delta: -1 } };
 
+    // NEW: modal focus cycling
+    if (e.key === "ArrowLeft") return { intent: "ui.modal.focus", params: { dir: -1 } };
+    if (e.key === "ArrowRight") return { intent: "ui.modal.focus", params: { dir: +1 } };
+    if (e.key === "Tab") return { intent: "ui.modal.focus", params: { dir: e.shiftKey ? -1 : +1 } };
+
     return null;
   }
 
@@ -432,6 +437,7 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     "ui.ok",
     "ui.cancel",
     "ui.browse.delta",
+    "ui.modal.focus", // NEW
   ]);
 
   function handleGlobalFocusIntent(intent, params) {
@@ -491,13 +497,24 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   }
 
   function handleModalIntent(intent, params) {
-    // Keyboard must drive the modal; don't just flip navMode
-    if (intent === "ui.cancel") {
-      if (_activeModal) return _activeModal.cancel();
-      return;
-    }
-    if (intent === "ui.ok") {
-      if (_activeModal) return _activeModal.ok();
+    if (intent === "ui.cancel") return _activeModal?.cancel?.();
+    if (intent === "ui.ok") return _activeModal?.ok?.();
+
+    if (intent === "ui.modal.focus") {
+      const dir = Number(params?.dir ?? 0);
+      const mroot = document.getElementById("rt_modal_root");
+      if (!mroot) return;
+
+      const btns = Array.from(mroot.querySelectorAll("button.rt-btn"));
+      if (btns.length === 0) return;
+
+      const active = document.activeElement;
+      let idx = btns.findIndex((b) => b === active);
+      if (idx < 0) idx = btns.findIndex((b) => b.classList.contains("rt-btn-ok"));
+      if (idx < 0) idx = 0;
+
+      const next = (idx + (dir > 0 ? 1 : -1) + btns.length) % btns.length;
+      btns[next]?.focus?.();
       return;
     }
   }

@@ -18,7 +18,11 @@ Phase 15:
 
 Phase 15b:
 - UI intent ingest endpoint: POST /api/v1/ui/intent
-  (rt-display -> rt-controller event ingest; bounded; republished onto Redis PubSub bus)
+  (rt-display -> rt-controller event ingest; bounded)
+
+Fix (2026-02-26/27):
+- Publish intents to RT_UI_INTENTS_CHANNEL (default rt:ui:intents) so ui_intent_worker.py receives them.
+- Optionally echo the same intent event to the UI bus (rt:ui:bus) for observability.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 import urllib.request
 from urllib.error import URLError, HTTPError
+
 import redis
 
 
@@ -101,19 +106,23 @@ SSE_POLL_SEC = float(os.environ.get("RT_SSE_POLL_SEC", "0.5"))            # pubs
 SSE_HEARTBEAT_SEC = float(os.environ.get("RT_SSE_HEARTBEAT_SEC", "15"))   # keepalive comment
 SSE_MAX_DATA_BYTES = int(os.environ.get("RT_SSE_MAX_DATA_BYTES", "16384"))  # per event data cap
 
-# PubSub channel defaults (read-only)
+# PubSub channel defaults (read-only UI event bus)
 UI_BUS_DEFAULT_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
 UI_BUS_ALLOW_QUERY_CHANNEL = (os.environ.get("RT_UI_BUS_ALLOW_QUERY_CHANNEL", "0").strip() == "1")
 UI_BUS_CHANNEL_PREFIX = os.environ.get("RT_UI_BUS_CHANNEL_PREFIX", "rt:")  # must start with this
+
+# UI intents channel (commands for workers)
+# MUST match ui_intent_worker.py's INTENTS_CH env default ("rt:ui:intents")
+UI_INTENTS_CHANNEL = os.environ.get("RT_UI_INTENTS_CHANNEL", "rt:ui:intents")
+
+# Optional: echo intents to the UI bus for observability (default on)
+UI_INTENTS_ECHO_TO_BUS = (os.environ.get("RT_UI_INTENTS_ECHO_TO_BUS", "1").strip() == "1")
 
 # Intents: conservative bounds + validation
 MAX_INTENT_LEN = int(os.environ.get("RT_MAX_INTENT_LEN", "80"))
 MAX_INTENT_PARAMS_BYTES = int(os.environ.get("RT_MAX_INTENT_PARAMS_BYTES", "4096"))
 INTENT_DOT_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$")
 INTENT_UNDERSCORE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
-
-# Publish UI intents onto this redis pubsub channel (default: same bus channel UI subscribes to)
-UI_INTENT_CHANNEL = os.environ.get("RT_UI_INTENT_CHANNEL", UI_BUS_DEFAULT_CHANNEL)
 
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
@@ -595,8 +604,8 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         Semantics:
         - Accepts UI intents as events (NOT state writes).
         - Validates shape + bounds.
-        - Republishes onto Redis PubSub bus as:
-            { topic:"ui.intent", intent:"...", params:{...}, page_id:"...", panel_id:"...", source:"...", ts_ms:..., server_time_ms:... }
+        - Publishes to UI_INTENTS_CHANNEL for worker consumption.
+        - Optionally echoes to UI bus for observability.
         """
         payload: Dict[str, Any] = {
             "source": "rt-controller",
@@ -664,13 +673,22 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             "server_time_ms": now_ms(),
         }
 
-        ok = self._publish_bus_event(UI_INTENT_CHANNEL, event_obj)
+        # 1) Publish to intents channel (worker input)
+        ok = self._publish_bus_event(UI_INTENTS_CHANNEL, event_obj)
         if not ok:
             payload["errors"].append("publish_failed")
+            payload["errors"].append(f"channel={UI_INTENTS_CHANNEL}")
             return self._write_json(503, payload)
 
+        # 2) Optional echo to bus (UI/debug visibility)
+        if UI_INTENTS_ECHO_TO_BUS:
+            try:
+                self._publish_bus_event(UI_BUS_DEFAULT_CHANNEL, event_obj)
+            except Exception:
+                pass
+
         payload["ok"] = True
-        payload["data"] = {"published": True, "channel": UI_INTENT_CHANNEL}
+        payload["data"] = {"published": True, "channel": UI_INTENTS_CHANNEL, "echo_to_bus": UI_INTENTS_ECHO_TO_BUS}
         return self._write_json(200, payload)
 
     # ---------- Static serving (/ui/* and /config/*) ----------
