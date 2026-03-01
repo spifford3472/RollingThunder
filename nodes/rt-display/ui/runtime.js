@@ -130,7 +130,10 @@ function buildFocusModel({ page, bundle, presentPanelIds }) {
 
 function isBrowseCapableType(panelType) {
   const t = String(panelType || "").trim();
-  return t === "controller_services_summary";
+  return (
+    t === "controller_services_summary" ||
+    t === "node_health_summary"
+  );
 }
 
 function dispatchBrowseDelta(slotEl, delta) {
