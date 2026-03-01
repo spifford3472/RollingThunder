@@ -13,7 +13,7 @@ Environment=RT_UI_INTENTS_CHANNEL=rt:ui:intents
 Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
 Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
 
-ExecStart=/usr/bin/python3 /opt/rollingthunder/tools/ui_intent_worker.py
+ExecStart=/opt/rollingthunder/tools/ui_intent_worker.py
 
 # (Hardening tuned for what you actually need; your reboot path will need privileges)
 NoNewPrivileges=true

@@ -31,6 +31,7 @@ OPS_DIR="${NODE_DIR}/ops"
 SYSTEMD_DIR="${NODE_DIR}/systemd"
 SVC_DIR="${NODE_DIR}/services"
 TOOLS_DIR="${NODE_DIR}/tools"
+GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 
 # runtime destinations (spiff-owned)
 RT_ROOT="/opt/rollingthunder"
@@ -74,6 +75,7 @@ fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.timer"
+fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
 
 # NEW: intent worker artifacts
 fail_missing "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service"
@@ -146,6 +148,13 @@ echo "[push] Sync tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
+
+# Global Tools will always overwrite system tools since they are meant to be shared across nodes and may contain updates that other nodes rely on. 
+# This is in contrast to services/ops which are more node-specific and less likely to have cross-node dependencies.
+echo "[push] Sync global tools dir -> ${RT_TOOLS}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${GLOBAL_TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
 # Ensure scripts executable
 if [[ "${DRY_RUN}" != "1" ]]; then
