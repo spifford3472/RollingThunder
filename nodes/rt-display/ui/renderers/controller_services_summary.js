@@ -1,15 +1,17 @@
 // controller_services_summary.js
 //
-// v3:
+// v4 (view-only):
 // - Windowed list: show at most 10 rows at a time
 // - Browse mode:
 //     ArrowUp/ArrowDown moves a *cursor highlight* through the full list
-//     (offset auto-adjusts to keep cursor inside the 11-row window)
-// - Enter in browse dispatches rt-open-modal confirm (“Restart service X?”)
-// - Adaptive unknown filtering (same as v2)
+//     (offset auto-adjusts to keep cursor inside the window)
+// - NO restart modal, NO intents (view-only)
+// - Adaptive unknown filtering
 // - Stable sort by id/key
 // - Age ticker updates in-place
-// - Footer: "Showing X/Y" and "scroll" hint if Y > WINDOW
+// - Footer:
+//     non-browse: "Showing X/Y" (+ scroll hint if needed)
+//     browse:     "Selected Service #i of N"
 
 const WINDOW = 10;
 
@@ -94,8 +96,8 @@ function getModel(container) {
   if (!container.__rtModel) {
     container.__rtModel = {
       offset: 0,
-      cursor: 0,         // NEW: selected index in full list
-      selectedId: null,  // NEW: stable selection by service id if possible
+      cursor: 0,
+      selectedId: null,
       lastKey: "",
       lastServices: [],
     };
@@ -104,49 +106,24 @@ function getModel(container) {
 }
 
 function computeStableKey(list) {
-  // stable marker so we can reset browse state when the list shape changes
   return list.map(x => String(x?.id || x?.key || "")).join("|");
 }
 
 function ensureCursorInWindow(m, total) {
-  // Clamp cursor
   m.cursor = clamp(m.cursor || 0, 0, Math.max(0, total - 1));
 
-  // Clamp offset bounds
   const maxOff = Math.max(0, total - WINDOW);
   m.offset = clamp(m.offset || 0, 0, maxOff);
 
-  // Adjust offset so cursor stays visible
   if (m.cursor < m.offset) m.offset = m.cursor;
   if (m.cursor >= m.offset + WINDOW) m.offset = m.cursor - WINDOW + 1;
 
-  // Re-clamp after adjustment
   m.offset = clamp(m.offset, 0, maxOff);
 }
 
-function openRestartConfirm(slot, serviceId) {
-  if (!slot || !serviceId) return;
-
-  slot.dispatchEvent(new CustomEvent("rt-open-modal", {
-    bubbles: true,
-    detail: {
-      kind: "confirm",
-      title: "Restart service?",
-      body: `Restart service ${serviceId}?`,
-      confirmLabel: "Restart",
-      cancelLabel: "Cancel",
-      action: {
-        intent: "service.restart",
-        params: { serviceId: serviceId },
-      },
-    },
-  }));
-}
-
 function renderWindow(container, services, m) {
-  console.log("services:", JSON.parse(JSON.stringify(services)));
   const total = services.length;
- 
+
   ensureCursorInWindow(m, total);
 
   const off = m.offset;
@@ -182,10 +159,8 @@ function renderWindow(container, services, m) {
 
   const selected = (total > 0) ? (clamp(m.cursor ?? 0, 0, total - 1) + 1) : 0;
 
-  // Default (non-browse): viewport info
   let footerLeft = total === 0 ? "Showing 0/0" : `Showing ${Math.min(WINDOW, total)}/${total}`;
 
-  // Browse mode: cursor info (slot gets rt-browse-mode from runtime)
   const slot = container.closest(".rt-slot");
   if (slot && slot.classList.contains("rt-browse-mode")) {
     footerLeft = total === 0 ? "Selected Service —" : `Selected Service #${selected} of ${total}`;
@@ -220,12 +195,14 @@ function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
   if (!slot) return;
 
-  // If older code attached listeners, they may still be active.
-  // We version our attachment and also ensure we don't double-add.
-  if (slot.__rtCssBrowseV3Attached) return;
-  slot.__rtCssBrowseV3Attached = true;
+  // bump attachment version so old v3 handlers won't be re-added by this file
+  if (slot.__rtCssBrowseV4Attached) return;
+  slot.__rtCssBrowseV4Attached = true;
 
-  // Handler refs stored so we can remove if needed later
+  // If v3 already attached an OK handler, we can't remove it without a reference.
+  // But we ALSO won't attach any rt-browse-ok handler here, so new loads are clean.
+  // (If you want to actively remove old handlers, we can do that with a small runtime-side cleanup.)
+
   const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
     if (!Number.isFinite(delta) || delta === 0) return;
@@ -244,24 +221,8 @@ function attachBrowseHandlersOnce(container) {
     renderWindow(container, services, m);
   };
 
-  const onOk = () => {
-    const m = getModel(container);
-    const services = Array.isArray(m.lastServices) ? m.lastServices : [];
-    const total = services.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
-    const svc = services[m.cursor];
-    const id = String(svc?.id || svc?.key || "").trim();
-    if (!id) return;
-
-    openRestartConfirm(slot, id);
-  };
-
   slot.addEventListener("rt-browse-delta", onDelta);
-  slot.addEventListener("rt-browse-ok", onOk);
-
-  slot.__rtCssBrowseV3Handlers = { onDelta, onOk };
+  slot.__rtCssBrowseV4Handlers = { onDelta };
 }
 
 export function renderControllerServicesSummary(container, panel, data) {
@@ -269,14 +230,12 @@ export function renderControllerServicesSummary(container, panel, data) {
 
   const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
 
-  // Sort deterministically
   const sorted = all.slice().sort((a, b) => {
     const as = String(a?.id || a?.key || "");
     const bs = String(b?.id || b?.key || "");
     return as.localeCompare(bs);
   });
 
-  // Adaptive unknown filtering
   const anyReal = sorted.some(svc => isRealState(svc?.state));
   const services = anyReal
     ? sorted.filter(svc => isRealState(svc?.state))
@@ -284,14 +243,11 @@ export function renderControllerServicesSummary(container, panel, data) {
 
   const m = getModel(container);
 
-  // Reset browse state if list identity changed
   const key = computeStableKey(services);
   if (m.lastKey !== key) {
     m.lastKey = key;
     m.offset = 0;
 
-    // Try to preserve selection by selectedId when possible,
-    // otherwise reset to top.
     if (m.selectedId) {
       const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
       m.cursor = idx >= 0 ? idx : 0;
@@ -299,17 +255,14 @@ export function renderControllerServicesSummary(container, panel, data) {
       m.cursor = 0;
     }
   } else {
-    // If list is stable, still try to keep cursor attached to selectedId
     if (m.selectedId) {
       const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
       if (idx >= 0) m.cursor = idx;
     }
   }
 
-  // Save snapshot for browse re-render
   m.lastServices = services;
 
-  // Ensure cursor/offset valid and render
   if (services.length <= 0) {
     m.cursor = 0;
     m.offset = 0;

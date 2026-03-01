@@ -11,10 +11,7 @@
       "limit": 200
     }
   ],
-  "actions": [
-    { "intent": "service.restart" }
-  ],
   "meta": {
-    "purpose": "Service list with browse scrolling and (future) restart modal."
+    "purpose": "Service list with browse scrolling (view-only; no restart)."
   }
 }

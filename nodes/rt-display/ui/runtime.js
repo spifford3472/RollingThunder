@@ -479,10 +479,10 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   function handleBrowseIntent(intent, params) {
     if (intent === "ui.cancel") return exitBrowse();
 
+    // CHANGE: OK in browse mode no longer triggers a panel action/modal.
+    // It simply exits browse mode (view-only behavior).
     if (intent === "ui.ok") {
-      const slot = browsePanelId ? (slotByPanelId.get(browsePanelId) || null) : null;
-      if (slot) slot.dispatchEvent(new CustomEvent("rt-browse-ok"));
-      return;
+      return exitBrowse();
     }
 
     if (intent === "ui.browse.delta") {
