@@ -1,7 +1,7 @@
 // controller_services_summary.js
 //
 // v3:
-// - Windowed list: show at most 11 rows at a time
+// - Windowed list: show at most 10 rows at a time
 // - Browse mode:
 //     ArrowUp/ArrowDown moves a *cursor highlight* through the full list
 //     (offset auto-adjusts to keep cursor inside the 11-row window)
@@ -11,7 +11,7 @@
 // - Age ticker updates in-place
 // - Footer: "Showing X/Y" and "scroll" hint if Y > WINDOW
 
-const WINDOW = 11;
+const WINDOW = 10;
 
 function pillHtml(kind, label) {
   const cls =
@@ -144,8 +144,9 @@ function openRestartConfirm(slot, serviceId) {
 }
 
 function renderWindow(container, services, m) {
+  console.log("services:", JSON.parse(JSON.stringify(services)));
   const total = services.length;
-
+ 
   ensureCursorInWindow(m, total);
 
   const off = m.offset;
