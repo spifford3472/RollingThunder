@@ -122,18 +122,16 @@ function ensureCursorInWindow(m, total) {
 function openNodeConfirm(slot, nodeId) {
   if (!slot || !nodeId) return;
 
-  // For now: just a modal proof. We’ll wire intent later (node.restart).
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
     detail: {
-      kind: "confirm",
-      title: "Node action",
-      body: `Selected node: <strong>${esc(nodeId)}</strong><br/>` +
-            `OK/Confirm wiring is working. Next step: restart intent.`,
-      confirmLabel: "OK",
-      cancelLabel: "Exit",
-      action: null, // intentionally none right now
-    },
+      kind: "node_restart",
+      nodeId: String(nodeId),
+      action: {
+        intent: "node.reboot",
+        params: { nodeId: String(nodeId), confirm: true }
+      }
+    }
   }));
 }
 
