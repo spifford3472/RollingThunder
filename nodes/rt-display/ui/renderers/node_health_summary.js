@@ -122,29 +122,35 @@ function ensureCursorInWindow(m, total) {
 function openNodeConfirm(slot, nodeId) {
   if (!slot || !nodeId) return;
 
-  const isController = String(nodeId) === "rt-controller";
+  const id = String(nodeId);
+  const isController = (id === "rt-controller");
 
-  const title = "Node action";
-  const body = isController
-    ? `
-      <div><strong>Selected node: ${esc(nodeId)}</strong></div>
-      <div class="rt-warn-blink" style="margin-top:8px; font-weight:700;">
-        WARNING - THIS WILL RESTART THE SYSTEM
-      </div>
-    `
-    : `<div>Selected node: <strong>${esc(nodeId)}</strong></div>`;
+  const warningHtml = isController
+    ? `<div class="rt-warn-blink">WARNING - THIS WILL RESTART THE SYSTEM</div>`
+    : "";
 
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
     detail: {
       kind: "confirm",
-      title,
-      body,
-      confirmLabel: isController ? "CONFIRM" : "OK",
+      title: isController ? "Restart rt-controller?" : "Restart node?",
+      body: isController
+        ? `<div>Selected node: <strong>${esc(id)}</strong></div>`
+        : `<div>Restart <strong>${esc(id)}</strong>?</div>`,
+      confirmLabel: "OK",
       cancelLabel: "Exit",
+
+      // NEW runtime modal features:
+      twoStep: true,
+      armLabel: "CONFIRM",
+      timeoutMs: 5000,
+      danger: true,
+      warningHtml,
+
       action: {
         intent: "node.reboot",
-        params: { nodeId: String(nodeId) }
+        // IMPORTANT: runtime will only emit after 2nd press; include confirm:true
+        params: { nodeId: id, confirm: true }
       }
     }
   }));

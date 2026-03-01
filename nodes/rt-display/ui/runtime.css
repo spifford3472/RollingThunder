@@ -249,3 +249,22 @@
 @keyframes rtBlinkWarn {
   50% { opacity: 0.2; }
 }
+
+/* Danger confirm button */
+.rt-btn-danger {
+  background: #b00020;
+  color: #fff;
+  font-weight: 800;
+  border-color: #b00020;
+}
+
+/* Optional blinking warning line */
+.rt-warn-blink {
+  color: #b00020;
+  font-weight: 900;
+  animation: rtBlink 0.8s step-start infinite;
+}
+
+@keyframes rtBlink {
+  50% { opacity: 0; }
+}

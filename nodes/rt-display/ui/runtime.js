@@ -213,52 +213,115 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     return m;
   }
 
-  function openConfirmModal({ title, body, confirmLabel = "OK", cancelLabel = "Cancel", onConfirm, onCancel }) {
-    const mroot = ensureModalRoot();
+function openConfirmModal({
+  title,
+  body,
+  confirmLabel = "OK",
+  cancelLabel = "Cancel",
+  onConfirm,
+  onCancel,
+  // NEW:
+  twoStep = false,          // if true: first OK arms, second OK confirms
+  armLabel = "CONFIRM",     // label used when armed
+  timeoutMs = 5000,         // only applies when armed
+  danger = false,           // styles confirm as dangerous when armed
+  warningHtml = "",         // optional extra HTML (e.g. blinking warning)
+}) {
+  const mroot = ensureModalRoot();
+
+  // Modal state
+  let armed = false;
+  let timerId = null;
+  let armExpiresAt = 0;
+
+  function render() {
+    const okText = armed ? armLabel : confirmLabel;
+
     mroot.innerHTML = `
       <div class="rt-modal-backdrop"></div>
       <div class="rt-modal" role="dialog" aria-modal="true">
         <div class="rt-modal-title">${title}</div>
-        <div class="rt-modal-body">${body}</div>
+        <div class="rt-modal-body">
+          ${body}
+          ${warningHtml ? `<div class="rt-modal-warning">${warningHtml}</div>` : ``}
+          ${armed ? `<div class="rt-modal-countdown rt-muted" style="margin-top:10px;"></div>` : ``}
+        </div>
         <div class="rt-modal-actions">
           <button class="rt-btn rt-btn-cancel">${cancelLabel}</button>
-          <button class="rt-btn rt-btn-ok">${confirmLabel}</button>
+          <button class="rt-btn rt-btn-ok ${armed && danger ? "rt-btn-danger" : ""}">${okText}</button>
         </div>
       </div>
     `;
 
-    const prevNavMode = navMode;
-    navMode = "MODAL_DIALOG";
-
     const okBtn = mroot.querySelector(".rt-btn-ok");
     const cancelBtn = mroot.querySelector(".rt-btn-cancel");
-
-    function close() {
-      mroot.innerHTML = "";
-      _activeModal = null;
-
-      // Restore mode we came from (browse stays browse, global stays global)
-      navMode = prevNavMode;
-
-      // Re-assert browse indicator if appropriate
-      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
-    }
-
-    async function ok() {
-      try { await onConfirm?.(); } finally { close(); }
-    }
-
-    function cancel() {
-      try { onCancel?.(); } finally { close(); }
-    }
-
-    _activeModal = { ok, cancel, close, prevNavMode };
 
     okBtn?.addEventListener("click", ok);
     cancelBtn?.addEventListener("click", cancel);
 
+    // keep focus stable
     okBtn?.focus?.();
   }
+
+  function updateCountdown() {
+    const el = mroot.querySelector(".rt-modal-countdown");
+    if (!el) return;
+    const left = Math.max(0, armExpiresAt - Date.now());
+    el.textContent = left <= 0 ? "" : `Confirm within ${Math.ceil(left / 1000)}s`;
+  }
+
+  const prevNavMode = navMode;
+  navMode = "MODAL_DIALOG";
+
+  function close() {
+    if (timerId) {
+      try { clearInterval(timerId); } catch (_) {}
+      timerId = null;
+    }
+    mroot.innerHTML = "";
+    _activeModal = null;
+    navMode = prevNavMode;
+    syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
+  }
+
+  async function ok() {
+    if (twoStep) {
+      if (!armed) {
+        // Arm it
+        armed = true;
+        armExpiresAt = Date.now() + timeoutMs;
+
+        render();
+        updateCountdown();
+
+        timerId = setInterval(() => {
+          updateCountdown();
+          if (Date.now() >= armExpiresAt) {
+            // timeout => auto-exit back to browse/global
+            close();
+          }
+        }, 200);
+
+        return; // do NOT confirm yet
+      }
+
+      // Armed => confirm
+      try { await onConfirm?.(); } finally { close(); }
+      return;
+    }
+
+    // Single-step confirm
+    try { await onConfirm?.(); } finally { close(); }
+  }
+
+  function cancel() {
+    try { onCancel?.(); } finally { close(); }
+  }
+
+  _activeModal = { ok, cancel, close, prevNavMode };
+
+  render();
+}
 
   // attach runtime css
   const css = document.createElement("link");
