@@ -351,123 +351,160 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     }
   }
 
-
-  function openNodeRestartModal({ nodeId, action }) {
-    const isController = String(nodeId) === "rt-controller";
-
-    const timeoutMs = 5000;
-    let armed = false;
-    let timer = null;
-
-    const title = isController ? "Restart controller?" : "Restart node?";
-    const warning = isController
-      ? `<div class="rt-modal-warn rt-blink-red">WARNING - THIS WILL RESTART THE SYSTEM</div>`
-      : `<div class="rt-modal-warn rt-muted">This will restart ${String(nodeId)}.</div>`;
-
-    const body = `
-      ${warning}
-      <div class="rt-modal-bodyline">Target: <b>${String(nodeId)}</b></div>
-    `;
-
-    openConfirmModal({
-      title,
-      body,
-      confirmLabel: "OK",
-      cancelLabel: "Exit",
-      onConfirm: async () => {
-        // non-controller: OK = send immediately
-        if (!isController) {
-          const intent = String(action?.intent || "").trim();
-          const params = action?.params || null;
-          if (intent && isAllowed(intent)) await emitIntent(intent, params);
-          return;
-        }
-
-        // controller: first OK arms, second OK confirms
-        if (!armed) {
-          armed = true;
-
-          // mutate modal UI in-place
-          const mroot = document.getElementById("rt_modal_root");
-          const okBtn = mroot?.querySelector(".rt-btn-ok");
-          const warn = mroot?.querySelector(".rt-modal-warn");
-          if (warn) warn.classList.add("rt-blink-red"); // ensure blinking
-          if (okBtn) {
-            okBtn.textContent = "CONFIRM";
-            okBtn.classList.add("rt-btn-danger");
-            okBtn.focus?.();
-          }
-
-          // start / reset timeout from the moment we arm
-          if (timer) clearTimeout(timer);
-          timer = setTimeout(() => {
-            _activeModal?.close?.(); // kicks back to browse/global per existing restore
-          }, timeoutMs);
-
-          // keep modal open (do NOT close)
-          throw new Error("__KEEP_MODAL_OPEN__");
-        }
-
-        // armed confirm -> send
-        const intent = String(action?.intent || "").trim();
-        const params = action?.params || null;
-        if (intent && isAllowed(intent)) await emitIntent(intent, params);
-      },
-      onCancel: () => {},
-    });
-
-    // start timeout immediately for non-controller and also for controller (pre-arm)
-    timer = setTimeout(() => {
-      _activeModal?.close?.();
-    }, timeoutMs);
-
-    // ensure close clears timer
-    const prevClose = _activeModal?.close;
-    _activeModal.close = () => {
-      try { if (timer) clearTimeout(timer); } catch (_) {}
-      timer = null;
-      prevClose?.();
-    };
-  }
-
-  // Modify openConfirmModal's ok() to allow "keep open" sentinel:
-  async function ok() {
-    try {
-      await onConfirm?.();
-    } catch (e) {
-      // special sentinel to keep modal open (arming flow)
-      if (String(e?.message || e) === "__KEEP_MODAL_OPEN__") return;
-      // otherwise fall through to close
-    }
-    close();
-  }
-
   // -------------------------
   // Modal open contract (panel -> runtime)
   // -------------------------
-  root.addEventListener("rt-open-modal", (ev) => {
-    const d = ev?.detail || {};
-    if (d.kind !== "confirm") return;
+  function openNodeRestartModal({ nodeId, onRequestRestart }) {
+    const mroot = ensureModalRoot();
 
-    openConfirmModal({
-      title: String(d.title || "Confirm"),
-      body: String(d.body || ""),
-      confirmLabel: String(d.confirmLabel || "OK"),
-      cancelLabel: String(d.cancelLabel || "Cancel"),
-      onConfirm: async () => {
-        const intent = String(d?.action?.intent || "").trim();
-        const params = d?.action?.params || null;
+    const isController = String(nodeId) === "rt-controller";
+    const title = "Node action";
 
-        if (!intent) return;
-        if (!isAllowed(intent)) {
-          console.warn("Intent not allowed on this page:", intent);
+    let armed = false;
+    let timeoutHandle = null;
+
+    const warnHtml = isController
+      ? `<div class="rt-modal-warn rt-blink-warn">WARNING - THIS WILL RESTART THE SYSTEM</div>`
+      : "";
+
+    function render() {
+      const okLabel = isController ? (armed ? "CONFIRM" : "OK") : "OK";
+      const okClass = isController && armed ? "rt-btn-ok rt-btn-danger" : "rt-btn-ok";
+
+      mroot.innerHTML = `
+        <div class="rt-modal-backdrop"></div>
+        <div class="rt-modal" role="dialog" aria-modal="true">
+          <div class="rt-modal-title">${title}</div>
+          <div class="rt-modal-body">
+            <div>Selected node: <strong>${String(nodeId)}</strong></div>
+            ${warnHtml}
+            <div class="small" style="margin-top:8px; opacity:.8;">
+              ${isController
+                ? "Press OK to arm, then CONFIRM to reboot controller."
+                : "Press OK to reboot selected node."}
+            </div>
+          </div>
+          <div class="rt-modal-actions">
+            <button class="rt-btn rt-btn-cancel">Exit</button>
+            <button class="rt-btn ${okClass}">${okLabel}</button>
+          </div>
+        </div>
+      `;
+
+      const okBtn = mroot.querySelector(".rt-btn-ok");
+      const cancelBtn = mroot.querySelector(".rt-btn-cancel");
+
+      cancelBtn?.addEventListener("click", cancel);
+      okBtn?.addEventListener("click", ok);
+
+      okBtn?.focus?.();
+    }
+
+    const prevNavMode = navMode;
+    navMode = "MODAL_DIALOG";
+
+    function clearTimer() {
+      if (timeoutHandle) {
+        try { clearTimeout(timeoutHandle); } catch (_) {}
+        timeoutHandle = null;
+      }
+    }
+
+    function startConfirmTimeout() {
+      clearTimer();
+      timeoutHandle = setTimeout(() => {
+        // Auto-cancel back to previous mode (browse/global)
+        cancel();
+      }, 5000);
+    }
+
+    function close() {
+      clearTimer();
+      mroot.innerHTML = "";
+      _activeModal = null;
+      navMode = prevNavMode;
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
+    }
+
+    async function ok() {
+      if (isController) {
+        if (!armed) {
+          // Arm confirm step
+          armed = true;
+          render();
+          startConfirmTimeout();
           return;
         }
-        await emitIntent(intent, params);
-      },
-      onCancel: () => {},
-    });
+        // Armed: confirm reboot
+        try { await onRequestRestart?.(); } finally { close(); }
+        return;
+      }
+
+      // Non-controller: immediate restart request
+      try { await onRequestRestart?.(); } finally { close(); }
+    }
+
+    function cancel() {
+      close();
+    }
+
+    _activeModal = { ok, cancel, close, prevNavMode };
+
+    render();
+    if (isController) {
+      // Only start timeout after arming; not immediately
+    } else {
+      // Optional: you can add a timeout here too if you want
+    }
+  }
+
+  root.addEventListener("rt-open-modal", (ev) => {
+    const d = ev?.detail || {};
+    const kind = String(d.kind || "").trim();
+
+    // Existing confirm modal (keep as-is)
+    if (kind === "confirm") {
+      return openConfirmModal({
+        title: String(d.title || "Confirm"),
+        body: String(d.body || ""),
+        confirmLabel: String(d.confirmLabel || "OK"),
+        cancelLabel: String(d.cancelLabel || "Cancel"),
+        onConfirm: async () => {
+          const intent = String(d?.action?.intent || "").trim();
+          const params = d?.action?.params || null;
+
+          if (!intent) return;
+          if (!isAllowed(intent)) {
+            console.warn("Intent not allowed on this page:", intent);
+            return;
+          }
+          await emitIntent(intent, params);
+        },
+        onCancel: () => {},
+      });
+    }
+
+    // NEW: node restart modal
+    if (kind === "node_restart") {
+      const nodeId = String(d.nodeId || "").trim();
+      const intent = String(d?.action?.intent || "").trim();
+      const params = d?.action?.params || null;
+
+      if (!nodeId || !intent) return;
+
+      return openNodeRestartModal({
+        nodeId,
+        onRequestRestart: async () => {
+          if (!isAllowed(intent)) {
+            console.warn("Intent not allowed on this page:", intent);
+            return;
+          }
+          await emitIntent(intent, params);
+        },
+      });
+    }
   });
+
 
   function getPanelDefaultAction(panelId) {
     const panel = bundle.panelsById[panelId];

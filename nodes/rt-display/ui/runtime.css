@@ -226,3 +226,26 @@
 .rt-node-controller td {
   font-weight: 700;
 }
+
+.rt-btn-danger {
+  background: #b00020;
+  color: #fff;
+  font-weight: 800;
+  border-color: rgba(255,255,255,0.2);
+}
+
+.rt-modal-warn {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,0,0,0.35);
+  color: #ff4d4d;
+  font-weight: 800;
+}
+
+.rt-blink-warn {
+  animation: rtBlinkWarn 0.8s step-end infinite;
+}
+
+@keyframes rtBlinkWarn {
+  50% { opacity: 0.2; }
+}
