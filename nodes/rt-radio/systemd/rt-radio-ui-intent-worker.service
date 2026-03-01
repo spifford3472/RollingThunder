@@ -13,6 +13,9 @@ Environment=RT_NODE_ID=rt-radio
 Environment=RT_UI_INTENTS_CHANNEL=rt:ui:intents
 Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
 Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
+Environment=RT_REDIS_HOST=rt-controller
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
 
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/tools/ui_intent_worker.py
 
