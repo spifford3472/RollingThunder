@@ -45,10 +45,15 @@ LEGACY_UNITS=(
   "rt-deploy-report-publisher.service"
   "rt-deploy-report-publisher.timer"
 )
+
 # NOTE: rt-display-ui.service is intentionally removed.
 UNITS=(
   "rt-display-presence.service"
   "rt-display-kiosk.service"
+
+  # NEW: per-node UI intent worker (unique unit name)
+  "rt-display-ui-intent-worker.service"
+
   # deploy report publisher
   "rt-display-deploy-report-publisher.timer"
   "rt-display-deploy-report-publisher.service"
@@ -70,6 +75,9 @@ fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.timer"
 
+# NEW: intent worker artifacts
+fail_missing "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service"
+fail_missing "${SVC_DIR}/rt-display-ui-intent-worker.py"
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(
@@ -92,7 +100,6 @@ if [[ "${CLEAN_LEGACY}" == "1" ]]; then
   if [[ "${DRY_RUN}" != "1" ]]; then
     ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
       rm -rf '${RT_NODE}/ui' '${RT_ROOT}/config' '${RT_NODE}/config' || true
-      # If you previously ran a local UI server on :8619, remove the old content too
       rm -rf '${RT_NODE}/www' '${RT_NODE}/static' || true
     "
   else
@@ -109,23 +116,22 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     fi
     '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
     '${RT_ROOT}/.venv/bin/pip' install paho-mqtt >/dev/null
+    '${RT_ROOT}/.venv/bin/pip' install redis >/dev/null
   "
 else
-  echo "[dry] would ensure venv exists and paho-mqtt installed"
+  echo "[dry] would ensure venv exists and paho-mqtt + redis installed"
 fi
-
 
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-times \
-    --no-group --no-perms --omit-dir-times \
+  --no-group --no-perms --omit-dir-times \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
   "${COMMON_SERVICES_SRC_DIR}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
-  
-# ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
 
+# ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
 echo "[push] Sync services dir -> ${RT_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
@@ -147,9 +153,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     chmod +x '${RT_OPS}/rt-display-kiosk.sh' || true
     chmod +x '${RT_TOOLS}/publish_deploy_report.sh' || true
+    chmod +x '${RT_SVC}/rt-display-ui-intent-worker.py' || true
   "
 else
-  echo "[dry] would chmod +x kiosk + publish_deploy_report"
+  echo "[dry] would chmod +x kiosk + publish_deploy_report + rt-display-ui-intent-worker.py"
 fi
 
 # ---- ROOT-OWNED: install systemd units ----
@@ -162,6 +169,11 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${OPS_DIR}/rt-display-kiosk.service.template" \
     "${UNIT_DST_DIR}/rt-display-kiosk.service" "644"
+
+  # NEW: ui intent worker unit
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service" \
+    "${UNIT_DST_DIR}/rt-display-ui-intent-worker.service" "644"
 
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service" \
@@ -197,7 +209,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     exit 0
   "
 else
-  echo \"[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}\"
+  echo "[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}"
 fi
 
 # ---- systemd reload + enable + restart ----
@@ -229,6 +241,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl --no-pager --full status rt-display-presence.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-kiosk.service   | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-display-ui-intent-worker.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-deploy-report-publisher.timer | sed -n '1,40p' || true
     exit 0
   "

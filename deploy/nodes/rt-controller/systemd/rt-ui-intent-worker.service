@@ -15,8 +15,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=spiff
-Group=spiff
+User=root
+Group=root
 
 # Where the script lives
 WorkingDirectory=/opt/rollingthunder
@@ -47,6 +47,8 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+Environment=RT_ALLOW_NODE_REBOOT=1
+Environment=RT_NODE_REBOOT_MODE=reboot
 
 # Restart policy
 Restart=on-failure

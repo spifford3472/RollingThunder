@@ -1,0 +1,24 @@
+[Unit]
+Description=RollingThunder UI Intent Worker (rt-radio)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder
+
+Environment=RT_NODE_ID=rt-radio
+Environment=RT_UI_INTENTS_CHANNEL=rt:ui:intents
+Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
+Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
+
+ExecStart=/usr/bin/python3 /opt/rollingthunder/tools/ui_intent_worker.py
+
+# (Hardening tuned for what you actually need; your reboot path will need privileges)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
