@@ -95,7 +95,7 @@ def shutdown_this_node_halt() -> tuple[bool, str]:
     """
     try:
         res = subprocess.run(
-            ["sudo", "shutdown", "-h", "now"],
+            ["/sbin/shutdown", "-h", "now"],
             capture_output=True,
             text=True,
             timeout=SHUTDOWN_TIMEOUT_SEC,
