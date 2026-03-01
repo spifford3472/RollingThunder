@@ -25,6 +25,7 @@ Environment=RT_KEY_NODE_PREFIX=rt:nodes:
 Environment=RT_PRESENCE_TTL_SEC=10
 Environment=RT_PRESENCE_SWEEP_SEC=2
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/rollingthunder/redis.env
 
 [Install]
 WantedBy=multi-user.target

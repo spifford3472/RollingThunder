@@ -14,6 +14,7 @@ RestartSec=2
 Environment=RT_REDIS_HOST=127.0.0.1
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
 
 # MQTT (broker on controller in dev; adjust if needed)
 Environment=RT_MQTT_HOST=127.0.0.1

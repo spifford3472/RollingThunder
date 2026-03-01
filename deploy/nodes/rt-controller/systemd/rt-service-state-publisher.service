@@ -13,6 +13,7 @@ Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
 Environment=RT_REDIS_TIMEOUT_SEC=0.35
 Environment=RT_POLL_SEC=5.0
+EnvironmentFile=/etc/rollingthunder/redis.env
 EnvironmentFile=/etc/rollingthunder/service_state_publisher.env
 
 # Optional: override mapping without code change (JSON dict)

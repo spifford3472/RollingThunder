@@ -15,6 +15,7 @@ Environment=RT_MQTT_PORT=1883
 Environment=RT_PRESENCE_HTTP_PORT=8787
 Environment=RT_NODE_ID=rt-radio
 Environment=RT_NODE_ROLE=radio
+EnvironmentFile=/etc/rollingthunder/redis.env
 
 [Install]
 WantedBy=multi-user.target

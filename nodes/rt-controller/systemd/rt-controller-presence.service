@@ -15,6 +15,7 @@ Environment=RT_NODE_ID=rt-controller
 Environment=RT_NODE_ROLE=controller
 Environment=RT_MQTT_HOST=127.0.0.1
 Environment=RT_MQTT_PORT=1883
+EnvironmentFile=/etc/rollingthunder/redis.env
 
 [Install]
 WantedBy=multi-user.target

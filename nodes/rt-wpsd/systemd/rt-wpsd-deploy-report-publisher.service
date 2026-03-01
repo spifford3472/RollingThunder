@@ -10,4 +10,5 @@ Environment=RT_NODE_ID=ki5vnb-dmr2
 Environment=RT_NODE_ROLE=external
 Environment=RT_MQTT_HOST=rt-controller
 Environment=RT_MQTT_PORT=1883
+EnvironmentFile=/etc/rollingthunder/redis.env
 ExecStart=/opt/rollingthunder/tools/publish_deploy_report.sh

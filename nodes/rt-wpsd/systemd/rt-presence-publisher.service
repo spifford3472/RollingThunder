@@ -11,4 +11,5 @@ Environment=RT_NODE_ROLE=external
 Environment=RT_MQTT_HOST=rt-controller
 Environment=RT_MQTT_PORT=1883
 Environment=RT_PRESENCE_TOPIC_PREFIX=rt/presence
+EnvironmentFile=/etc/rollingthunder/redis.env
 ExecStart=/opt/rollingthunder/tools/publish_presence.sh
