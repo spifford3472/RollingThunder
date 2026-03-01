@@ -122,14 +122,29 @@ function ensureCursorInWindow(m, total) {
 function openNodeConfirm(slot, nodeId) {
   if (!slot || !nodeId) return;
 
+  const isController = String(nodeId) === "rt-controller";
+
+  const title = "Node action";
+  const body = isController
+    ? `
+      <div><strong>Selected node: ${esc(nodeId)}</strong></div>
+      <div class="rt-warn-blink" style="margin-top:8px; font-weight:700;">
+        WARNING - THIS WILL RESTART THE SYSTEM
+      </div>
+    `
+    : `<div>Selected node: <strong>${esc(nodeId)}</strong></div>`;
+
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
     detail: {
-      kind: "node_restart",
-      nodeId: String(nodeId),
+      kind: "confirm",
+      title,
+      body,
+      confirmLabel: isController ? "CONFIRM" : "OK",
+      cancelLabel: "Exit",
       action: {
         intent: "node.reboot",
-        params: { nodeId: String(nodeId), confirm: true }
+        params: { nodeId: String(nodeId) }
       }
     }
   }));

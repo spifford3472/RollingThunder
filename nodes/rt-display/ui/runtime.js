@@ -630,12 +630,29 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   }
 
   function handleModalIntent(intent, params) {
+    const mroot = document.getElementById("rt_modal_root");
+
+    // ESC is always cancel
     if (intent === "ui.cancel") return _activeModal?.cancel?.();
-    if (intent === "ui.ok") return _activeModal?.ok?.();
+
+    // ENTER should activate the *focused* button inside the modal
+    if (intent === "ui.ok") {
+      if (!mroot) return _activeModal?.ok?.();
+
+      const active = document.activeElement;
+
+      // If the cancel button is focused, treat ENTER as cancel.
+      if (active && active.closest && active.closest("#rt_modal_root")) {
+        if (active.classList?.contains("rt-btn-cancel")) return _activeModal?.cancel?.();
+        if (active.classList?.contains("rt-btn-ok")) return _activeModal?.ok?.();
+      }
+
+      // Fallback: behave like OK
+      return _activeModal?.ok?.();
+    }
 
     if (intent === "ui.modal.focus") {
       const dir = Number(params?.dir ?? 0);
-      const mroot = document.getElementById("rt_modal_root");
       if (!mroot) return;
 
       const btns = Array.from(mroot.querySelectorAll("button.rt-btn"));
