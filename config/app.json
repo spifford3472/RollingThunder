@@ -259,6 +259,25 @@
       "provides": ["state.nodes.alerts_reconciler"]
     },
 
+      "service_state_publisher": {
+      "id": "service_state_publisher",
+      "scope": "always_on",
+      "ownerNode": "rt-controller",
+      "systemd": {"unit": "rt-service-state-publisher.service" },
+      "lifecycle": {
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+      },
+      "health": {
+        "type": "http_json",
+        "target": "http://rt-controller.local:8787/alerts_health",
+        "okRules": [{ "path": "$.ok", "equals": true }],
+        "staleAfterMs": 5000
+      },
+      "provides": ["state.nodes.service_state_publisher"]
+    },
+
   "pages": { "include": ["pages.manifest.json"] },
   "panels": { "include": ["panels.manifest.json"] },
 
