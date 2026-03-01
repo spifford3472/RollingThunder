@@ -348,6 +348,97 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     }
   }
 
+
+  function openNodeRestartModal({ nodeId, action }) {
+    const isController = String(nodeId) === "rt-controller";
+
+    const timeoutMs = 5000;
+    let armed = false;
+    let timer = null;
+
+    const title = isController ? "Restart controller?" : "Restart node?";
+    const warning = isController
+      ? `<div class="rt-modal-warn rt-blink-red">WARNING - THIS WILL RESTART THE SYSTEM</div>`
+      : `<div class="rt-modal-warn rt-muted">This will restart ${String(nodeId)}.</div>`;
+
+    const body = `
+      ${warning}
+      <div class="rt-modal-bodyline">Target: <b>${String(nodeId)}</b></div>
+    `;
+
+    openConfirmModal({
+      title,
+      body,
+      confirmLabel: "OK",
+      cancelLabel: "Exit",
+      onConfirm: async () => {
+        // non-controller: OK = send immediately
+        if (!isController) {
+          const intent = String(action?.intent || "").trim();
+          const params = action?.params || null;
+          if (intent && isAllowed(intent)) await emitIntent(intent, params);
+          return;
+        }
+
+        // controller: first OK arms, second OK confirms
+        if (!armed) {
+          armed = true;
+
+          // mutate modal UI in-place
+          const mroot = document.getElementById("rt_modal_root");
+          const okBtn = mroot?.querySelector(".rt-btn-ok");
+          const warn = mroot?.querySelector(".rt-modal-warn");
+          if (warn) warn.classList.add("rt-blink-red"); // ensure blinking
+          if (okBtn) {
+            okBtn.textContent = "CONFIRM";
+            okBtn.classList.add("rt-btn-danger");
+            okBtn.focus?.();
+          }
+
+          // start / reset timeout from the moment we arm
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            _activeModal?.close?.(); // kicks back to browse/global per existing restore
+          }, timeoutMs);
+
+          // keep modal open (do NOT close)
+          throw new Error("__KEEP_MODAL_OPEN__");
+        }
+
+        // armed confirm -> send
+        const intent = String(action?.intent || "").trim();
+        const params = action?.params || null;
+        if (intent && isAllowed(intent)) await emitIntent(intent, params);
+      },
+      onCancel: () => {},
+    });
+
+    // start timeout immediately for non-controller and also for controller (pre-arm)
+    timer = setTimeout(() => {
+      _activeModal?.close?.();
+    }, timeoutMs);
+
+    // ensure close clears timer
+    const prevClose = _activeModal?.close;
+    _activeModal.close = () => {
+      try { if (timer) clearTimeout(timer); } catch (_) {}
+      timer = null;
+      prevClose?.();
+    };
+  }
+
+  // Modify openConfirmModal's ok() to allow "keep open" sentinel:
+  async function ok() {
+    try {
+      await onConfirm?.();
+    } catch (e) {
+      // special sentinel to keep modal open (arming flow)
+      if (String(e?.message || e) === "__KEEP_MODAL_OPEN__") return;
+      // otherwise fall through to close
+    }
+    close();
+  }
+
   // -------------------------
   // Modal open contract (panel -> runtime)
   // -------------------------

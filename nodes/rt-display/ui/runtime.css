@@ -201,3 +201,28 @@
   font-weight: 600;
 }
 
+.rt-btn-danger {
+  background: #b00020;
+  color: #fff;
+  font-weight: 700;
+}
+
+.rt-modal-warn {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.rt-blink-red {
+  color: #ff2a2a;
+  font-weight: 800;
+  animation: rtBlink 0.8s steps(2, start) infinite;
+}
+
+@keyframes rtBlink {
+  to { visibility: hidden; }
+}
+
+/* optional: make controller row stand out in list */
+.rt-node-controller td {
+  font-weight: 700;
+}
