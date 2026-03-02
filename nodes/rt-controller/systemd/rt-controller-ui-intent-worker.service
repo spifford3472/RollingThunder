@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=spiff
-Group=spiff
+User=root
+Group=root
 WorkingDirectory=/opt/rollingthunder
 
 Environment=RT_NODE_ID=rt-controller
@@ -14,6 +14,7 @@ Environment=RT_UI_INTENTS_CHANNEL=rt:ui:intents
 Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
 Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
 EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_ALLOW_REBOOT=1
 
 ExecStart=/usr/bin/python3 /opt/rollingthunder/services/ui_intent_worker.py
 

@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi-star
+User=root
+Group=root
 WorkingDirectory=/opt/rollingthunder
 
 Environment=RT_NODE_ID=ki5vnb-dmr2
@@ -15,6 +16,7 @@ Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
 Environment=RT_REDIS_HOST=rt-controller
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
+Environment=RT_ALLOW_REBOOT=1
 EnvironmentFile=/etc/rollingthunder/redis.env
 
 ExecStart=/opt/rollingthunder/tools/ui_intent_worker.py
