@@ -36,6 +36,7 @@ GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 RT_ROOT="/opt/rollingthunder"
 RT_NODE="${RT_ROOT}/nodes/rt-radio"
 RT_SVC="${RT_NODE}/services"
+RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
 
 UNIT_DST_DIR="/etc/systemd/system"
@@ -86,11 +87,12 @@ RSYNC_EXCLUDES=(
   --exclude='.dev/'
 )
 
-echo "[push] Ensure runtime dirs exist (spiff-owned)"
-ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
-  mkdir -p '${RT_NODE}' '${RT_SVC}' '${RT_TOOLS}' '${RT_ROOT}/.deploy';
-  sudo mkdir -p /etc/rollingthunder || true
-  sudo chmod 755 /etc/rollingthunder || true
+echo "[push] Ensure runtime dirs exist (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+  sudo mkdir -p '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
+  sudo mkdir -p /etc/rollingthunder
+  sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
+  sudo chmod 0755 /etc/rollingthunder
 "
 
 echo "[push] Ensure mosquitto_pub exists (mosquitto-clients)"
@@ -105,19 +107,40 @@ else
   echo "[dry] would ensure mosquitto-clients installed"
 fi
 
+echo "[push] Ensure runtime dirs exist (user-owned where needed)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    # Create as root so we can always succeed, then hand ownership to ${TARGET_USER}
+    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
+    sudo mkdir -p /etc/rollingthunder
+
+    # Make the runtime tree writable by the deploy user (spiff)
+    sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
+
+    # Keep /etc/rollingthunder root-owned but traversable
+    sudo chmod 0755 /etc/rollingthunder
+  "
+else
+  echo "[dry] would sudo mkdir -p ${RT_ROOT} ${RT_NODE} ${RT_SVC} ${RT_TOOLS} ${RT_ROOT}/.deploy /etc/rollingthunder and chown -R ${TARGET_USER}:${TARGET_USER} ${RT_ROOT}"
+fi
+
 echo "[push] Ensure venv exists + deps (redis + paho-mqtt)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    sudo mkdir -p '${RT_ROOT}'
+    sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
     cd '${RT_ROOT}'
     if [ ! -x '${RT_ROOT}/.venv/bin/python' ]; then
       python3 -m venv '${RT_ROOT}/.venv'
+      # ensure ownership stays with ${TARGET_USER}
+      sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}/.venv'
     fi
     '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
     '${RT_ROOT}/.venv/bin/pip' install paho-mqtt >/dev/null
     '${RT_ROOT}/.venv/bin/pip' install redis >/dev/null
   "
 else
-  echo "[dry] would ensure venv exists and install paho-mqtt + redis"
+  echo "[dry] would ensure venv exists and install deps"
 fi
 
 # node.json (as you had it)
