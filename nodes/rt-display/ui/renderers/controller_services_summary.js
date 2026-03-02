@@ -1,7 +1,7 @@
 // controller_services_summary.js
 //
 // v4 (view-only):
-// - Windowed list: show at most 10 rows at a time
+// - Windowed list: show at most 11 rows at a time
 // - Browse mode:
 //     ArrowUp/ArrowDown moves a *cursor highlight* through the full list
 //     (offset auto-adjusts to keep cursor inside the window)
@@ -13,7 +13,7 @@
 //     non-browse: "Showing X/Y" (+ scroll hint if needed)
 //     browse:     "Selected Service #i of N"
 
-const WINDOW = 10;
+const WINDOW = 11;
 
 function pillHtml(kind, label) {
   const cls =
