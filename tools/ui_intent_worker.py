@@ -27,9 +27,20 @@ NODE_ID = os.environ.get("RT_NODE_ID", "unknown-node")
 REBOOT_MODE = os.environ.get("RT_NODE_REBOOT_MODE", "reboot").strip().lower()
 SYSTEMCTL_TIMEOUT_SEC = float(os.environ.get("RT_SYSTEMCTL_TIMEOUT_SEC", "8.0"))
 
-# Safety: do not allow reboot unless explicitly enabled on that node (default off)
-ALLOW_NODE_REBOOT = os.environ.get("RT_ALLOW_NODE_REBOOT", "0").strip() == "1"
+# Safety: default off unless explicitly enabled on that node.
+# Canonical flag: RT_ALLOW_REBOOT=1
+# Back-compat: also accept RT_ALLOW_NODE_REBOOT=1
+ALLOW_NODE_REBOOT = (
+    os.environ.get("RT_ALLOW_REBOOT", "0").strip() == "1"
+    or os.environ.get("RT_ALLOW_NODE_REBOOT", "0").strip() == "1"
+)
 
+def env_truthy(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    v = str(v).strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
 
 def now_ms() -> int:
     return int(time.time() * 1000)
