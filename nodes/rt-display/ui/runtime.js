@@ -525,13 +525,20 @@ function openConfirmModal({
     const d = ev?.detail || {};
     const kind = String(d.kind || "").trim();
 
-    // Existing confirm modal (keep as-is)
     if (kind === "confirm") {
       return openConfirmModal({
         title: String(d.title || "Confirm"),
         body: String(d.body || ""),
         confirmLabel: String(d.confirmLabel || "OK"),
         cancelLabel: String(d.cancelLabel || "Cancel"),
+
+        // IMPORTANT: forward optional modal controls from panels
+        twoStep: Boolean(d.twoStep),
+        armLabel: String(d.armLabel || "CONFIRM"),
+        timeoutMs: Number.isFinite(Number(d.timeoutMs)) ? Number(d.timeoutMs) : 5000,
+        danger: Boolean(d.danger),
+        warningHtml: String(d.warningHtml || ""),
+
         onConfirm: async () => {
           const intent = String(d?.action?.intent || "").trim();
           const params = d?.action?.params || null;
