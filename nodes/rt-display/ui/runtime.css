@@ -201,10 +201,29 @@
   font-weight: 600;
 }
 
-.rt-btn-danger {
-  background: #b00020;
-  color: #fff;
-  font-weight: 700;
+/* Keep ONE rtBlink (visibility blink) */
+@keyframes rtBlink {
+  to { visibility: hidden; }
+}
+
+/* Use a different name for opacity blink */
+@keyframes rtBlinkOpacity {
+  50% { opacity: 0; }
+}
+
+/* Optional blinking warning line */
+.rt-warn-blink {
+  color: #b00020;
+  font-weight: 900;
+  animation: rtBlinkOpacity 0.8s step-start infinite;
+}
+
+/* Your existing rt-blink-warn can stay as-is */
+.rt-blink-warn {
+  animation: rtBlinkWarn 0.8s step-end infinite;
+}
+@keyframes rtBlinkWarn {
+  50% { opacity: 0.2; }
 }
 
 .rt-modal-warning-title {
@@ -219,59 +238,6 @@
   font-weight: 800;
 }
 
-.rt-blink-red {
-  color: #ff2a2a;
-  font-weight: 800;
-  animation: rtBlink 0.8s steps(2, start) infinite;
-}
 
-@keyframes rtBlink {
-  to { visibility: hidden; }
-}
 
-/* optional: make controller row stand out in list */
-.rt-node-controller td {
-  font-weight: 700;
-}
 
-.rt-btn-danger {
-  background: #b00020;
-  color: #fff;
-  font-weight: 800;
-  border-color: rgba(255,255,255,0.2);
-}
-
-.rt-modal-warn {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255,0,0,0.35);
-  color: #ff4d4d;
-  font-weight: 800;
-}
-
-.rt-blink-warn {
-  animation: rtBlinkWarn 0.8s step-end infinite;
-}
-
-@keyframes rtBlinkWarn {
-  50% { opacity: 0.2; }
-}
-
-/* Danger confirm button */
-.rt-btn-danger {
-  background: #b00020;
-  color: #fff;
-  font-weight: 800;
-  border-color: #b00020;
-}
-
-/* Optional blinking warning line */
-.rt-warn-blink {
-  color: #b00020;
-  font-weight: 900;
-  animation: rtBlink 0.8s step-start infinite;
-}
-
-@keyframes rtBlink {
-  50% { opacity: 0; }
-}

@@ -204,14 +204,78 @@ function openNodeConfirm(slot, nodeId) {
   if (!slot || !nodeId) return;
 
   const id = String(nodeId).trim();
-  if (!id) return;
-
   const isController = (id === "rt-controller");
-  const detail = isController ? buildControllerStep1(id) : buildNonControllerModal(id);
 
+  if (!isController) {
+    // Non-controller:
+    // - WARNING (red, bold)
+    // - white: "Selecting OK will reboot this node"
+    // - auto-select Exit after 10s
+    slot.dispatchEvent(new CustomEvent("rt-open-modal", {
+      bubbles: true,
+      detail: {
+        kind: "confirm",
+        title: "Confirm",
+        body: `Selected node: ${id}`, // plain text (runtime shows this reliably)
+
+        warningHtml: `
+          <div class="rt-modal-warning-title rt-modal-warning-red"><strong>WARNING</strong></div>
+          <div style="color:#fff; margin-top:6px;">Selecting OK will reboot this node</div>
+        `,
+
+        confirmLabel: "OK",
+        cancelLabel: "Exit",
+
+        // runtime-supported timer (auto chooses cancel)
+        timeoutMs: 10000,
+
+        danger: true,
+
+        action: {
+          intent: "node.reboot",
+          params: { nodeId: id, confirm: true }
+        }
+      }
+    }));
+    return;
+  }
+
+  // rt-controller:
+  // - blinking WARNING
+  // - red: "System will go down during reboot"
+  // - white: "Selecting OK begins the process"
+  // - if OK -> 2nd confirm with flashing "PRESS OK TO REBOOT"
+  // - auto-cancel after 5s
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
-    detail,
+    detail: {
+      kind: "confirm",
+      title: "Confirm",
+      body: `Selected node: ${id}`,
+
+      warningHtml: `
+        <div class="rt-warn-blink" style="margin-bottom:6px;">WARNING</div>
+        <div class="rt-modal-warning-red" style="margin-bottom:6px;">System will go down during reboot</div>
+        <div style="color:#fff;">Selecting OK begins the process</div>
+      `,
+
+      confirmLabel: "OK",
+      cancelLabel: "Exit",
+
+      // Use built-in 2-step confirm (this is your “prompt again”)
+      twoStep: true,
+      armLabel: "PRESS OK TO REBOOT",
+
+      // Auto-cancel the *armed* step after 5 seconds
+      timeoutMs: 5000,
+
+      danger: true,
+
+      action: {
+        intent: "node.reboot",
+        params: { nodeId: id, confirm: true }
+      }
+    }
   }));
 }
 
