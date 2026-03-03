@@ -207,9 +207,16 @@
   font-weight: 700;
 }
 
-.rt-modal-warn {
+.rt-modal-warning-title {
   margin-bottom: 10px;
   font-size: 14px;
+}
+
+.rt-modal-warning-red {
+  border-color: rgba(255,0,0,0.35);
+  background: rgba(255,0,0,0.10);
+  color: #ff4d4d;
+  font-weight: 800;
 }
 
 .rt-blink-red {

@@ -168,7 +168,7 @@ function buildControllerStep1(nodeId) {
     kind: "confirm",
     title: "",
     bodyHtml: `
-      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink"><strong>WARNING</strong></div>
+      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink-warn"><strong>WARNING</strong></div>
       <div class="rt-modal-warning-sub rt-modal-warning-red">System will go down during reboot</div>
       <div class="rt-modal-bodyline">Selecting OK begins the process</div>
     `,
@@ -186,7 +186,7 @@ function buildControllerStep2(nodeId) {
     kind: "confirm",
     title: "",
     bodyHtml: `
-      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink"><strong>PRESS OK TO REBOOT</strong></div>
+      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink-warn"><strong>PRESS OK TO REBOOT</strong></div>
     `,
     body: `PRESS OK TO REBOOT`,
     confirmLabel: "OK",

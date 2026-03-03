@@ -40,6 +40,7 @@ RT_ROOT="/opt/rollingthunder"
 RT_NODE="${RT_ROOT}/nodes/rt-wpsd"
 RT_NODE_SERVICES="${RT_NODE}/services"
 RT_TOOLS="${RT_ROOT}/tools"
+GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 
 UNIT_DST_DIR="/etc/systemd/system"
 
@@ -54,6 +55,7 @@ UNITS=(
   "rt-presence-publisher.timer"
   "rt-wpsd-deploy-report-publisher.service"
   "rt-wpsd-deploy-report-publisher.timer"
+  "rt-wpsd-ui-intent-worker.service"
 )
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -69,10 +71,12 @@ RSYNC_EXCLUDES=(
 fail_missing_dir "${NODE_DIR}"
 fail_missing_dir "${TOOLS_SRC_DIR}"
 fail_missing_dir "${SYSTEMD_SRC_DIR}"
+fail_missing "${SYSTEMD_SRC_DIR}/rt-wpsd-ui-intent-worker.service"
 
 # tools required
 fail_missing "${TOOLS_SRC_DIR}/publish_deploy_report.sh"
 fail_missing "${TOOLS_SRC_DIR}/publish_presence.sh"
+fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
 
 
 # systemd required
@@ -85,11 +89,42 @@ if [[ -d "${SERVICES_SRC_DIR}" ]]; then
   : # ok
 fi
 
+echo "[push] Ensure /etc/rollingthunder perms for redis.env"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    sudo groupadd -f rollingthunder
+    sudo usermod -aG rollingthunder '${TARGET_USER}' || true
+    sudo chgrp rollingthunder /etc/rollingthunder
+    sudo chmod 0750 /etc/rollingthunder
+    if [ -f /etc/rollingthunder/redis.env ]; then
+      sudo chgrp rollingthunder /etc/rollingthunder/redis.env
+      sudo chmod 0640 /etc/rollingthunder/redis.env
+    fi
+  "
+else
+  echo "[dry] would set rollingthunder group + perms for /etc/rollingthunder/redis.env"
+fi
+
 echo "[push] Ensure runtime dirs exist (and are user-owned where needed)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo mkdir -p '${RT_ROOT}' '${RT_ROOT}/.deploy' '${RT_NODE}' '${RT_NODE_SERVICES}' '${RT_TOOLS}' /etc/rollingthunder;
   sudo chown -R '${TARGET_USER}:${TARGET_USER}' '${RT_NODE}' '${RT_TOOLS}' '${RT_ROOT}/.deploy' || true
 "
+
+echo "[push] Ensure venv exists + deps (redis + paho-mqtt)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    cd '${RT_ROOT}'
+    if [ ! -x '${RT_ROOT}/.venv/bin/python' ]; then
+      python3 -m venv '${RT_ROOT}/.venv'
+    fi
+    '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
+    '${RT_ROOT}/.venv/bin/pip' install redis paho-mqtt >/dev/null
+  "
+else
+  echo "[dry] would ensure venv exists and install redis + paho-mqtt"
+fi
+
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e; sudo mkdir -p ${COMMON_SERVICES_DST_DIR}; sudo chown -R ${TARGET_USER}:${TARGET_USER} /opt/rollingthunder/nodes"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
@@ -110,6 +145,12 @@ if [[ -d "${SERVICES_SRC_DIR}" ]]; then
     "${RSYNC_EXCLUDES[@]}" \
     "${SERVICES_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_NODE_SERVICES}/"
 fi
+
+echo "[push] Sync global tools -> ${RT_TOOLS}/ (user-owned)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --no-group --no-perms --omit-dir-times \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${GLOBAL_TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
 echo "[push] Ensure tool scripts executable"
 if [[ "${DRY_RUN}" != "1" ]]; then
