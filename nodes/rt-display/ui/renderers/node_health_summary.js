@@ -1,12 +1,31 @@
 // node_health_summary.js
 //
-// v2 (browse-capable):
-// - Adds browse cursor + windowed rendering (like controller_services_summary)
+// v3 (browse-capable + new modal copy / timing rules):
+// - Adds browse cursor + windowed rendering
 // - Listens for slot events:
 //     * rt-browse-delta  {delta:+1/-1}
-//     * rt-browse-ok     (Enter) -> opens confirm modal for selected node
-// - Keeps existing node classification + badges
-// - Still supports runtime-provided data OR fallback fetch/cache
+//     * rt-browse-ok     (Enter) -> opens reboot confirm modal(s) for selected node
+// - Modal behavior (per your spec):
+//     * non-rt-controller:
+//         - red bold "WARNING"
+//         - white: "Selecting OK will reboot this node"
+//         - auto-cancel to "Exit" after 10s
+//     * rt-controller:
+//         - step 1: blinking red bold "WARNING"
+//                   red: "System will go down during reboot"
+//                   white: "Selecting OK begins the process"
+//         - if user presses OK -> step 2:
+//                   blinking red bold: "PRESS OK TO REBOOT"
+//                   buttons: OK / Cancel
+//                   auto-cancel after 5s
+//
+// IMPORTANT: this file assumes your runtime modal supports these optional fields on rt-open-modal detail:
+//   - bodyHtml (preferred) or body (fallback)
+//   - autoCancelMs + autoCancelLabel
+//   - nextOnConfirm (object) for controller 2-step confirm
+//
+// If your runtime only supports the older twoStep/armLabel/timeoutMs semantics, this file still works
+// for non-controller, but controller 2-step requires nextOnConfirm support.
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -119,42 +138,84 @@ function ensureCursorInWindow(m, total) {
   m.offset = clamp(m.offset, 0, maxOff);
 }
 
+// ----- MODAL: reboot confirm rules -----
+
+function buildNonControllerModal(nodeId) {
+  // non-controller: WARNING (red, bold), message in white, auto Exit after 10s
+  return {
+    kind: "confirm",
+    title: "",
+    bodyHtml: `
+      <div class="rt-modal-warning-title rt-modal-warning-red"><strong>WARNING</strong></div>
+      <div class="rt-modal-bodyline">Selecting OK will reboot this node</div>
+    `,
+    // fallback for runtimes that only support "body"
+    body: `WARNING\nSelecting OK will reboot this node`,
+    confirmLabel: "OK",
+    cancelLabel: "Exit",
+    autoCancelMs: 10000,
+    autoCancelLabel: "Exit",
+    action: {
+      intent: "node.reboot",
+      params: { nodeId: String(nodeId), confirm: true },
+    },
+  };
+}
+
+function buildControllerStep1(nodeId) {
+  // controller: blinking WARNING, extra red line, then white line
+  return {
+    kind: "confirm",
+    title: "",
+    bodyHtml: `
+      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink"><strong>WARNING</strong></div>
+      <div class="rt-modal-warning-sub rt-modal-warning-red">System will go down during reboot</div>
+      <div class="rt-modal-bodyline">Selecting OK begins the process</div>
+    `,
+    body: `WARNING\nSystem will go down during reboot\nSelecting OK begins the process`,
+    confirmLabel: "OK",
+    cancelLabel: "Exit",
+    // Step 1 should NOT auto-cancel (per your spec). If you want it, add autoCancelMs.
+    nextOnConfirm: buildControllerStep2(nodeId),
+  };
+}
+
+function buildControllerStep2(nodeId) {
+  // controller: second confirm, auto-cancel after 5s
+  return {
+    kind: "confirm",
+    title: "",
+    bodyHtml: `
+      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink"><strong>PRESS OK TO REBOOT</strong></div>
+    `,
+    body: `PRESS OK TO REBOOT`,
+    confirmLabel: "OK",
+    cancelLabel: "Cancel",
+    autoCancelMs: 5000,
+    autoCancelLabel: "Cancel",
+    action: {
+      intent: "node.reboot",
+      params: { nodeId: String(nodeId), confirm: true },
+    },
+  };
+}
+
 function openNodeConfirm(slot, nodeId) {
   if (!slot || !nodeId) return;
 
-  const id = String(nodeId);
-  const isController = (id === "rt-controller");
+  const id = String(nodeId).trim();
+  if (!id) return;
 
-  const warningHtml = isController
-    ? `<div class="rt-warn-blink">WARNING - THIS WILL RESTART THE SYSTEM</div>`
-    : "";
+  const isController = (id === "rt-controller");
+  const detail = isController ? buildControllerStep1(id) : buildNonControllerModal(id);
 
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
-    detail: {
-      kind: "confirm",
-      title: isController ? "Restart rt-controller?" : "Restart node?",
-      body: isController
-        ? `<div>Selected node: <strong>${esc(id)}</strong></div>`
-        : `<div>Restart <strong>${esc(id)}</strong>?</div>`,
-      confirmLabel: "OK",
-      cancelLabel: "Exit",
-
-      // NEW runtime modal features:
-      twoStep: true,
-      armLabel: "CONFIRM",
-      timeoutMs: 5000,
-      danger: true,
-      warningHtml,
-
-      action: {
-        intent: "node.reboot",
-        // IMPORTANT: runtime will only emit after 2nd press; include confirm:true
-        params: { nodeId: id, confirm: true }
-      }
-    }
+    detail,
   }));
 }
+
+// ----- RENDER -----
 
 function renderTableWindow(container, list, m) {
   const total = list.length;
@@ -227,8 +288,8 @@ function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
   if (!slot) return;
 
-  if (slot.__rtNhBrowseV2Attached) return;
-  slot.__rtNhBrowseV2Attached = true;
+  if (slot.__rtNhBrowseV3Attached) return;
+  slot.__rtNhBrowseV3Attached = true;
 
   const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
@@ -264,7 +325,7 @@ function attachBrowseHandlersOnce(container) {
   slot.addEventListener("rt-browse-delta", onDelta);
   slot.addEventListener("rt-browse-ok", onOk);
 
-  slot.__rtNhBrowseV2Handlers = { onDelta, onOk };
+  slot.__rtNhBrowseV3Handlers = { onDelta, onOk };
 }
 
 async function fetchNodesOnce(url) {
@@ -291,7 +352,6 @@ export function renderNodeHealthSummary(container, panel, data) {
   let nodesList = Array.isArray(fromRuntime) ? fromRuntime : null;
 
   if (!nodesList) {
-    // Otherwise render cache or placeholder, and kick off a fetch.
     if (Array.isArray(_cache.nodes)) nodesList = _cache.nodes;
   }
 
