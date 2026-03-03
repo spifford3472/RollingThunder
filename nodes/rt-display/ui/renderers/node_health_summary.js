@@ -168,8 +168,8 @@ function buildControllerStep1(nodeId) {
     kind: "confirm",
     title: "",
     bodyHtml: `
-      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink-warn"><strong>WARNING</strong></div>
-      <div class="rt-modal-warning-sub rt-modal-warning-red">System will go down during reboot</div>
+      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink-warn"><strong>WARNING</strong><P></div>
+      <div class="rt-modal-warning-sub rt-modal-warning-red">System will go down during reboot<P></div>
       <div class="rt-modal-bodyline">Selecting OK begins the process</div>
     `,
     body: `WARNING\nSystem will go down during reboot\nSelecting OK begins the process`,

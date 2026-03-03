@@ -32,6 +32,7 @@ NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
 SERVICES_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/services/"
 OPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/ops/"
 COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
+RT_TOOLS="/opt/rollingthunder/tools"
 
 # Thin-client UI/runtime sources (served by rt-controller)
 UI_SRC_DIR="${REPO_ROOT}/nodes/rt-display/ui/"
@@ -43,6 +44,7 @@ SERVICES_DST_DIR="/opt/rollingthunder/services/"
 STATE_ENV_SRC="${OPS_SRC_DIR}/service_state_publisher.env.template"
 STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
 COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
+GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 
 # Thin-client UI/runtime destinations (served by rt-controller)
 UI_DST_DIR="/opt/rollingthunder/ui/"
@@ -139,6 +141,11 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='services/' \
   --exclude='ops/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
+
+echo "[push] Sync global tools dir -> ${RT_TOOLS}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${GLOBAL_TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
 # ---- ROOT-OWNED SYNC (service executables) ----
 echo "[push] Sync services subtree -> ${SERVICES_DST_DIR} (root-owned)"
