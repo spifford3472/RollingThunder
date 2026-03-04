@@ -248,7 +248,12 @@ def normalize_spot(
     if (not include_am_fm) and mode_raw in {"AM", "FM"}:
         return None
 
-    freq_mhz = safe_float(spot.get("frequency"))
+    freq = safe_float(spot.get("frequency"))
+    if freq is None:
+        return None
+
+    # POTA API uses kHz (e.g., 7074.0 -> 7.074 MHz). If it ever sends MHz, it will be < 1000.
+    freq_mhz = freq / 1000.0 if freq > 1000.0 else freq
     if freq_mhz is None:
         return None
 
