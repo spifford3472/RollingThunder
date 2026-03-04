@@ -340,8 +340,28 @@ def write_redis(
 def build_cfg_from_env_and_app(app: Dict[str, Any]) -> Cfg:
     app_json = os.getenv("RT_APP_JSON", APP_JSON_DEFAULT)
 
-    redis_url = os.getenv("RT_REDIS_URL") or get_by_path(app, "globals.state.redisUrl", "redis://127.0.0.1:6379")
     key_prefix = os.getenv("RT_KEY_PREFIX") or get_by_path(app, "globals.state.namespace", "rt")
+
+    # Prefer explicit URL if provided
+    redis_url = os.getenv("RT_REDIS_URL")
+    if not redis_url:
+        # Next: assemble from host/port/db + password (common RollingThunder pattern)
+        host = os.getenv("RT_REDIS_HOST", "127.0.0.1")
+        port = int(os.getenv("RT_REDIS_PORT", "6379"))
+        db = int(os.getenv("RT_REDIS_DB", "0"))
+
+        user = os.getenv("RT_REDIS_USER", "")  # optional for ACL
+        password = os.getenv("RT_REDIS_PASSWORD", "")
+
+        if password:
+            # ACL user optional; if user missing use :password
+            if user:
+                redis_url = f"redis://{user}:{password}@{host}:{port}/{db}"
+            else:
+                redis_url = f"redis://:{password}@{host}:{port}/{db}"
+        else:
+            # Final fallback: app.json value (may be unauthenticated)
+            redis_url = get_by_path(app, "globals.state.redisUrl", f"redis://{host}:{port}/{db}")
 
     return Cfg(
         redis_url=redis_url,
