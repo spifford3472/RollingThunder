@@ -9,7 +9,7 @@ OnFailure=rt-alert@%n.service
 [Service]
 Type=simple
 User=spiff
-WorkingDirectory=/opt/rollingthunder/nodes/rt-controller/services
+WorkingDirectory=/opt/rollingthunder/services
 
 # Config-driven bands/ordering live here (deployed path)
 Environment=RT_APP_JSON=/opt/rollingthunder/config/app.json
@@ -24,7 +24,7 @@ Environment=RT_APP_JSON=/opt/rollingthunder/config/app.json
 # Environment=RT_REDIS_URL=redis://127.0.0.1:6379
 # Environment=RT_KEY_PREFIX=rt
 
-ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-controller/services/pota_spots_poller.py
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/pota_spots_poller.py
 Restart=on-failure
 RestartSec=2
 
