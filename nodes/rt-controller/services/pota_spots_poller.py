@@ -382,9 +382,6 @@ def main() -> int:
     app = load_app_config(app_path)
 
     cfg = build_cfg_from_env_and_app(app)
-    print("[pota_spots_poller] RT_REDIS_PASSWORD present:",
-      "yes" if os.getenv("RT_REDIS_PASSWORD") else "no",
-      file=sys.stderr)
 
     band_table = bands_from_app(app)
     if not band_table:
