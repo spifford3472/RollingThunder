@@ -1,0 +1,36 @@
+[Unit]
+Description=RollingThunder POTA SSB Spots Poller
+After=network.target redis.service
+Wants=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=rt-alert@%n.service
+
+[Service]
+Type=simple
+User=spiff
+WorkingDirectory=/opt/rollingthunder/nodes/rt-controller/services
+
+# Config-driven bands/ordering live here (deployed path)
+Environment=RT_APP_JSON=/opt/rollingthunder/config/app.json
+
+# Optional overrides (uncomment if needed)
+# Environment=RT_POTA_POLL_SEC=12
+# Environment=RT_POTA_MAX_AGE_SEC=1200
+# Environment=RT_POTA_HTTP_TIMEOUT_SEC=6
+# Environment=RT_POTA_MAX_SPOTS_PER_BAND=250
+# Environment=RT_POTA_INCLUDE_AM_FM=0
+# Environment=RT_POTA_URL=https://api.pota.app/spot/activator
+# Environment=RT_REDIS_URL=redis://127.0.0.1:6379
+# Environment=RT_KEY_PREFIX=rt
+
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/nodes/rt-controller/services/pota_spots_poller.py
+Restart=on-failure
+RestartSec=2
+
+# harden a bit (optional but nice)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

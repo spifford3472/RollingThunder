@@ -293,5 +293,38 @@
 
   "meta": {
     "notes": "Skeleton only. Populate services/pages/panels next."
+  },
+
+  "bandOrder": [
+    "160m","80m","60m","40m",
+    "30m","20m","17m","15m",
+    "12m","10m","6m"
+  ],
+
+  "bands": {
+    "160m": { "low_mhz": 1.8, "high_mhz": 2.0 },
+    "80m":  { "low_mhz": 3.5, "high_mhz": 4.0 },
+    "60m":  { "low_mhz": 5.0, "high_mhz": 5.5 },
+    "40m":  { "low_mhz": 7.0, "high_mhz": 7.3 },
+    "30m":  { "low_mhz": 10.1, "high_mhz": 10.15 },
+    "20m":  { "low_mhz": 14.0, "high_mhz": 14.35 },
+    "17m":  { "low_mhz": 18.068, "high_mhz": 18.168 },
+    "15m":  { "low_mhz": 21.0, "high_mhz": 21.45 },
+    "12m":  { "low_mhz": 24.89, "high_mhz": 24.99 },
+    "10m":  { "low_mhz": 28.0, "high_mhz": 29.7 },
+    "6m":   { "low_mhz": 50.0, "high_mhz": 54.0 }
+  },
+  
+  "potaBandDefaults": {
+    "160m": 1.900,
+    "80m": 3.900,
+    "60m": 5.357,
+    "40m": 7.200,
+    "30m": 10.120,
+    "20m": 14.285,
+    "17m": 18.140,
+    "15m": 21.285,
+    "12m": 24.950,
+    "10m": 28.400
   }
 }
