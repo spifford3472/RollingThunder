@@ -468,10 +468,7 @@ def main() -> int:
 
     backoff = 1.0
 
-    total_seen = 0
-    total_norm = 0
-    total_age_dropped = 0
-    total_logged_dropped = 0
+
 
     while not StopFlag.stop:
         t0 = time.time()
@@ -520,7 +517,12 @@ def main() -> int:
             )
 
             normalized = dedupe_latest(normalized)
-
+            
+            total_seen = 0
+            total_norm = 0
+            total_age_dropped = 0
+            total_logged_dropped = 0
+            
             band_spots: Dict[str, List[Dict[str, Any]]] = {}
             for s in normalized:
                 band_spots.setdefault(s["band"], []).append(s)
