@@ -58,6 +58,47 @@ PHONE_MODES = {"SSB", "LSB", "USB", "PHONE", "AM", "FM"}
 # Output normalization: USB/LSB/PHONE/SSB => "SSB" for first-cut simplicity
 STRICT_PHONE_OUTPUT_MODES = {"SSB", "PHONE", "USB", "LSB"}
 
+def make_spot_id(band: str, call: str, park_ref: str, utc_day: str) -> str:
+    return f"{band}:{call.upper()}:{park_ref.upper()}:{utc_day}"
+
+def make_worked_member(call: str, park_ref: str) -> str:
+    return f"{call.upper()}|{park_ref.upper()}"
+
+def worked_key(prefix: str, utc_day: str, context: str, band: str) -> str:
+    return f"{prefix}:pota:worked:{utc_day}:{context}:{band}"
+
+def is_worked(
+    r: redis.Redis,
+    prefix: str,
+    utc_day: str,
+    context: str,
+    band: str,
+    call: str,
+    park_ref: str,
+) -> bool:
+    try:
+        return r.sismember(
+            worked_key(prefix, utc_day, context, band),
+            make_worked_member(call, park_ref),
+        )
+    except Exception:
+        return False
+    
+def mark_worked(
+    r: redis.Redis,
+    prefix: str,
+    utc_day: str,
+    context: str,
+    band: str,
+    call: str,
+    park_ref: str,
+) -> None:
+    key = worked_key(prefix, utc_day, context, band)
+    member = make_worked_member(call, park_ref)
+    pipe = r.pipeline()
+    pipe.sadd(key, member)
+    pipe.expire(key, 172800)
+    pipe.execute()
 
 def load_app_config(path: str) -> Dict[str, Any]:
     try:
@@ -67,6 +108,28 @@ def load_app_config(path: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+def dedupe_latest(spots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Keep the newest spot per (call, park_ref, band).
+
+    Newest is determined by lowest age_sec, which is equivalent to the most
+    recent spot inside the current polling window.
+    """
+    best: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+
+    for s in spots:
+        key = (
+            str(s.get("call") or "").upper(),
+            str(s.get("park_ref") or "").upper(),
+            str(s.get("band") or ""),
+        )
+        cur = best.get(key)
+        if cur is None or int(s.get("age_sec", 999999)) < int(cur.get("age_sec", 999999)):
+            best[key] = s
+
+    out = list(best.values())
+    out.sort(key=lambda x: (int(x.get("age_sec", 999999)), str(x.get("call") or "")))
+    return out
 
 def get_by_path(obj: Dict[str, Any], path: str, default=None):
     cur: Any = obj
@@ -326,13 +389,17 @@ def normalize_spot(
         # "US-OH" => "US"
         country2 = location_desc.split("-", 1)[0][:2].upper()
 
+    park_ref = str(spot.get("reference") or "").strip().upper()
+    if not park_ref:
+        return None
+    
     return {
         "call": call,
         "freq_hz": int(freq_mhz * 1_000_000),
         "freq_mhz": round(freq_mhz, 4),
         "band": band,
         "mode": "SSB" if mode_raw in STRICT_PHONE_OUTPUT_MODES else mode_raw,
-        "park_ref": str(spot.get("reference") or "").strip(),
+        "park_ref": park_ref,
         "park_name": str(spot.get("name") or spot.get("parkName") or "").strip(),
         "spot_ts_utc": st.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "age_sec": age_sec,
@@ -346,21 +413,6 @@ def normalize_spot(
             "count": spot.get("count"),
         },
     }
-
-
-def dedupe_latest(spots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Keep newest spot per (call, park_ref, band). Newest == lowest age_sec.
-    """
-    best: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for s in spots:
-        key = (s["call"], s.get("park_ref", ""), s["band"])
-        cur = best.get(key)
-        if not cur or s["age_sec"] < cur["age_sec"]:
-            best[key] = s
-    out = list(best.values())
-    out.sort(key=lambda x: (x["age_sec"], x["call"]))
-    return out
 
 
 def write_redis(
@@ -477,7 +529,6 @@ def main() -> int:
         total_seen = 0
         total_norm = 0
         total_age_dropped = 0
-        total_logged_dropped = 0
 
         try:
             resp = sess.get(cfg.pota_url, timeout=cfg.http_timeout_sec)
@@ -504,14 +555,8 @@ def main() -> int:
 
                 total_norm += 1
 
-                # age out (>20 minutes by default)
                 if s["age_sec"] > cfg.max_age_sec:
                     total_age_dropped += 1
-                    continue
-
-                # filter out already-logged calls for this day/context/band
-                if already_logged(r, cfg.key_prefix, yyyymmdd, context, s["band"], s["call"]):
-                    total_logged_dropped += 1
                     continue
 
                 normalized.append(s)
@@ -521,9 +566,9 @@ def main() -> int:
             post_dedupe_count = len(normalized)
 
             print(
-               f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
-                f"age_dropped={total_age_dropped} logged_dropped={total_logged_dropped} "
-                f"kept={len(normalized)}",
+                f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
+                f"age_dropped={total_age_dropped} "
+                f"pre_dedupe={pre_dedupe_count} post_dedupe={post_dedupe_count}",
                 flush=True,
             )
 

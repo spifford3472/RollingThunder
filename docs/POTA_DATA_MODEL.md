@@ -639,3 +639,37 @@ Predictable memory usage
 Constant-time UI queries
 ```
 The system continuously maintains **a rolling 20-minute operational view of POTA activity.**
+
+---
+
+## Worked Spot Semantics ##
+
+RollingThunder distinguishes between:
+ - **active spots** currently visible in the 20-minute operating window
+ - **worked spots** for which the operator has already completed a QSO
+
+A worked spot is defined by the unique combination:
+```
+call + band + park_ref + UTC day + context
+```
+Redis key:
+```
+rt:pota:worked:<UTCday>:<context>:<band>
+```
+Type:
+```
+SET
+```
+Member format:
+```
+<call>|<park_ref>
+```
+Example:
+```
+W1LFD|US-2678
+```
+Worked spots are not removed from the active spot list.
+Instead, worked state is overlaid at read time so the UI may:
+- visually mark a spot as worked
+- optionally filter worked spots
+- preserve operator situational awareness
