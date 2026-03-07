@@ -515,7 +515,11 @@ def main() -> int:
                     continue
 
                 normalized.append(s)
-                
+
+            pre_dedupe_count = len(normalized)
+            normalized = dedupe_latest(normalized)
+            post_dedupe_count = len(normalized)
+
             print(
                f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
                 f"age_dropped={total_age_dropped} logged_dropped={total_logged_dropped} "
