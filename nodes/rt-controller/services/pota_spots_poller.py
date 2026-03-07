@@ -77,25 +77,68 @@ def get_by_path(obj: Dict[str, Any], path: str, default=None):
     return cur
 
 
+def _to_mhz(v: Any) -> Optional[float]:
+    try:
+        x = float(v)
+    except Exception:
+        return None
+
+    # Heuristic:
+    # MHz values look like 14.0, 14.35
+    # kHz values look like 14000, 14350
+    # Hz values look like 14000000, 14350000
+    if x > 1_000_000:
+        return x / 1_000_000.0
+    if x > 1_000:
+        return x / 1_000.0
+    return x
+
+
 def bands_from_app(app: Dict[str, Any]) -> List[Tuple[str, float, float]]:
     """
-    Reads:
-      "bands": { "20m": {"low_mhz":14.0,"high_mhz":14.35}, ... }
-    Returns list of (band, low_mhz, high_mhz)
+    Accepts app band definitions in MHz, kHz, or Hz.
+    Expected examples:
+      {"20m": {"low_mhz":14.0,"high_mhz":14.35}}
+      {"20m": {"low_khz":14000,"high_khz":14350}}
+      {"20m": {"low_hz":14000000,"high_hz":14350000}}
     """
     bands = app.get("bands") or {}
     out: List[Tuple[str, float, float]] = []
     if not isinstance(bands, dict):
         return out
+
     for band, rng in bands.items():
         if not isinstance(rng, dict):
             continue
-        try:
-            lo = float(rng["low_mhz"])
-            hi = float(rng["high_mhz"])
-            out.append((str(band), lo, hi))
-        except Exception:
+
+        lo = None
+        hi = None
+
+        # Preferred explicit fields
+        for lo_key, hi_key in [
+            ("low_mhz", "high_mhz"),
+            ("low_khz", "high_khz"),
+            ("low_hz", "high_hz"),
+        ]:
+            if lo_key in rng and hi_key in rng:
+                lo = _to_mhz(rng[lo_key])
+                hi = _to_mhz(rng[hi_key])
+                break
+
+        # Backward-compat fallback if only generic low/high exist
+        if lo is None or hi is None:
+            if "low" in rng and "high" in rng:
+                lo = _to_mhz(rng["low"])
+                hi = _to_mhz(rng["high"])
+
+        if lo is None or hi is None:
             continue
+
+        if lo > hi:
+            lo, hi = hi, lo
+
+        out.append((str(band), lo, hi))
+
     return out
 
 
@@ -248,14 +291,18 @@ def normalize_spot(
     if (not include_am_fm) and mode_raw in {"AM", "FM"}:
         return None
 
-    freq = safe_float(spot.get("frequency"))
-    if freq is None:
+    freq_raw = safe_float(spot.get("frequency"))
+    if freq_raw is None:
         return None
 
-    # POTA API uses kHz (e.g., 7074.0 -> 7.074 MHz). If it ever sends MHz, it will be < 1000.
-    freq_mhz = freq / 1000.0 if freq > 1000.0 else freq
-    if freq_mhz is None:
-        return None
+    # POTA currently provides frequency in kHz, sometimes as strings like "14123" or "14123.0"
+    # Be tolerant in case the feed ever changes.
+    if freq_raw > 1_000_000:
+        freq_mhz = freq_raw / 1_000_000.0
+    elif freq_raw > 1_000:
+        freq_mhz = freq_raw / 1_000.0
+    else:
+        freq_mhz = freq_raw
 
     band = band_from_mhz(freq_mhz, band_table)
     if not band:
@@ -406,6 +453,10 @@ def main() -> int:
         ]
 
     band_order = band_order_from_app(app, band_table)
+    # Debug log config on startup
+    print(f"[pota_spots_poller] band_table={band_table}", flush=True)
+    print(f"[pota_spots_poller] redis_url={cfg.redis_url}", flush=True)
+    print(f"[pota_spots_poller] key_prefix={cfg.key_prefix}", flush=True)
 
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
@@ -417,6 +468,11 @@ def main() -> int:
 
     backoff = 1.0
 
+    total_seen = 0
+    total_norm = 0
+    total_age_dropped = 0
+    total_logged_dropped = 0
+
     while not StopFlag.stop:
         t0 = time.time()
         now_utc = datetime.now(timezone.utc)
@@ -426,6 +482,8 @@ def main() -> int:
             resp.raise_for_status()
 
             raw_spots = resp.json()
+            # Debug log raw count and type (in case of API changes or errors)
+            print(f"[pota_spots_poller] raw_spots={len(raw_spots)}", flush=True)
             if not isinstance(raw_spots, list):
                 raise ValueError("POTA API returned non-list JSON")
 
@@ -437,9 +495,12 @@ def main() -> int:
                 if not isinstance(spot, dict):
                     continue
 
+                total_seen += 1
                 s = normalize_spot(spot, now_utc, cfg.include_am_fm, band_table)
                 if not s:
                     continue
+
+                total_norm += 1
 
                 # age out (>20 minutes by default)
                 if s["age_sec"] > cfg.max_age_sec:
@@ -450,6 +511,13 @@ def main() -> int:
                     continue
 
                 normalized.append(s)
+
+            print(
+               f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
+                f"age_dropped={total_age_dropped} logged_dropped={total_logged_dropped} "
+                f"kept={len(normalized)}",
+                flush=True,
+            )
 
             normalized = dedupe_latest(normalized)
 
