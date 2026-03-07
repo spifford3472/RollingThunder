@@ -474,6 +474,11 @@ def main() -> int:
         t0 = time.time()
         now_utc = datetime.now(timezone.utc)
 
+        total_seen = 0
+        total_norm = 0
+        total_age_dropped = 0
+        total_logged_dropped = 0
+        
         try:
             resp = sess.get(cfg.pota_url, timeout=cfg.http_timeout_sec)
             resp.raise_for_status()
@@ -517,11 +522,6 @@ def main() -> int:
             )
 
             normalized = dedupe_latest(normalized)
-            
-            total_seen = 0
-            total_norm = 0
-            total_age_dropped = 0
-            total_logged_dropped = 0
             
             band_spots: Dict[str, List[Dict[str, Any]]] = {}
             for s in normalized:
