@@ -33,6 +33,8 @@ SERVICES_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/services/"
 OPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/ops/"
 COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
 RT_TOOLS="/opt/rollingthunder/tools"
+POTA_PARK_DATA_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/POTA/"
+
 
 # Thin-client UI/runtime sources (served by rt-controller)
 UI_SRC_DIR="${REPO_ROOT}/nodes/rt-display/ui/"
@@ -45,6 +47,7 @@ STATE_ENV_SRC="${OPS_SRC_DIR}/service_state_publisher.env.template"
 STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
 COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
+POTA_PARK_DATA_DST_DIR="/opt/rollingthunder/data/POTA/"
 
 # Thin-client UI/runtime destinations (served by rt-controller)
 UI_DST_DIR="/opt/rollingthunder/ui/"
@@ -81,10 +84,12 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     /etc/rollingthunder \
     /opt/rollingthunder/nodes/rt-controller \
     /opt/rollingthunder/ui \
+    /opt/rollingthunder/data/POTA \
     /opt/rollingthunder/config &&
-  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config &&
-  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config
+  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config /opt/rollingthunder/data /opt/rollingthunder/data/POTA  &&
+  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config opt/rollingthunder/data opt/rollingthunder/data/POTA
 "
+
 
 echo "[push] Ensure common services dir exists (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
@@ -107,16 +112,19 @@ echo "[debug] SERVICES_SRC_DIR=${SERVICES_SRC_DIR}"
 echo "[debug] OPS_SRC_DIR=${OPS_SRC_DIR}"
 echo "[debug] UI_SRC_DIR=${UI_SRC_DIR}"
 echo "[debug] CFG_SRC_DIR=${CFG_SRC_DIR}"
+echo "[debug] POTA_PARK_DATA_SRC_DIR=${POTA_PARK_DATA_SRC_DIR}"
 ls -la "${NODE_SRC_DIR}" || true
 
 fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing_dir "${COMMON_SERVICES_SRC_DIR}"
+fail_missing_dir "${POTA_PARK_DATA_SRC_DIR}"
 fail_missing "${COMMON_SERVICES_SRC_DIR}/node_presence_publisher.py"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
 fail_missing "${ALERT_UNIT_SRC}"
 fail_missing "${ALERT_RECONCILE_SRC}"
+
 
 # Thin-client runtime assets must exist locally in repo
 fail_missing_dir "${UI_SRC_DIR}"
@@ -142,6 +150,11 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='services/' \
   --exclude='ops/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
+
+echo "[push] Sync POTA park data files dir -> ${POTA_PARK_DATA_DST_DIR}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${POTA_PARK_DATA_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${POTA_PARK_DATA_DST_DIR}/"
 
 echo "[push] Sync global tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \

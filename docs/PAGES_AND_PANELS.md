@@ -147,10 +147,10 @@ Example:
 "layout": {
   "top": ["topbar_core"],
   "middle": [
-    ["alerts_overlay"],
+    ["test"],
     ["node_health_summary"]
   ],
-  "bottom": []
+  "bottom": ["alerts_overlay"]
 }
 }
 ```
