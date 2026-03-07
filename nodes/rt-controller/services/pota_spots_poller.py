@@ -478,7 +478,7 @@ def main() -> int:
         total_norm = 0
         total_age_dropped = 0
         total_logged_dropped = 0
-        
+
         try:
             resp = sess.get(cfg.pota_url, timeout=cfg.http_timeout_sec)
             resp.raise_for_status()
@@ -506,14 +506,16 @@ def main() -> int:
 
                 # age out (>20 minutes by default)
                 if s["age_sec"] > cfg.max_age_sec:
+                    total_age_dropped += 1
                     continue
 
                 # filter out already-logged calls for this day/context/band
                 if already_logged(r, cfg.key_prefix, yyyymmdd, context, s["band"], s["call"]):
+                    total_logged_dropped += 1
                     continue
 
                 normalized.append(s)
-
+                
             print(
                f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
                 f"age_dropped={total_age_dropped} logged_dropped={total_logged_dropped} "
