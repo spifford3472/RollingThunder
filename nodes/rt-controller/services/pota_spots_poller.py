@@ -67,6 +67,28 @@ def make_worked_member(call: str, park_ref: str) -> str:
 def worked_key(prefix: str, utc_day: str, context: str, band: str) -> str:
     return f"{prefix}:pota:worked:{utc_day}:{context}:{band}"
 
+def spot_key(prefix: str, spot_id: str) -> str:
+    return f"{prefix}:pota:ssb:spot:{spot_id}"
+
+def band_spots_key(prefix: str, band: str) -> str:
+    return f"{prefix}:pota:ssb:spots:{band}"
+
+def band_summary_key(prefix: str, band: str) -> str:
+    return f"{prefix}:pota:ssb:band:{band}"
+
+def band_rank_key(prefix: str) -> str:
+    return f"{prefix}:pota:ssb:bands"
+
+def dedupe_key(prefix: str, utc_day: str, band: str) -> str:
+    return f"{prefix}:pota:ssb:dedupe:{utc_day}:{band}"
+
+def parse_iso_utc_to_epoch(s: str) -> Optional[int]:
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
 def is_worked(
     r: redis.Redis,
     prefix: str,
@@ -421,24 +443,126 @@ def write_redis(
     band_spots: Dict[str, List[Dict[str, Any]]],
     band_order: Dict[str, int],
     band_table: List[Tuple[str, float, float]],
+    now_utc: datetime,
 ) -> None:
-    # bands summary
-    bands = [{"band": b, "count": len(lst)} for b, lst in band_spots.items() if lst]
-    bands.sort(key=lambda x: band_order.get(x["band"], 999))
-    r.set(f"{cfg.key_prefix}:pota:ssb:bands", json.dumps(bands, separators=(",", ":")))
+    """
+    v0.3100 Redis model
 
-    # per-band lists
+    Writes:
+      - <ns>:pota:ssb:spot:<spot_id>          HASH (TTL ~22 min)
+      - <ns>:pota:ssb:spots:<band>            ZSET score=spot_ts member=spot_id
+      - <ns>:pota:ssb:dedupe:<utcday>:<band>  SET members=CALL|PARK
+      - <ns>:pota:ssb:band:<band>             HASH summary
+      - <ns>:pota:ssb:bands                   ZSET score=last_spot_ts member=<band>
+    """
+    prefix = cfg.key_prefix
+    now_ts = int(now_utc.timestamp())
+    min_active_ts = now_ts - cfg.max_age_sec
+    detail_ttl_sec = cfg.max_age_sec + 120   # 20 min window + 2 min grace
+    dedupe_ttl_sec = 172800                  # 48 hours
+    bands_zkey = band_rank_key(prefix)
+
+    pipe = r.pipeline()
+
+    # 1) Write per-spot HASHes and per-band ZSET indexes
     for band, spots in band_spots.items():
-        key = f"{cfg.key_prefix}:pota:ssb:spots:{band}"
-        r.set(key, json.dumps(spots, separators=(",", ":")))
-        # short TTL so stale data evaporates if poller dies
-        r.expire(key, cfg.poll_sec * 5)
+        zkey = band_spots_key(prefix, band)
 
-    # expire band keys that are currently empty/missing so old data doesn’t linger
+        for s in spots:
+            call = str(s.get("call") or "").upper()
+            park_ref = str(s.get("park_ref") or "").upper()
+            if not call or not park_ref:
+                continue
+
+            spot_ts = parse_iso_utc_to_epoch(str(s.get("spot_ts_utc") or ""))
+            if spot_ts is None:
+                continue
+
+            utc_day = datetime.fromtimestamp(spot_ts, tz=timezone.utc).strftime("%Y%m%d")
+            spot_id = make_spot_id(band, call, park_ref, utc_day)
+            skey = spot_key(prefix, spot_id)
+            dkey = dedupe_key(prefix, utc_day, band)
+
+            # Spot detail hash
+            mapping = {
+                "spot_id": spot_id,
+                "call": call,
+                "band": band,
+                "park_ref": park_ref,
+                "park_name": str(s.get("park_name") or ""),
+                "freq_hz": int(s.get("freq_hz") or 0),
+                "freq_mhz": str(s.get("freq_mhz") or ""),
+                "mode": str(s.get("mode") or ""),
+                "spot_ts_utc": str(s.get("spot_ts_utc") or ""),
+                "spot_ts": spot_ts,
+                "age_sec": int(s.get("age_sec") or 0),
+                "country2": str(s.get("country2") or ""),
+                "state2": str(s.get("state2") or ""),
+                "spotter": str((s.get("raw") or {}).get("spotter") or ""),
+                "comments": str((s.get("raw") or {}).get("comments") or ""),
+                "source": str((s.get("raw") or {}).get("source") or ""),
+                "count": int((s.get("raw") or {}).get("count") or 0),
+            }
+
+            pipe.hset(skey, mapping=mapping)
+            pipe.expire(skey, detail_ttl_sec)
+
+            # Active band index
+            pipe.zadd(zkey, {spot_id: spot_ts})
+
+            # Daily dedupe set (for bookkeeping / future ingest logic)
+            pipe.sadd(dkey, make_worked_member(call, park_ref))
+            pipe.expire(dkey, dedupe_ttl_sec)
+
+        # Trim stale members from active window once per band
+        pipe.zremrangebyscore(zkey, "-inf", f"({min_active_ts}")
+
+    pipe.execute()
+
+    # 2) Rebuild band summaries and ranking from the active ZSETs
+    pipe = r.pipeline()
+
+    # Clear ranking ZSET and rebuild from current active bands
+    pipe.delete(bands_zkey)
+
     for band, _, _ in band_table:
-        if band not in band_spots:
-            key = f"{cfg.key_prefix}:pota:ssb:spots:{band}"
-            r.expire(key, cfg.poll_sec * 2)
+        zkey = band_spots_key(prefix, band)
+        bkey = band_summary_key(prefix, band)
+
+        # Remove any lingering stale entries again defensively
+        pipe.zremrangebyscore(zkey, "-inf", f"({min_active_ts}")
+
+    pipe.execute()
+
+    # Need reads outside pipeline for counts/top scores
+    active_bands: List[Tuple[str, int, int]] = []
+    for band, _, _ in band_table:
+        zkey = band_spots_key(prefix, band)
+        count = r.zcard(zkey)
+        if count <= 0:
+            # Remove stale summary if no active spots
+            r.delete(band_summary_key(prefix, band))
+            continue
+
+        top = r.zrevrange(zkey, 0, 0, withscores=True)
+        last_spot_ts = int(top[0][1]) if top else 0
+        active_bands.append((band, count, last_spot_ts))
+
+    pipe = r.pipeline()
+    for band, count, last_spot_ts in active_bands:
+        bkey = band_summary_key(prefix, band)
+        pipe.hset(
+            bkey,
+            mapping={
+                "active_count": count,
+                "last_spot_ts": last_spot_ts,
+                "last_poll_ts": now_ts,
+                "band_order": band_order.get(band, 999),
+            },
+        )
+        pipe.zadd(bands_zkey, {band: last_spot_ts})
+
+    pipe.execute()
 
 
 def build_cfg_from_env_and_app(app: Dict[str, Any]) -> Cfg:
@@ -582,7 +706,7 @@ def main() -> int:
             for b in list(band_spots.keys()):
                 band_spots[b] = band_spots[b][: cfg.max_spots_per_band]
 
-            write_redis(r, cfg, band_spots, band_order, band_table)
+            write_redis(r, cfg, band_spots, band_order, band_table, now_utc)
 
             backoff = 1.0
 
