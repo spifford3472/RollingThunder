@@ -97,6 +97,25 @@
       "consumes": []
     },
 
+    "pota_nearby_parks": {
+      "id": "pota_nearby_parks",
+      "scope": "always_on",
+      "ownerNode": "rt-controller",
+      "systemd": { "unit": "rt-pota-nearby-parks.service" },
+      "dependsOn": ["redis_state", "gps_ingest"],
+      "lifecycle": {
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+      },
+      "health": {
+        "type": "state_freshness",
+        "target": { "key": "rt:pota:nearby", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 5000
+      },
+      "provides": ["state.pota.nearby", "alerts.pota.nearby"]
+    },
+
     "logging": {
       "id": "logging",
       "scope": "always_on",
@@ -314,7 +333,7 @@
     "10m":  { "low_mhz": 28.0, "high_mhz": 29.7 },
     "6m":   { "low_mhz": 50.0, "high_mhz": 54.0 }
   },
-  
+
   "potaBandDefaults": {
     "160m": 1.900,
     "80m": 3.900,

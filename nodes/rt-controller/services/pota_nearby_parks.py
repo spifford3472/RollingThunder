@@ -161,6 +161,25 @@ def json_dumps_compact(obj: Any) -> str:
 
 # -------------------- Alert helpers --------------------
 
+def remove_alert_by_id(r: redis.Redis, alert_id: str) -> None:
+    existing_raw = r.get(ALERTS_ACTIVE_KEY)
+    existing_obj = _safe_json_load(existing_raw)
+    items = _normalize_alert_items(existing_obj)
+
+    new_items = [
+        it for it in items
+        if str(it.get("id", "")).strip() != str(alert_id).strip()
+    ]
+
+    if len(new_items) == len(items):
+        return
+
+    payload = {
+        "items": new_items[:MAX_ALERT_ITEMS],
+        "last_update_ms": now_ms(),
+    }
+    r.set(ALERTS_ACTIVE_KEY, json_dumps_compact(payload))
+
 def _safe_json_load(s: Optional[str]) -> Any:
     if not s:
         return None
@@ -606,30 +625,34 @@ def main() -> None:
                 tile_scale=index.tile_scale,
             )
 
-            if ALERT_ENABLED and gps_valid and nearby:
-                top = nearby[0]
-                if len(nearby) == 1:
-                    msg = f"Within {THRESHOLD_MILES:g} miles of {top.reference} {top.name} ({top.distance_miles:.1f} mi)."
-                else:
-                    msg = (
-                        f"{len(nearby)} parks within {THRESHOLD_MILES:g} miles. "
-                        f"Nearest: {top.reference} {top.name} ({top.distance_miles:.1f} mi)."
+            if ALERT_ENABLED:
+                if gps_valid and nearby:
+                    top = nearby[0]
+                    if len(nearby) == 1:
+                        msg = f"Within {THRESHOLD_MILES:g} miles of {top.reference} {top.name} ({top.distance_miles:.1f} mi)."
+                    else:
+                        msg = (
+                            f"{len(nearby)} parks within {THRESHOLD_MILES:g} miles. "
+                            f"Nearest: {top.reference} {top.name} ({top.distance_miles:.1f} mi)."
+                        )
+
+                    if msg != last_alert_message:
+                        last_alert_message = msg
+
+                    upsert_alert(
+                        r,
+                        alert_id=ALERT_ID,
+                        title="Nearby POTA park",
+                        message=msg,
+                        severity="info",
+                        kind="pota_nearby",
+                        source=ALERT_SOURCE,
+                        service=ALERT_SERVICE,
+                        ttl_sec=ALERT_TTL_SEC,
                     )
-
-                if msg != last_alert_message:
-                    last_alert_message = msg
-
-                upsert_alert(
-                    r,
-                    alert_id=ALERT_ID,
-                    title="Nearby POTA park",
-                    message=msg,
-                    severity="info",
-                    kind="pota_nearby",
-                    source=ALERT_SOURCE,
-                    service=ALERT_SERVICE,
-                    ttl_sec=ALERT_TTL_SEC,
-                )
+                else:
+                    last_alert_message = ""
+                    remove_alert_by_id(r, ALERT_ID)
 
         except Exception as e:
             print(f"[pota_nearby_parks] ERROR: {type(e).__name__}: {e}", flush=True)
@@ -642,4 +665,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

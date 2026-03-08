@@ -10,6 +10,12 @@ OnFailure=rt-alert@%n.service
 Type=simple
 User=spiff
 WorkingDirectory=/opt/rollingthunder/nodes/rt-controller/services
+
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+
 ExecStart=/usr/bin/python3 /opt/rollingthunder/services/gps_state_publisher.py
 Restart=on-failure
 RestartSec=2
