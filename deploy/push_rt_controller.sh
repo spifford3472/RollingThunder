@@ -86,8 +86,8 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     /opt/rollingthunder/ui \
     /opt/rollingthunder/data/POTA \
     /opt/rollingthunder/config &&
-  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config /opt/rollingthunder/data /opt/rollingthunder/data/POTA  &&
-  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config opt/rollingthunder/data opt/rollingthunder/data/POTA
+  sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config &&
+  sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config  
 "
 
 
@@ -96,6 +96,13 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo mkdir -p '${COMMON_SERVICES_DST_DIR}';
   sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/nodes;
   sudo chmod -R 755 /opt/rollingthunder/nodes
+"
+
+echo "[push] Ensure POTA data dir exists (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  sudo mkdir -p '${POTA_PARK_DATA_DST_DIR}';
+  sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/data/POTA;
+  sudo chmod -R 755 /opt/rollingthunder/data/POTA
 "
 
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
@@ -151,10 +158,10 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='ops/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
 
-echo "[push] Sync POTA park data files dir -> ${POTA_PARK_DATA_DST_DIR}"
+echo "[push] Sync POTA park data files dir {POTA_PARK_DATA_SRC_DIR} -> ${POTA_PARK_DATA_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
-  "${POTA_PARK_DATA_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${POTA_PARK_DATA_DST_DIR}/"
+  "${POTA_PARK_DATA_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${POTA_PARK_DATA_DST_DIR}"
 
 echo "[push] Sync global tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
