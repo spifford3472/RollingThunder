@@ -71,6 +71,7 @@ UNITS=(
   "rt-ui-intent-worker.service"
   "rt-alert@.service"
   "rt-pota-spots-poller.service"
+  "rt-pota-park-data-publisher.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
