@@ -3,6 +3,8 @@ Description=RollingThunder POTA Nearby Parks Publisher
 Wants=network-online.target
 After=network-online.target redis-server.service
 PartOf=multi-user.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -14,7 +16,7 @@ Environment=RT_REDIS_HOST=127.0.0.1
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
 Environment=RT_REDIS_PASSWORD=ra138766
-Environment=RT_POTA_PARKS_CSV=/opt/rollingthunder/data/POTA/United States of America (US).csv
+Environment="RT_POTA_PARKS_CSV=/opt/rollingthunder/data/POTA/United States of America (US).csv"
 Environment=RT_POTA_PARKS_INDEX=/opt/rollingthunder/data/POTA/us_parks.tileindex.v1.json
 Environment=RT_KEY_GPS_POS=rt:gps:pos
 Environment=RT_KEY_POTA_NEARBY=rt:pota:nearby
@@ -27,8 +29,7 @@ Environment=RT_POTA_NEARBY_ALERT_TTL_SEC=300
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/pota_nearby_parks.py
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=60
-StartLimitBurst=10
+
 
 [Install]
 WantedBy=multi-user.target
