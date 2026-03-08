@@ -1,6 +1,7 @@
 [Unit]
 Description=RollingThunder Alert Writer for %I
-OnFailure=rt-alert@%n.service
+#OnFailure=rt-alert@%n.service
+OnFailure=rt-alert@%n
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
