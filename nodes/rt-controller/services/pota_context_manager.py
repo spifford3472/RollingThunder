@@ -246,26 +246,28 @@ def parse_band_spot_member(member: str, score: float) -> Dict[str, Any]:
     }
 
 
-def zset_band_counts(r: redis.Redis, key: str) -> List[Tuple[str, int]]:
-    try:
-        raw = r.zrange(key, 0, -1, withscores=True)
-    except RedisError:
-        raise
-    except Exception as exc:
-        log_warning("Unable to read band counts zset", event="bands_zset_read_error", key=key, error=str(exc))
-        return []
+def zset_band_counts(r: redis.Redis, spots_prefix: str) -> List[Tuple[str, int]]:
+    counts: List[Tuple[str, int]] = []
 
-    counts: Dict[str, int] = {}
-    for member, score in raw:
-        band = str(member)
-        if band not in BAND_ORDER:
-            continue
+    for band in BAND_ORDER:
+        key = f"{spots_prefix}:{band}"
         try:
-            counts[band] = int(float(score))
-        except (TypeError, ValueError):
-            counts[band] = 0
+            count = int(r.zcard(key))
+        except RedisError:
+            raise
+        except Exception as exc:
+            log_warning(
+                "Unable to read band spot count",
+                event="band_zcard_error",
+                key=key,
+                error=str(exc),
+            )
+            count = 0
 
-    return [(band, counts[band]) for band in BAND_ORDER if counts.get(band, 0) > 0]
+        if count > 0:
+            counts.append((band, count))
+
+    return counts
 
 
 def zset_band_spots(r: redis.Redis, key: str) -> List[Dict[str, Any]]:
@@ -298,7 +300,7 @@ class Service:
         return normalized
 
     def build_ui_band_summary(self, r: redis.Redis) -> List[Dict[str, Any]]:
-        counts = zset_band_counts(r, self.cfg.pota_ssb_bands_source_key)
+        counts = zset_band_counts(r, self.cfg.pota_ssb_spots_source_prefix)
         return [{"band": band, "count": count} for band, count in counts]
 
     def build_ui_spots(self, r: redis.Redis) -> Dict[str, List[Dict[str, Any]]]:
