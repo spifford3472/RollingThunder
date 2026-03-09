@@ -2,15 +2,19 @@
 """
 RollingThunder - POTA SSB Spots Poller (rt-controller, controller-owned state)
 
-Polls the official POTA spots endpoint, filters to SSB/Phone, ages out old spots
-(> 20 minutes), dedupes, and writes Redis keys for the UI to read.
+Polls the official POTA spots endpoint, filters to SSB/Phone, ages out old spots,
+dedupes, and writes Redis keys for downstream consumers.
 
 POTA Spots Endpoint (official):
   https://api.pota.app/spot/activator
 
-Redis outputs (authoritative, controller-owned):
-- <ns>:pota:ssb:bands -> JSON list: [{band:"20m", count:14}, ...]
-- <ns>:pota:ssb:spots:<band> -> JSON list of normalized spots
+Authoritative Redis outputs (controller-owned):
+- <ns>:pota:ssb:spot:<spot_id>              HASH detail (TTL)
+- <ns>:pota:ssb:spots:<band>                ZSET member=<spot_id>, score=spot_ts_epoch
+- <ns>:pota:ssb:dedupe:<utcday>:<band>      SET members=CALL|PARK
+- <ns>:pota:ssb:band:<band>                 HASH summary
+- <ns>:pota:ssb:bands                       ZSET member=<band>, score=latest/current spot epoch
+- <ns>:pota:ssb:spotmeta:<spot_id>          STRING compact JSON metadata sidecar (TTL)
 
 Optional dedupe filtering against "already logged" calls:
 - <ns>:pota:context -> JSON or HASH containing selected_ref ("K-xxxxx" or "hunted")
@@ -24,11 +28,14 @@ Configuration:
 - RT_POTA_MAX_AGE_SEC: spot max age seconds (default 1200 = 20 min)
 - RT_POTA_MAX_SPOTS_PER_BAND: cap per-band list length (default 250)
 - RT_POTA_INCLUDE_AM_FM: "1" to include AM/FM as phone (default "0")
+- RT_POTA_SPOTMETA_TTL_SEC: metadata sidecar TTL seconds (default max_age + 900, usually 2700)
 - RT_REDIS_URL: override Redis URL (else uses app.json globals.state.redisUrl)
 - RT_KEY_PREFIX: override namespace (else uses app.json globals.state.namespace)
 
 Notes:
 - app.json is the source of truth for band edges + band ordering.
+- Core zset schema is unchanged.
+- Sidecar metadata is additive and keyed by the exact zset member string.
 """
 
 from __future__ import annotations
@@ -58,29 +65,42 @@ PHONE_MODES = {"SSB", "LSB", "USB", "PHONE", "AM", "FM"}
 # Output normalization: USB/LSB/PHONE/SSB => "SSB" for first-cut simplicity
 STRICT_PHONE_OUTPUT_MODES = {"SSB", "PHONE", "USB", "LSB"}
 
+
 def make_spot_id(band: str, call: str, park_ref: str, utc_day: str) -> str:
     return f"{band}:{call.upper()}:{park_ref.upper()}:{utc_day}"
+
 
 def make_worked_member(call: str, park_ref: str) -> str:
     return f"{call.upper()}|{park_ref.upper()}"
 
+
 def worked_key(prefix: str, utc_day: str, context: str, band: str) -> str:
     return f"{prefix}:pota:worked:{utc_day}:{context}:{band}"
+
 
 def spot_key(prefix: str, spot_id: str) -> str:
     return f"{prefix}:pota:ssb:spot:{spot_id}"
 
+
+def spotmeta_key(prefix: str, spot_id: str) -> str:
+    return f"{prefix}:pota:ssb:spotmeta:{spot_id}"
+
+
 def band_spots_key(prefix: str, band: str) -> str:
     return f"{prefix}:pota:ssb:spots:{band}"
+
 
 def band_summary_key(prefix: str, band: str) -> str:
     return f"{prefix}:pota:ssb:band:{band}"
 
+
 def band_rank_key(prefix: str) -> str:
     return f"{prefix}:pota:ssb:bands"
 
+
 def dedupe_key(prefix: str, utc_day: str, band: str) -> str:
     return f"{prefix}:pota:ssb:dedupe:{utc_day}:{band}"
+
 
 def parse_iso_utc_to_epoch(s: str) -> Optional[int]:
     try:
@@ -88,6 +108,38 @@ def parse_iso_utc_to_epoch(s: str) -> Optional[int]:
         return int(dt.timestamp())
     except Exception:
         return None
+
+
+def epoch_to_iso_utc(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compact_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+
+
+def build_spotmeta_payload(
+    *,
+    call: str,
+    band: str,
+    park_ref: str,
+    park_name: str,
+    freq_hz: Optional[int],
+    mode: str,
+    spot_ts_epoch: int,
+) -> str:
+    payload = {
+        "call": call,
+        "band": band,
+        "park_ref": park_ref,
+        "park_name": park_name,
+        "freq_hz": freq_hz,
+        "mode": mode,
+        "spot_ts_utc": epoch_to_iso_utc(spot_ts_epoch),
+        "spot_ts_epoch": spot_ts_epoch,
+    }
+    return compact_json(payload)
+
 
 def is_worked(
     r: redis.Redis,
@@ -105,7 +157,8 @@ def is_worked(
         )
     except Exception:
         return False
-    
+
+
 def mark_worked(
     r: redis.Redis,
     prefix: str,
@@ -122,6 +175,7 @@ def mark_worked(
     pipe.expire(key, 172800)
     pipe.execute()
 
+
 def load_app_config(path: str) -> Dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -129,6 +183,7 @@ def load_app_config(path: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
 
 def dedupe_latest(spots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -152,6 +207,7 @@ def dedupe_latest(spots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = list(best.values())
     out.sort(key=lambda x: (int(x.get("age_sec", 999999)), str(x.get("call") or "")))
     return out
+
 
 def get_by_path(obj: Dict[str, Any], path: str, default=None):
     cur: Any = obj
@@ -199,7 +255,6 @@ def bands_from_app(app: Dict[str, Any]) -> List[Tuple[str, float, float]]:
         lo = None
         hi = None
 
-        # Preferred explicit fields
         for lo_key, hi_key in [
             ("low_mhz", "high_mhz"),
             ("low_khz", "high_khz"),
@@ -210,7 +265,6 @@ def bands_from_app(app: Dict[str, Any]) -> List[Tuple[str, float, float]]:
                 hi = _to_mhz(rng[hi_key])
                 break
 
-        # Backward-compat fallback if only generic low/high exist
         if lo is None or hi is None:
             if "low" in rng and "high" in rng:
                 lo = _to_mhz(rng["low"])
@@ -231,7 +285,6 @@ def band_order_from_app(app: Dict[str, Any], band_table: List[Tuple[str, float, 
     order = app.get("bandOrder")
     if isinstance(order, list) and order:
         return {str(b): i for i, b in enumerate(order)}
-    # fallback: the order we got from the table
     return {b: i for i, (b, _, _) in enumerate(band_table)}
 
 
@@ -278,8 +331,9 @@ class Cfg:
     max_age_sec: int
     max_spots_per_band: int
     include_am_fm: bool
-    key_prefix: str  # namespace, e.g. "rt"
+    key_prefix: str
     app_json: str
+    spotmeta_ttl_sec: int
 
 
 class StopFlag:
@@ -329,7 +383,6 @@ def already_logged(r: redis.Redis, prefix: str, yyyymmdd: str, context: str, ban
     try:
         return r.sismember(setkey, call.upper())
     except Exception:
-        # fail-open (don’t hide spots) if Redis hiccups
         return False
 
 
@@ -380,8 +433,6 @@ def normalize_spot(
     if freq_raw is None:
         return None
 
-    # POTA currently provides frequency in kHz, sometimes as strings like "14123" or "14123.0"
-    # Be tolerant in case the feed ever changes.
     if freq_raw > 1_000_000:
         freq_mhz = freq_raw / 1_000_000.0
     elif freq_raw > 1_000:
@@ -408,13 +459,12 @@ def normalize_spot(
     location_desc = str(spot.get("locationDesc") or "").strip()
     country2 = ""
     if location_desc:
-        # "US-OH" => "US"
         country2 = location_desc.split("-", 1)[0][:2].upper()
 
     park_ref = str(spot.get("reference") or "").strip().upper()
     if not park_ref:
         return None
-    
+
     return {
         "call": call,
         "freq_hz": int(freq_mhz * 1_000_000),
@@ -446,10 +496,11 @@ def write_redis(
     now_utc: datetime,
 ) -> None:
     """
-    v0.3100 Redis model
+    v0.3310 Redis model
 
     Writes:
       - <ns>:pota:ssb:spot:<spot_id>          HASH (TTL ~22 min)
+      - <ns>:pota:ssb:spotmeta:<spot_id>      STRING compact JSON metadata sidecar (TTL)
       - <ns>:pota:ssb:spots:<band>            ZSET score=spot_ts member=spot_id
       - <ns>:pota:ssb:dedupe:<utcday>:<band>  SET members=CALL|PARK
       - <ns>:pota:ssb:band:<band>             HASH summary
@@ -458,13 +509,14 @@ def write_redis(
     prefix = cfg.key_prefix
     now_ts = int(now_utc.timestamp())
     min_active_ts = now_ts - cfg.max_age_sec
-    detail_ttl_sec = cfg.max_age_sec + 120   # 20 min window + 2 min grace
-    dedupe_ttl_sec = 172800                  # 48 hours
+    detail_ttl_sec = cfg.max_age_sec + 120
+    dedupe_ttl_sec = 172800
+    spotmeta_ttl_sec = cfg.spotmeta_ttl_sec
     bands_zkey = band_rank_key(prefix)
 
     pipe = r.pipeline()
 
-    # 1) Write per-spot HASHes and per-band ZSET indexes
+    # 1) Write per-spot HASHes, sidecars, and per-band ZSET indexes
     for band, spots in band_spots.items():
         zkey = band_spots_key(prefix, band)
 
@@ -481,9 +533,15 @@ def write_redis(
             utc_day = datetime.fromtimestamp(spot_ts, tz=timezone.utc).strftime("%Y%m%d")
             spot_id = make_spot_id(band, call, park_ref, utc_day)
             skey = spot_key(prefix, spot_id)
+            smkey = spotmeta_key(prefix, spot_id)
             dkey = dedupe_key(prefix, utc_day, band)
 
-            # Spot detail hash
+            freq_hz = s.get("freq_hz")
+            try:
+                freq_hz_int = int(freq_hz) if freq_hz is not None else None
+            except (TypeError, ValueError):
+                freq_hz_int = None
+
             mapping = {
                 "spot_id": spot_id,
                 "call": call,
@@ -504,44 +562,48 @@ def write_redis(
                 "count": int((s.get("raw") or {}).get("count") or 0),
             }
 
+            spotmeta_json = build_spotmeta_payload(
+                call=call,
+                band=band,
+                park_ref=park_ref,
+                park_name=str(s.get("park_name") or ""),
+                freq_hz=freq_hz_int,
+                mode=str(s.get("mode") or ""),
+                spot_ts_epoch=spot_ts,
+            )
+
             pipe.hset(skey, mapping=mapping)
             pipe.expire(skey, detail_ttl_sec)
 
-            # Active band index
+            pipe.setex(smkey, spotmeta_ttl_sec, spotmeta_json)
+
             pipe.zadd(zkey, {spot_id: spot_ts})
 
-            # Daily dedupe set (for bookkeeping / future ingest logic)
             pipe.sadd(dkey, make_worked_member(call, park_ref))
             pipe.expire(dkey, dedupe_ttl_sec)
 
-        # Trim stale members from active window once per band
         pipe.zremrangebyscore(zkey, "-inf", f"({min_active_ts}")
 
     pipe.execute()
 
     # 2) Rebuild band summaries and ranking from the active ZSETs
     pipe = r.pipeline()
-
-    # Clear ranking ZSET and rebuild from current active bands
     pipe.delete(bands_zkey)
 
     for band, _, _ in band_table:
         zkey = band_spots_key(prefix, band)
-        bkey = band_summary_key(prefix, band)
-
-        # Remove any lingering stale entries again defensively
         pipe.zremrangebyscore(zkey, "-inf", f"({min_active_ts}")
 
     pipe.execute()
 
-    # Need reads outside pipeline for counts/top scores
     active_bands: List[Tuple[str, int, int]] = []
     for band, _, _ in band_table:
         zkey = band_spots_key(prefix, band)
+        bkey = band_summary_key(prefix, band)
+
         count = r.zcard(zkey)
         if count <= 0:
-            # Remove stale summary if no active spots
-            r.delete(band_summary_key(prefix, band))
+            r.delete(bkey)
             continue
 
         top = r.zrevrange(zkey, 0, 0, withscores=True)
@@ -567,45 +629,43 @@ def write_redis(
 
 def build_cfg_from_env_and_app(app: Dict[str, Any]) -> Cfg:
     app_json = os.getenv("RT_APP_JSON", APP_JSON_DEFAULT)
-
     key_prefix = os.getenv("RT_KEY_PREFIX") or get_by_path(app, "globals.state.namespace", "rt")
 
-    # Prefer explicit URL if provided
     redis_url = os.getenv("RT_REDIS_URL")
     if not redis_url:
-        # Next: assemble from host/port/db + password (common RollingThunder pattern)
         host = os.getenv("RT_REDIS_HOST", "127.0.0.1")
         port = int(os.getenv("RT_REDIS_PORT", "6379"))
         db = int(os.getenv("RT_REDIS_DB", "0"))
 
-        user = os.getenv("RT_REDIS_USER", "")  # optional for ACL
+        user = os.getenv("RT_REDIS_USER", "")
         password = os.getenv("RT_REDIS_PASSWORD", "")
 
         if password:
-            # ACL user optional; if user missing use :password
             if user:
                 redis_url = f"redis://{user}:{password}@{host}:{port}/{db}"
             else:
                 redis_url = f"redis://:{password}@{host}:{port}/{db}"
         else:
-            # Final fallback: app.json value (may be unauthenticated)
             redis_url = get_by_path(app, "globals.state.redisUrl", f"redis://{host}:{port}/{db}")
+
+    max_age_sec = int(os.getenv("RT_POTA_MAX_AGE_SEC", str(MAX_AGE_SEC_DEFAULT)))
+    spotmeta_ttl_sec = int(os.getenv("RT_POTA_SPOTMETA_TTL_SEC", str(max_age_sec + 900)))
 
     return Cfg(
         redis_url=redis_url,
         pota_url=os.getenv("RT_POTA_URL", POTA_URL_DEFAULT),
         poll_sec=int(os.getenv("RT_POTA_POLL_SEC", str(POLL_SEC_DEFAULT))),
         http_timeout_sec=int(os.getenv("RT_POTA_HTTP_TIMEOUT_SEC", str(HTTP_TIMEOUT_SEC_DEFAULT))),
-        max_age_sec=int(os.getenv("RT_POTA_MAX_AGE_SEC", str(MAX_AGE_SEC_DEFAULT))),
+        max_age_sec=max_age_sec,
         max_spots_per_band=int(os.getenv("RT_POTA_MAX_SPOTS_PER_BAND", str(MAX_SPOTS_PER_BAND_DEFAULT))),
         include_am_fm=os.getenv("RT_POTA_INCLUDE_AM_FM", "0").strip() == "1",
         key_prefix=str(key_prefix),
         app_json=app_json,
+        spotmeta_ttl_sec=spotmeta_ttl_sec,
     )
 
 
 def main() -> int:
-    # Load app.json first (so cfg defaults come from it)
     app_path = os.getenv("RT_APP_JSON", APP_JSON_DEFAULT)
     app = load_app_config(app_path)
 
@@ -613,7 +673,6 @@ def main() -> int:
 
     band_table = bands_from_app(app)
     if not band_table:
-        # safety fallback (should not trigger with your current app.json)
         band_table = [
             ("160m", 1.8, 2.0),
             ("80m", 3.5, 4.0),
@@ -629,10 +688,11 @@ def main() -> int:
         ]
 
     band_order = band_order_from_app(app, band_table)
-    # Debug log config on startup
+
     print(f"[pota_spots_poller] band_table={band_table}", flush=True)
     print(f"[pota_spots_poller] redis_url={cfg.redis_url}", flush=True)
     print(f"[pota_spots_poller] key_prefix={cfg.key_prefix}", flush=True)
+    print(f"[pota_spots_poller] spotmeta_ttl_sec={cfg.spotmeta_ttl_sec}", flush=True)
 
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
@@ -643,8 +703,6 @@ def main() -> int:
     sess.headers.update({"User-Agent": "RollingThunder/rt-controller (POTA spots poller)"})
 
     backoff = 1.0
-
-
 
     while not StopFlag.stop:
         t0 = time.time()
@@ -659,8 +717,7 @@ def main() -> int:
             resp.raise_for_status()
 
             raw_spots = resp.json()
-            # Debug log raw count and type (in case of API changes or errors)
-            print(f"[pota_spots_poller] raw_spots={len(raw_spots)}", flush=True)
+            print(f"[pota_spots_poller] raw_spots={len(raw_spots) if isinstance(raw_spots, list) else 'non-list'}", flush=True)
             if not isinstance(raw_spots, list):
                 raise ValueError("POTA API returned non-list JSON")
 
@@ -683,6 +740,10 @@ def main() -> int:
                     total_age_dropped += 1
                     continue
 
+                # Placeholder for future context-aware filtering; currently preserved
+                _ = context
+                _ = yyyymmdd
+
                 normalized.append(s)
 
             pre_dedupe_count = len(normalized)
@@ -696,13 +757,10 @@ def main() -> int:
                 flush=True,
             )
 
-            normalized = dedupe_latest(normalized)
-            
             band_spots: Dict[str, List[Dict[str, Any]]] = {}
             for s in normalized:
                 band_spots.setdefault(s["band"], []).append(s)
 
-            # cap per band
             for b in list(band_spots.keys()):
                 band_spots[b] = band_spots[b][: cfg.max_spots_per_band]
 
@@ -711,7 +769,7 @@ def main() -> int:
             backoff = 1.0
 
         except Exception as e:
-            print(f"[pota_spots_poller] error: {e}", file=sys.stderr)
+            print(f"[pota_spots_poller] error: {e}", file=sys.stderr, flush=True)
             time.sleep(min(backoff, 30.0))
             backoff = min(backoff * 1.7, 30.0)
 
