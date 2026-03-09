@@ -23,6 +23,8 @@ Environment=RT_POTA_SSB_BANDS_SOURCE_KEY=rt:pota:ssb:bands
 Environment=RT_POTA_SSB_SPOTS_SOURCE_PREFIX=rt:pota:ssb:spots
 Environment=RT_POTA_UI_BANDS_KEY=rt:pota:ui:ssb:bands
 Environment=RT_POTA_UI_SPOTS_PREFIX=rt:pota:ui:ssb:spots
+Environment=RT_POTA_MAX_SPOT_AGE_SEC=1800
+Environment=RT_POTA_SPOTMETA_TTL_SEC=2700
 
 StandardOutput=journal
 StandardError=journal

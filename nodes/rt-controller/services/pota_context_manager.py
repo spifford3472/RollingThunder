@@ -1,17 +1,19 @@
 #!/opt/rollingthunder/.venv/bin/python3
 """
-RollingThunder v0.3300
+RollingThunder v0.3310
 pota_context_manager.py
 
 Purpose:
 - Maintain current park selection context
 - Mirror poller-owned Redis zsets into UI-friendly JSON keys
+- Enrich UI spot rows from poller-owned metadata sidecar keys
 - Keep UI simple and deterministic
 
 Reads:
 - rt:pota:nearby
-- rt:pota:ssb:bands                (zset; member=band, score=count)
+- rt:pota:ssb:bands                (zset; member=band, score=latest/current spot epoch)
 - rt:pota:ssb:spots:<band>         (zset; member="band:CALL:PARKREF:YYYYMMDD", score=spot_ts_epoch)
+- rt:pota:ssb:spotmeta:<member>    (string JSON metadata sidecar, optional)
 
 Writes:
 - rt:pota:context                  (string JSON object)
@@ -29,12 +31,13 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 
 import redis
 from redis.exceptions import RedisError
 
 SERVICE_NAME = "pota_context_manager"
-SERVICE_VERSION = "0.3300"
+SERVICE_VERSION = "0.3310"
 LOOP_INTERVAL_SEC = 1.0
 
 BAND_ORDER = [
@@ -44,12 +47,16 @@ BAND_ORDER = [
 ]
 
 
-def compact_json(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
-
-
 def utc_now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def epoch_to_iso_utc(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compact_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
 def env_str(name: str, default: str) -> str:
@@ -122,6 +129,7 @@ class Config:
 
     pota_ssb_bands_source_key: str = env_str("RT_POTA_SSB_BANDS_SOURCE_KEY", "rt:pota:ssb:bands")
     pota_ssb_spots_source_prefix: str = env_str("RT_POTA_SSB_SPOTS_SOURCE_PREFIX", "rt:pota:ssb:spots")
+    pota_ssb_spotmeta_prefix: str = env_str("RT_POTA_SSB_SPOTMETA_PREFIX", "rt:pota:ssb:spotmeta")
 
     pota_ui_bands_key: str = env_str("RT_POTA_UI_BANDS_KEY", "rt:pota:ui:ssb:bands")
     pota_ui_spots_prefix: str = env_str("RT_POTA_UI_SPOTS_PREFIX", "rt:pota:ui:ssb:spots")
@@ -242,8 +250,89 @@ def parse_band_spot_member(member: str, score: float) -> Dict[str, Any]:
         "call": call,
         "park_ref": park_ref,
         "spot_day_utc": spot_day_utc,
-        "score": score_int,
+        "spot_ts_epoch": score_int,
     }
+
+
+def load_spotmeta_bulk(
+    r: redis.Redis,
+    spotmeta_prefix: str,
+    members: List[str],
+) -> Tuple[Dict[str, Dict[str, Any]], int]:
+    if not members:
+        return {}, 0
+
+    keys = [f"{spotmeta_prefix}:{member}" for member in members]
+    raw_values = r.mget(keys)
+
+    meta_by_member: Dict[str, Dict[str, Any]] = {}
+    malformed_count = 0
+
+    for member, raw in zip(members, raw_values):
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                meta_by_member[member] = parsed
+            else:
+                malformed_count += 1
+                log_warning(
+                    "Spot metadata sidecar is not a JSON object",
+                    event="spotmeta_invalid_type",
+                    member=member,
+                )
+        except json.JSONDecodeError:
+            malformed_count += 1
+            log_warning(
+                "Failed to parse spot metadata sidecar JSON",
+                event="spotmeta_json_decode_error",
+                member=member,
+            )
+
+    return meta_by_member, malformed_count
+
+
+def enrich_spot_row(base: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    row = dict(base)
+
+    row.setdefault("park_name", "")
+    row.setdefault("freq_hz", None)
+    row.setdefault("mode", "SSB")
+    row.setdefault("spot_ts_utc", "")
+
+    if not meta:
+        if row.get("spot_ts_epoch"):
+            row["spot_ts_utc"] = epoch_to_iso_utc(int(row["spot_ts_epoch"]))
+        return row
+
+    row["call"] = str(meta.get("call") or row.get("call", ""))
+    row["band"] = str(meta.get("band") or row.get("band", ""))
+    row["park_ref"] = str(meta.get("park_ref") or row.get("park_ref", ""))
+    row["park_name"] = str(meta.get("park_name") or "")
+
+    freq_hz = meta.get("freq_hz")
+    try:
+        row["freq_hz"] = int(freq_hz) if freq_hz is not None else None
+    except (TypeError, ValueError):
+        row["freq_hz"] = None
+
+    row["mode"] = str(meta.get("mode") or "SSB")
+
+    meta_epoch = meta.get("spot_ts_epoch")
+    try:
+        if meta_epoch is not None:
+            row["spot_ts_epoch"] = int(meta_epoch)
+    except (TypeError, ValueError):
+        pass
+
+    meta_utc = meta.get("spot_ts_utc")
+    if meta_utc:
+        row["spot_ts_utc"] = str(meta_utc)
+    elif row.get("spot_ts_epoch"):
+        row["spot_ts_utc"] = epoch_to_iso_utc(int(row["spot_ts_epoch"]))
+
+    return row
 
 
 def zset_band_counts(r: redis.Redis, spots_prefix: str) -> List[Tuple[str, int]]:
@@ -270,16 +359,40 @@ def zset_band_counts(r: redis.Redis, spots_prefix: str) -> List[Tuple[str, int]]
     return counts
 
 
-def zset_band_spots(r: redis.Redis, key: str) -> List[Dict[str, Any]]:
+def zset_band_spots_with_meta(
+    r: redis.Redis,
+    spots_key: str,
+    spotmeta_prefix: str,
+) -> Tuple[List[Dict[str, Any]], int, int]:
     try:
-        raw = r.zrange(key, 0, -1, withscores=True)
+        raw = r.zrange(spots_key, 0, -1, withscores=True)
     except RedisError:
         raise
     except Exception as exc:
-        log_warning("Unable to read band spots zset", event="spots_zset_read_error", key=key, error=str(exc))
-        return []
+        log_warning(
+            "Unable to read band spots zset",
+            event="spots_zset_read_error",
+            key=spots_key,
+            error=str(exc),
+        )
+        return [], 0, 0
 
-    return [parse_band_spot_member(member, score) for member, score in raw]
+    base_rows = [parse_band_spot_member(member, score) for member, score in raw]
+    members = [row["member"] for row in base_rows]
+
+    meta_by_member, malformed_count = load_spotmeta_bulk(r, spotmeta_prefix, members)
+
+    rows: List[Dict[str, Any]] = []
+    hit_count = 0
+
+    for base in base_rows:
+        member = base["member"]
+        meta = meta_by_member.get(member)
+        if meta:
+            hit_count += 1
+        rows.append(enrich_spot_row(base, meta))
+
+    return rows, hit_count, malformed_count
 
 
 class Service:
@@ -303,12 +416,23 @@ class Service:
         counts = zset_band_counts(r, self.cfg.pota_ssb_spots_source_prefix)
         return [{"band": band, "count": count} for band, count in counts]
 
-    def build_ui_spots(self, r: redis.Redis) -> Dict[str, List[Dict[str, Any]]]:
+    def build_ui_spots(self, r: redis.Redis) -> Tuple[Dict[str, List[Dict[str, Any]]], int, int]:
         result: Dict[str, List[Dict[str, Any]]] = {}
+        total_meta_hits = 0
+        total_meta_malformed = 0
+
         for band in BAND_ORDER:
             source_key = f"{self.cfg.pota_ssb_spots_source_prefix}:{band}"
-            result[band] = zset_band_spots(r, source_key)
-        return result
+            rows, meta_hits, malformed = zset_band_spots_with_meta(
+                r,
+                source_key,
+                self.cfg.pota_ssb_spotmeta_prefix,
+            )
+            result[band] = rows
+            total_meta_hits += meta_hits
+            total_meta_malformed += malformed
+
+        return result, total_meta_hits, total_meta_malformed
 
     def publish_ui_state(
         self,
@@ -316,16 +440,18 @@ class Service:
         band_summary: List[Dict[str, Any]],
         per_band_spots: Dict[str, List[Dict[str, Any]]],
     ) -> None:
-        r.set(self.cfg.pota_ui_bands_key, compact_json(band_summary))
+        pipe = r.pipeline(transaction=False)
+        pipe.set(self.cfg.pota_ui_bands_key, compact_json(band_summary))
         for band in BAND_ORDER:
             key = f"{self.cfg.pota_ui_spots_prefix}:{band}"
-            r.set(key, compact_json(per_band_spots.get(band, [])))
+            pipe.set(key, compact_json(per_band_spots.get(band, [])))
+        pipe.execute()
 
     def run_once(self) -> None:
         r = self.redis_mgr.get()
         context = self.ensure_context_key(r)
         band_summary = self.build_ui_band_summary(r)
-        per_band_spots = self.build_ui_spots(r)
+        per_band_spots, total_meta_hits, total_meta_malformed = self.build_ui_spots(r)
         self.publish_ui_state(r, band_summary, per_band_spots)
 
         total_spots = sum(len(v) for v in per_band_spots.values())
@@ -336,6 +462,8 @@ class Service:
             active_bands=len(band_summary),
             total_ui_spots=total_spots,
             selected_park_ref=context.get("selected_park_ref", ""),
+            spotmeta_hits=total_meta_hits,
+            spotmeta_malformed=total_meta_malformed,
         )
 
     def run(self) -> None:
@@ -351,6 +479,7 @@ class Service:
             nearby_key=self.cfg.pota_nearby_key,
             bands_source_key=self.cfg.pota_ssb_bands_source_key,
             spots_source_prefix=self.cfg.pota_ssb_spots_source_prefix,
+            spotmeta_prefix=self.cfg.pota_ssb_spotmeta_prefix,
             ui_bands_key=self.cfg.pota_ui_bands_key,
             ui_spots_prefix=self.cfg.pota_ui_spots_prefix,
         )
