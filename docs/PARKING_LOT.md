@@ -39,6 +39,7 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] Watchdog / health indicator LED
 - [ ] “safe mode” boot page
 - [ ] Add a internet "Keep-Alive function" so hotspot does not go to sleep
+- [ ] Create admin screen and add recompute pota park tile data (used when a new file is loaded)
 
 ## 5) Stretch Ideas / R&D
 - [ ] If rt-radio is offline then the HF Panel should not be available to select

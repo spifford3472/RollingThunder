@@ -81,7 +81,7 @@
       "id": "gps_ingest",
       "scope": "always_on",
       "ownerNode": "rt-controller",
-      "systemd": {"unit": "rt-gps-ingest.service" },
+      "systemd": { "unit": "rt-gps-ingest.service" },
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
         "startPolicy": "onBoot",
@@ -114,6 +114,29 @@
         "staleAfterMs": 5000
       },
       "provides": ["state.pota.nearby", "alerts.pota.nearby"]
+    },
+
+    "pota_context_manager": {
+      "id": "pota_context_manager",
+      "scope": "always_on",
+      "ownerNode": "rt-controller",
+      "systemd": { "unit": "rt-pota-context-manager.service" },
+      "dependsOn": ["redis_state", "pota_nearby_parks"],
+      "lifecycle": {
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": { "mode": "onFailure", "backoffMs": 2000, "maxBackoffMs": 30000 }
+      },
+      "health": {
+        "type": "state_freshness",
+        "target": { "key": "rt:pota:ui:ssb:bands", "namespace": "globals.state.namespace" },
+        "staleAfterMs": 5000
+      },
+      "provides": [
+        "state.pota.context",
+        "state.pota.ui.ssb.bands",
+        "state.pota.ui.ssb.spots"
+      ]
     },
 
     "logging": {
@@ -225,7 +248,7 @@
       "id": "wpsd_integration",
       "scope": "page_scoped",
       "ownerNode": "external",
-      "systemd": {"unit": "rt-wpsd-poller.service" },
+      "systemd": { "unit": "rt-wpsd-poller.service" },
       "lifecycle": {
         "startPolicy": "manualOnly",
         "stopPolicy": "onPageExit",
@@ -243,7 +266,7 @@
       "id": "wpsd_log_ingestor",
       "scope": "page_scoped",
       "ownerNode": "rt-controller",
-      "systemd": {"unit": "rt-wpsd-log-ingestor.service" },
+      "systemd": { "unit": "rt-wpsd-log-ingestor.service" },
       "dependsOn": ["redis_state", "mqtt_bus"],
       "lifecycle": {
         "startPolicy": "onBoot",
@@ -256,14 +279,13 @@
         "staleAfterMs": 8000
       },
       "provides": ["state.wpsd.rf"]
-    }
-  },
+    },
 
-  "alerts_reconciler": {
+    "alerts_reconciler": {
       "id": "alerts_reconciler",
       "scope": "always_on",
       "ownerNode": "rt-controller",
-      "systemd": {"unit": "rt-alerts-reconciler.service" },
+      "systemd": { "unit": "rt-alerts-reconciler.service" },
       "lifecycle": {
         "startPolicy": "onBoot",
         "stopPolicy": "never",
@@ -278,11 +300,11 @@
       "provides": ["state.nodes.alerts_reconciler"]
     },
 
-      "service_state_publisher": {
+    "service_state_publisher": {
       "id": "service_state_publisher",
       "scope": "always_on",
       "ownerNode": "rt-controller",
-      "systemd": {"unit": "rt-service-state-publisher.service" },
+      "systemd": { "unit": "rt-service-state-publisher.service" },
       "lifecycle": {
         "startPolicy": "onBoot",
         "stopPolicy": "never",
@@ -295,7 +317,8 @@
         "staleAfterMs": 5000
       },
       "provides": ["state.nodes.service_state_publisher"]
-    },
+    }
+  },
 
   "pages": { "include": ["pages.manifest.json"] },
   "panels": { "include": ["panels.manifest.json"] },
@@ -315,23 +338,23 @@
   },
 
   "bandOrder": [
-    "160m","80m","60m","40m",
-    "30m","20m","17m","15m",
-    "12m","10m","6m"
+    "160m", "80m", "60m", "40m",
+    "30m", "20m", "17m", "15m",
+    "12m", "10m", "6m"
   ],
 
   "bands": {
     "160m": { "low_mhz": 1.8, "high_mhz": 2.0 },
-    "80m":  { "low_mhz": 3.5, "high_mhz": 4.0 },
-    "60m":  { "low_mhz": 5.0, "high_mhz": 5.5 },
-    "40m":  { "low_mhz": 7.0, "high_mhz": 7.3 },
-    "30m":  { "low_mhz": 10.1, "high_mhz": 10.15 },
-    "20m":  { "low_mhz": 14.0, "high_mhz": 14.35 },
-    "17m":  { "low_mhz": 18.068, "high_mhz": 18.168 },
-    "15m":  { "low_mhz": 21.0, "high_mhz": 21.45 },
-    "12m":  { "low_mhz": 24.89, "high_mhz": 24.99 },
-    "10m":  { "low_mhz": 28.0, "high_mhz": 29.7 },
-    "6m":   { "low_mhz": 50.0, "high_mhz": 54.0 }
+    "80m": { "low_mhz": 3.5, "high_mhz": 4.0 },
+    "60m": { "low_mhz": 5.0, "high_mhz": 5.5 },
+    "40m": { "low_mhz": 7.0, "high_mhz": 7.3 },
+    "30m": { "low_mhz": 10.1, "high_mhz": 10.15 },
+    "20m": { "low_mhz": 14.0, "high_mhz": 14.35 },
+    "17m": { "low_mhz": 18.068, "high_mhz": 18.168 },
+    "15m": { "low_mhz": 21.0, "high_mhz": 21.45 },
+    "12m": { "low_mhz": 24.89, "high_mhz": 24.99 },
+    "10m": { "low_mhz": 28.0, "high_mhz": 29.7 },
+    "6m": { "low_mhz": 50.0, "high_mhz": 54.0 }
   },
 
   "potaBandDefaults": {
