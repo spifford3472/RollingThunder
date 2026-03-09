@@ -136,7 +136,7 @@ def build_spotmeta_payload(
         "freq_hz": freq_hz,
         "mode": mode,
         "spot_ts_utc": epoch_to_iso_utc(spot_ts_epoch),
-        "spot_ts_epoch": spot_ts_epoch,
+        "spot_ts": spot_ts_epoch,
     }
     return compact_json(payload)
 

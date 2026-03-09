@@ -319,10 +319,13 @@ def enrich_spot_row(base: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> Dic
 
     row["mode"] = str(meta.get("mode") or "SSB")
 
-    meta_epoch = meta.get("spot_ts_epoch")
+    meta_ts = meta.get("spot_ts")
+    if meta_ts is None:
+        meta_ts = meta.get("spot_ts_epoch")  # backward-compat during rollout
+
     try:
-        if meta_epoch is not None:
-            row["spot_ts_epoch"] = int(meta_epoch)
+        if meta_ts is not None:
+            row["spot_ts_epoch"] = int(meta_ts)
     except (TypeError, ValueError):
         pass
 

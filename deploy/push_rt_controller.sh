@@ -70,9 +70,9 @@ UNITS=(
   "rt-controller-presence.service"
   "rt-ui-intent-worker.service"
   "rt-alert@.service"
+  "rt-pota-context-manager.service"
   "rt-pota-spots-poller.service"
   "rt-pota-nearby-parks.service"
-  "rt-pota-context-manager.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
