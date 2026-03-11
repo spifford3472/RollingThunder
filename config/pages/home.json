@@ -26,7 +26,8 @@
       "alert.ack",
       "alert.silence",
       "host.status",
-      "node.reboot"
+      "node.reboot",
+      "radio.tune"
     ]
   },
 
