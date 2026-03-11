@@ -32,6 +32,76 @@ import { createBindingStore } from "./binding_store.js";
 import { startPanelRefresh } from "./refresh.js";
 import { renderPanelError } from "./renderers/panel_error.js";
 
+// -----------------------------------------------------------------------------
+// Runtime extension helpers (Step 1: observe only; no validation/dispatch yet)
+// -----------------------------------------------------------------------------
+
+function findOwningSlot(node) {
+  if (!node || !(node instanceof Element)) return null;
+  return node.closest(".rt-slot");
+}
+
+function handleRuntimeFocusRequest(ev, runtimeCtx) {
+  const slot = findOwningSlot(ev.target);
+  if (!slot) {
+    console.warn("[rt] rt-request-focus ignored: no owning slot");
+    return;
+  }
+
+  if (runtimeCtx?.debug) {
+    console.debug("[rt] rt-request-focus received", {
+      slotId: slot.dataset.slotId || null,
+      panel: slot.dataset.panel || slot.dataset.panelId || null,
+      detail: ev.detail || {},
+    });
+  }
+}
+
+function handleRuntimeIntentRequest(ev, runtimeCtx) {
+  const slot = findOwningSlot(ev.target);
+  if (!slot) {
+    console.warn("[rt] rt-emit-intent ignored: no owning slot");
+    return;
+  }
+
+  const detail = ev.detail || {};
+  const intent = detail.intent || null;
+  const params = detail.params || {};
+
+  if (runtimeCtx?.debug) {
+    console.debug("[rt] rt-emit-intent received", {
+      slotId: slot.dataset.slotId || null,
+      panel: slot.dataset.panel || slot.dataset.panelId || null,
+      intent,
+      params,
+    });
+  }
+}
+
+function installRuntimeExtensions(runtimeCtx) {
+  const root = runtimeCtx?.root || null;
+  if (!root) {
+    console.warn("[rt] installRuntimeExtensions: missing root element");
+    return;
+  }
+
+  root.addEventListener("rt-request-focus", (ev) => {
+    handleRuntimeFocusRequest(ev, runtimeCtx);
+  });
+
+  root.addEventListener("rt-emit-intent", (ev) => {
+    handleRuntimeIntentRequest(ev, runtimeCtx);
+  });
+
+  if (runtimeCtx?.debug) {
+    console.debug("[rt] runtime extensions installed");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Layout + shell helpers
+// -----------------------------------------------------------------------------
+
 function normalizeLayout(layout) {
   return {
     top: Array.isArray(layout?.top) ? layout.top : [],
@@ -60,6 +130,11 @@ function mkSlot(panelId) {
   const d = document.createElement("div");
   d.className = "rt-slot";
   d.dataset.panelId = String(panelId);
+
+  // Helpful aliases for future runtime extension work.
+  // Safe even if not used yet.
+  d.dataset.panel = String(panelId);
+  d.dataset.slotId = String(panelId);
 
   // runtime-owned header (never rendered by panels)
   const hdr = document.createElement("div");
@@ -154,7 +229,7 @@ function setBrowseIndicator(slotEl, enabled) {
     if (!badge) {
       badge = document.createElement("span");
       badge.setAttribute("data-rt-browse-indicator", "1");
-      badge.className = "rt-pill warn"; // reuses existing pill styles
+      badge.className = "rt-pill warn";
       badge.textContent = "↕ BROWSE";
       hdr.appendChild(badge);
     }
@@ -175,13 +250,11 @@ function clearAllBrowseIndicators(rootEl) {
 function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) {
   if (!rootEl) return;
 
-  // Not browsing? Ensure nothing claims browse.
   if (navMode !== "PANEL_BROWSE" || !browsePanelId) {
     clearAllBrowseIndicators(rootEl);
     return;
   }
 
-  // Browsing: clear then re-assert on the browse owner slot.
   clearAllBrowseIndicators(rootEl);
   const slot = slotByPanelId?.get(browsePanelId) || null;
   setBrowseIndicator(slot, true);
@@ -193,6 +266,9 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   const pageId = params.get("page") || "home";
 
   const root = document.getElementById("rt_mount") || document.body;
+  const debug =
+    params.get("debug") === "1" ||
+    window.RT_DEBUG === true;
 
   // Local nav state
   let navMode = "GLOBAL_FOCUS"; // GLOBAL_FOCUS | PANEL_BROWSE | MODAL_DIALOG
@@ -213,115 +289,106 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     return m;
   }
 
-function openConfirmModal({
-  title,
-  body,
-  confirmLabel = "OK",
-  cancelLabel = "Cancel",
-  onConfirm,
-  onCancel,
-  // NEW:
-  twoStep = false,          // if true: first OK arms, second OK confirms
-  armLabel = "CONFIRM",     // label used when armed
-  timeoutMs = 5000,         // only applies when armed
-  danger = false,           // styles confirm as dangerous when armed
-  warningHtml = "",         // optional extra HTML (e.g. blinking warning)
-}) {
-  const mroot = ensureModalRoot();
+  function openConfirmModal({
+    title,
+    body,
+    confirmLabel = "OK",
+    cancelLabel = "Cancel",
+    onConfirm,
+    onCancel,
+    twoStep = false,
+    armLabel = "CONFIRM",
+    timeoutMs = 5000,
+    danger = false,
+    warningHtml = "",
+  }) {
+    const mroot = ensureModalRoot();
 
-  // Modal state
-  let armed = false;
-  let timerId = null;
-  let armExpiresAt = 0;
+    let armed = false;
+    let timerId = null;
+    let armExpiresAt = 0;
 
-  function render() {
-    const okText = armed ? armLabel : confirmLabel;
+    function render() {
+      const okText = armed ? armLabel : confirmLabel;
 
-    mroot.innerHTML = `
-      <div class="rt-modal-backdrop"></div>
-      <div class="rt-modal" role="dialog" aria-modal="true">
-        <div class="rt-modal-title">${title}</div>
-        <div class="rt-modal-body">
-          ${body}
-          ${warningHtml ? `<div class="rt-modal-warning">${warningHtml}</div>` : ``}
-          ${armed ? `<div class="rt-modal-countdown rt-muted" style="margin-top:10px;"></div>` : ``}
+      mroot.innerHTML = `
+        <div class="rt-modal-backdrop"></div>
+        <div class="rt-modal" role="dialog" aria-modal="true">
+          <div class="rt-modal-title">${title}</div>
+          <div class="rt-modal-body">
+            ${body}
+            ${warningHtml ? `<div class="rt-modal-warning">${warningHtml}</div>` : ``}
+            ${armed ? `<div class="rt-modal-countdown rt-muted" style="margin-top:10px;"></div>` : ``}
+          </div>
+          <div class="rt-modal-actions">
+            <button class="rt-btn rt-btn-cancel">${cancelLabel}</button>
+            <button class="rt-btn rt-btn-ok ${armed && danger ? "rt-btn-danger" : ""}">${okText}</button>
+          </div>
         </div>
-        <div class="rt-modal-actions">
-          <button class="rt-btn rt-btn-cancel">${cancelLabel}</button>
-          <button class="rt-btn rt-btn-ok ${armed && danger ? "rt-btn-danger" : ""}">${okText}</button>
-        </div>
-      </div>
-    `;
+      `;
 
-    const okBtn = mroot.querySelector(".rt-btn-ok");
-    const cancelBtn = mroot.querySelector(".rt-btn-cancel");
+      const okBtn = mroot.querySelector(".rt-btn-ok");
+      const cancelBtn = mroot.querySelector(".rt-btn-cancel");
 
-    okBtn?.addEventListener("click", ok);
-    cancelBtn?.addEventListener("click", cancel);
-
-    // keep focus stable
-    okBtn?.focus?.();
-  }
-
-  function updateCountdown() {
-    const el = mroot.querySelector(".rt-modal-countdown");
-    if (!el) return;
-    const left = Math.max(0, armExpiresAt - Date.now());
-    el.textContent = left <= 0 ? "" : `Confirm within ${Math.ceil(left / 1000)}s`;
-  }
-
-  const prevNavMode = navMode;
-  navMode = "MODAL_DIALOG";
-
-  function close() {
-    if (timerId) {
-      try { clearInterval(timerId); } catch (_) {}
-      timerId = null;
+      okBtn?.addEventListener("click", ok);
+      cancelBtn?.addEventListener("click", cancel);
+      okBtn?.focus?.();
     }
-    mroot.innerHTML = "";
-    _activeModal = null;
-    navMode = prevNavMode;
-    syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
-  }
 
-  async function ok() {
-    if (twoStep) {
-      if (!armed) {
-        // Arm it
-        armed = true;
-        armExpiresAt = Date.now() + timeoutMs;
+    function updateCountdown() {
+      const el = mroot.querySelector(".rt-modal-countdown");
+      if (!el) return;
+      const left = Math.max(0, armExpiresAt - Date.now());
+      el.textContent = left <= 0 ? "" : `Confirm within ${Math.ceil(left / 1000)}s`;
+    }
 
-        render();
-        updateCountdown();
+    const prevNavMode = navMode;
+    navMode = "MODAL_DIALOG";
 
-        timerId = setInterval(() => {
+    function close() {
+      if (timerId) {
+        try { clearInterval(timerId); } catch (_) {}
+        timerId = null;
+      }
+      mroot.innerHTML = "";
+      _activeModal = null;
+      navMode = prevNavMode;
+      syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
+    }
+
+    async function ok() {
+      if (twoStep) {
+        if (!armed) {
+          armed = true;
+          armExpiresAt = Date.now() + timeoutMs;
+
+          render();
           updateCountdown();
-          if (Date.now() >= armExpiresAt) {
-            // timeout => auto-exit back to browse/global
-            close();
-          }
-        }, 200);
 
-        return; // do NOT confirm yet
+          timerId = setInterval(() => {
+            updateCountdown();
+            if (Date.now() >= armExpiresAt) {
+              close();
+            }
+          }, 200);
+
+          return;
+        }
+
+        try { await onConfirm?.(); } finally { close(); }
+        return;
       }
 
-      // Armed => confirm
       try { await onConfirm?.(); } finally { close(); }
-      return;
     }
 
-    // Single-step confirm
-    try { await onConfirm?.(); } finally { close(); }
+    function cancel() {
+      try { onCancel?.(); } finally { close(); }
+    }
+
+    _activeModal = { ok, cancel, close, prevNavMode };
+    render();
   }
-
-  function cancel() {
-    try { onCancel?.(); } finally { close(); }
-  }
-
-  _activeModal = { ok, cancel, close, prevNavMode };
-
-  render();
-}
 
   // attach runtime css
   const css = document.createElement("link");
@@ -360,6 +427,20 @@ function openConfirmModal({
   const registry = createRendererRegistry();
   const store = createBindingStore();
   const nav = createNavMachine();
+
+  // Step 1 runtime extension context
+  const runtimeCtx = {
+    root,
+    debug,
+    pageId,
+    page,
+    bundle,
+    nav,
+    getNavMode: () => navMode,
+    getBrowsePanelId: () => browsePanelId,
+  };
+
+  installRuntimeExtensions(runtimeCtx);
 
   // Build slot map panelId -> slot element
   const slotByPanelId = new Map();
@@ -459,7 +540,6 @@ function openConfirmModal({
 
       cancelBtn?.addEventListener("click", cancel);
       okBtn?.addEventListener("click", ok);
-
       okBtn?.focus?.();
     }
 
@@ -476,7 +556,6 @@ function openConfirmModal({
     function startConfirmTimeout() {
       clearTimer();
       timeoutHandle = setTimeout(() => {
-        // Auto-cancel back to previous mode (browse/global)
         cancel();
       }, 5000);
     }
@@ -492,18 +571,15 @@ function openConfirmModal({
     async function ok() {
       if (isController) {
         if (!armed) {
-          // Arm confirm step
           armed = true;
           render();
           startConfirmTimeout();
           return;
         }
-        // Armed: confirm reboot
         try { await onRequestRestart?.(); } finally { close(); }
         return;
       }
 
-      // Non-controller: immediate restart request
       try { await onRequestRestart?.(); } finally { close(); }
     }
 
@@ -512,13 +588,7 @@ function openConfirmModal({
     }
 
     _activeModal = { ok, cancel, close, prevNavMode };
-
     render();
-    if (isController) {
-      // Only start timeout after arming; not immediately
-    } else {
-      // Optional: you can add a timeout here too if you want
-    }
   }
 
   root.addEventListener("rt-open-modal", (ev) => {
@@ -531,14 +601,11 @@ function openConfirmModal({
         body: String(d.body || ""),
         confirmLabel: String(d.confirmLabel || "OK"),
         cancelLabel: String(d.cancelLabel || "Cancel"),
-
-        // IMPORTANT: forward optional modal controls from panels
         twoStep: Boolean(d.twoStep),
         armLabel: String(d.armLabel || "CONFIRM"),
         timeoutMs: Number.isFinite(Number(d.timeoutMs)) ? Number(d.timeoutMs) : 5000,
         danger: Boolean(d.danger),
         warningHtml: String(d.warningHtml || ""),
-
         onConfirm: async () => {
           const intent = String(d?.action?.intent || "").trim();
           const params = d?.action?.params || null;
@@ -554,7 +621,6 @@ function openConfirmModal({
       });
     }
 
-    // NEW: node restart modal
     if (kind === "node_restart") {
       const nodeId = String(d.nodeId || "").trim();
       const intent = String(d?.action?.intent || "").trim();
@@ -574,7 +640,6 @@ function openConfirmModal({
       });
     }
   });
-
 
   function getPanelDefaultAction(panelId) {
     const panel = bundle.panelsById[panelId];
@@ -624,7 +689,6 @@ function openConfirmModal({
     if (e.key === "ArrowDown") return { intent: "ui.browse.delta", params: { delta: +1 } };
     if (e.key === "ArrowUp") return { intent: "ui.browse.delta", params: { delta: -1 } };
 
-    // NEW: modal focus cycling
     if (e.key === "ArrowLeft") return { intent: "ui.modal.focus", params: { dir: -1 } };
     if (e.key === "ArrowRight") return { intent: "ui.modal.focus", params: { dir: +1 } };
     if (e.key === "Tab") return { intent: "ui.modal.focus", params: { dir: e.shiftKey ? -1 : +1 } };
@@ -638,7 +702,7 @@ function openConfirmModal({
     "ui.ok",
     "ui.cancel",
     "ui.browse.delta",
-    "ui.modal.focus", // NEW
+    "ui.modal.focus",
   ]);
 
   function handleGlobalFocusIntent(intent, params) {
@@ -683,7 +747,6 @@ function openConfirmModal({
     if (intent === "ui.ok") {
       const slot = browsePanelId ? (slotByPanelId.get(browsePanelId) || null) : null;
       if (slot) slot.dispatchEvent(new CustomEvent("rt-browse-ok"));
-      // IMPORTANT: do NOT exitBrowse() here
       syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId });
       return;
     }
@@ -702,22 +765,18 @@ function openConfirmModal({
   function handleModalIntent(intent, params) {
     const mroot = document.getElementById("rt_modal_root");
 
-    // ESC is always cancel
     if (intent === "ui.cancel") return _activeModal?.cancel?.();
 
-    // ENTER should activate the *focused* button inside the modal
     if (intent === "ui.ok") {
       if (!mroot) return _activeModal?.ok?.();
 
       const active = document.activeElement;
 
-      // If the cancel button is focused, treat ENTER as cancel.
       if (active && active.closest && active.closest("#rt_modal_root")) {
         if (active.classList?.contains("rt-btn-cancel")) return _activeModal?.cancel?.();
         if (active.classList?.contains("rt-btn-ok")) return _activeModal?.ok?.();
       }
 
-      // Fallback: behave like OK
       return _activeModal?.ok?.();
     }
 
@@ -776,7 +835,6 @@ function openConfirmModal({
       render: (data) => {
         renderer(bodyEl, panel, data);
 
-        // Re-assert runtime-owned browse pill if panel refresh rebuilds DOM
         if (navMode === "PANEL_BROWSE" && browsePanelId === panelId) {
           queueMicrotask(() =>
             syncBrowseIndicator({ rootEl: root, navMode, browsePanelId, slotByPanelId })
