@@ -13,6 +13,7 @@
 //   - input ownership (getInputOwner) for deterministic routing
 //   - explicit transitions for OK/CANCEL flows (beginBrowse/endBrowse/openModal/closeModal)
 //   - optional per-page "remember last focus" behavior
+//   - absolute focus setter: setActivePanel(panelId)
 //
 // This file does not emit intents, write Redis, or implement panel logic.
 // It only manages focus + navigation state + capture.
@@ -143,6 +144,23 @@ export function createNavMachine() {
     if (_pageId) _lastFocusByPage.delete(_pageId);
   }
 
+  // New: absolute focus setter
+  function setActivePanel(panelId) {
+    if (_state !== NAV_STATE.GLOBAL_FOCUS) return false;
+
+    const id = String(panelId || "").trim();
+    if (!id) return false;
+    if (!_order.includes(id)) return false;
+    if (!_slotById.has(id)) return false;
+
+    _idx = _order.indexOf(id);
+    if (_idx < 0) return false;
+
+    _setActive(id);
+    if (_pageId && _activeId) _lastFocusByPage.set(_pageId, _activeId);
+    return true;
+  }
+
   // ---- New: explicit transitions ----
 
   // Enter panel browse (panel captures input)
@@ -211,6 +229,7 @@ export function createNavMachine() {
     getState,
 
     // new
+    setActivePanel,
     beginBrowse,
     endBrowse,
     openModal,

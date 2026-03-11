@@ -48,10 +48,42 @@ function handleRuntimeFocusRequest(ev, runtimeCtx) {
     return;
   }
 
+  const panelId = String(slot.dataset.panelId || "").trim();
+  if (!panelId) {
+    console.warn("[rt] rt-request-focus ignored: slot missing panelId");
+    return;
+  }
+
+  const navMode = typeof runtimeCtx?.getNavMode === "function"
+    ? runtimeCtx.getNavMode()
+    : "GLOBAL_FOCUS";
+
+  if (navMode !== "GLOBAL_FOCUS") {
+    if (runtimeCtx?.debug) {
+      console.debug("[rt] rt-request-focus denied", {
+        reason: "nav-mode-blocked",
+        navMode,
+        panelId,
+        detail: ev.detail || {},
+      });
+    }
+    return;
+  }
+
+  const nav = runtimeCtx?.nav || null;
+  if (!nav || typeof nav.setActivePanel !== "function") {
+    console.warn("[rt] rt-request-focus ignored: nav.setActivePanel unavailable", {
+      panelId,
+    });
+    return;
+  }
+
+  const ok = nav.setActivePanel(panelId);
+
   if (runtimeCtx?.debug) {
-    console.debug("[rt] rt-request-focus received", {
-      slotId: slot.dataset.slotId || null,
-      panel: slot.dataset.panel || slot.dataset.panelId || null,
+    console.debug(ok ? "[rt] rt-request-focus granted" : "[rt] rt-request-focus denied", {
+      reason: ok ? "focused" : "panel-not-focusable",
+      panelId,
       detail: ev.detail || {},
     });
   }
@@ -453,9 +485,11 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
   const { focusOrder, initialPanelId } = buildFocusModel({ page, bundle, presentPanelIds });
 
   nav.setPageModel({
+    pageId: page.id || pageId,
     focusablePanelIds: focusOrder,
     slotByPanelId,
     initialPanelId,
+    rememberFocus: true,
   });
 
   // -------------------------
