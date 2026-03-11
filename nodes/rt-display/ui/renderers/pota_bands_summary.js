@@ -128,6 +128,8 @@ function attachBrowseHandlersOnce(container) {
 
   const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
+    console.log("pota_bands_summary rt-browse-delta", { delta });
+
     if (!Number.isFinite(delta) || delta === 0) return;
 
     const m = getModel(container);
