@@ -4,4 +4,6 @@
 "deploy_drift_summary.json", 
 "hf_status.json",
 "controller_services_summary.json",
-"wpsd_status.json"] }
+"wpsd_status.json",
+"pota_bands_summary.json"
+] }

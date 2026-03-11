@@ -1,6 +1,6 @@
 {
   "id": "wpsd",
-  "order": 40,
+  "order": 30,
   "title": "WPSD",
   "layout": {
     "top": ["topbar_core"],

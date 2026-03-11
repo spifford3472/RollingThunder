@@ -1,0 +1,39 @@
+{
+  "id": "pota",
+  "order": 10,
+  "title": "POTA",
+
+  "layout": {
+    "top": ["topbar_core"],
+    "middle": [
+      ["pota_bands_summary"]
+    ],
+    "bottom": ["alerts_overlay"]
+  },
+
+  "requires": ["redis_state", "mqtt_bus", "gps_ingest"],
+  "optional": ["logging", "node_health", "noaa_same", "meshtastic_c2"],
+
+  "controls": {
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.ok",
+      "ui.cancel",
+      "alert.ack",
+      "alert.silence",
+      "pota.select_band"
+    ]
+  },
+
+  "focusPolicy": {
+    "defaultPanel": "pota_bands_summary",
+    "rotation": ["pota_bands_summary"]
+  },
+
+  "meta": {
+    "purpose": "Workable POTA station page."
+  }
+}
