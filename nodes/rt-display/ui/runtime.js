@@ -54,24 +54,28 @@ function handleRuntimeFocusRequest(ev, runtimeCtx) {
     return;
   }
 
-  const navMode = typeof runtimeCtx?.getNavMode === "function"
-    ? runtimeCtx.getNavMode()
-    : "GLOBAL_FOCUS";
-
-  if (navMode !== "GLOBAL_FOCUS") {
-    if (runtimeCtx?.debug) {
-      console.debug("[rt] rt-request-focus denied", {
-        reason: "nav-mode-blocked",
-        navMode,
-        panelId,
-        detail: ev.detail || {},
-      });
-    }
+  const nav = runtimeCtx?.nav || null;
+  if (!nav || typeof nav.getState !== "function") {
+    console.warn("[rt] rt-request-focus ignored: nav.getState unavailable", {
+      panelId,
+    });
     return;
   }
 
-  const nav = runtimeCtx?.nav || null;
-  if (!nav || typeof nav.setActivePanel !== "function") {
+  const navState = nav.getState();
+  const stateName = String(navState?.state || "GLOBAL_FOCUS");
+
+  if (stateName !== "GLOBAL_FOCUS") {
+    console.log("[rt] rt-request-focus denied", {
+      reason: "nav-state-blocked",
+      state: stateName,
+      panelId,
+      detail: ev.detail || {},
+    });
+    return;
+  }
+
+  if (typeof nav.setActivePanel !== "function") {
     console.warn("[rt] rt-request-focus ignored: nav.setActivePanel unavailable", {
       panelId,
     });
@@ -80,13 +84,12 @@ function handleRuntimeFocusRequest(ev, runtimeCtx) {
 
   const ok = nav.setActivePanel(panelId);
 
-  if (runtimeCtx?.debug) {
-    console.debug(ok ? "[rt] rt-request-focus granted" : "[rt] rt-request-focus denied", {
-      reason: ok ? "focused" : "panel-not-focusable",
-      panelId,
-      detail: ev.detail || {},
-    });
-  }
+  console.log(ok ? "[rt] rt-request-focus granted" : "[rt] rt-request-focus denied", {
+    reason: ok ? "focused" : "panel-not-focusable",
+    panelId,
+    detail: ev.detail || {},
+    navStateAfter: typeof nav.getState === "function" ? nav.getState() : null,
+  });
 }
 
 function handleRuntimeIntentRequest(ev, runtimeCtx) {
