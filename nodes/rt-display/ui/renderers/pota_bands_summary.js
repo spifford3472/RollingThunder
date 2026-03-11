@@ -122,10 +122,16 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
 
 function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
-  const targets = [container, slot].filter(Boolean);
+  console.log("[pota_bands] attachBrowseHandlersOnce", {
+    hasContainer: !!container,
+    hasSlot: !!slot,
+    containerClass: container?.className,
+    slotClass: slot?.className
+  });
 
-  if (container.__rtPotaBandsBrowseAttached) return;
-  container.__rtPotaBandsBrowseAttached = true;
+  if (!slot) return;
+  if (slot.__rtPotaBandsBrowseAttached) return;
+  slot.__rtPotaBandsBrowseAttached = true;
 
   const onDelta = (ev) => {
     console.log("[pota_bands] rt-browse-delta", ev?.detail);
@@ -161,7 +167,7 @@ function attachBrowseHandlersOnce(container) {
     const band = String(cur?.band || "").trim();
     if (!band) return;
 
-    (slot || container).dispatchEvent(new CustomEvent("rt-emit-intent", {
+    slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
       detail: {
         type: "pota.select_band",
@@ -170,10 +176,8 @@ function attachBrowseHandlersOnce(container) {
     }));
   };
 
-  for (const t of targets) {
-    t.addEventListener("rt-browse-delta", onDelta);
-    t.addEventListener("rt-browse-ok", onOk);
-  }
+  slot.addEventListener("rt-browse-delta", onDelta);
+  slot.addEventListener("rt-browse-ok", onOk);
 }
 
 export function renderPotaBandsSummary(container, panel, data) {
