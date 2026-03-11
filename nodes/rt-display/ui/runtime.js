@@ -114,6 +114,12 @@ function handleRuntimeIntentRequest(ev, runtimeCtx) {
 }
 
 function installRuntimeExtensions(runtimeCtx) {
+  // Temp Debug
+  console.log("[rt] runtimeCtx nav methods", {
+    hasGetState: typeof runtimeCtx?.nav?.getState === "function",
+    hasSetActivePanel: typeof runtimeCtx?.nav?.setActivePanel === "function",
+  });
+
   const root = runtimeCtx?.root || null;
   if (!root) {
     console.warn("[rt] installRuntimeExtensions: missing root element");
