@@ -77,6 +77,7 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
     const isSelectedBand = band === String(selectedBandFromContext || "");
 
     const trClass = [
+      "sev-ok",
       browseMode && isCursor ? "rt-selected" : "",
       !browseMode && isSelectedBand ? "rt-selected" : "",
     ].filter(Boolean).join(" ");
@@ -89,11 +90,19 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
     `;
   }).join("");
 
-  let footerLeft = `Showing ${Math.min(WINDOW, total)}/${total}`;
-  if (browseMode) {
-    footerLeft = `Selected Band #${clamp(m.cursor, 0, total - 1) + 1} of ${total}`;
-  } else if (selectedBandFromContext) {
-    footerLeft = `Active band: ${esc(selectedBandFromContext)}`;
+  //Readd once working, and remove the method directly below
+  //let footerLeft = `Showing ${Math.min(WINDOW, total)}/${total}`;
+  //if (browseMode) {
+  //  footerLeft = `Selected Band #${clamp(m.cursor, 0, total - 1) + 1} of ${total}`;
+  //} else if (selectedBandFromContext) {
+  //  footerLeft = `Active band: ${esc(selectedBandFromContext)}`;
+  //}
+
+  //Temp: show cursor position even when not in browse mode, to help debugging and because it can be useful info for users too
+  let footerLeft = `Cursor ${clamp(m.cursor, 0, Math.max(0, total - 1)) + 1}/${total}`;
+
+  if (!browseMode && selectedBandFromContext) {
+    footerLeft += ` • Active band: ${esc(selectedBandFromContext)}`;
   }
 
   const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
