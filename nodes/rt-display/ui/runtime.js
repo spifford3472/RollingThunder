@@ -41,6 +41,115 @@ function findOwningSlot(node) {
   return node.closest(".rt-slot");
 }
 
+function isPlainObject(x) {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
+
+function isValidBand(band) {
+  return new Set([
+    "160m", "80m", "60m", "40m", "30m", "20m",
+    "17m", "15m", "12m", "10m", "6m", "2m", "70cm"
+  ]).has(String(band || "").trim());
+}
+
+function isValidMode(mode) {
+  return new Set([
+    "AM", "FM", "CW", "USB", "LSB", "DIGU", "DIGL", "DATA", "FT8", "FT4"
+  ]).has(String(mode || "").trim());
+}
+
+function validateIntent(intent, params) {
+  const name = String(intent || "").trim();
+  const p = isPlainObject(params) ? params : {};
+
+  if (!name) {
+    return { ok: false, error: "missing-intent" };
+  }
+
+  if (name === "radio.tune") {
+    const freq_hz = Number(p.freq_hz);
+    const band = String(p.band || "").trim();
+    const mode = String(p.mode || "").trim();
+    const autotune = Boolean(p.autotune);
+
+    if (!Number.isInteger(freq_hz) || freq_hz < 1000000 || freq_hz > 60000000) {
+      return { ok: false, error: "invalid-freq_hz" };
+    }
+    if (!isValidBand(band)) {
+      return { ok: false, error: "invalid-band" };
+    }
+    if (!isValidMode(mode)) {
+      return { ok: false, error: "invalid-mode" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: { freq_hz, band, mode, autotune },
+    };
+  }
+
+  if (name === "radio.band") {
+    const band = String(p.band || "").trim();
+    const autotune = Boolean(p.autotune);
+
+    if (!isValidBand(band)) {
+      return { ok: false, error: "invalid-band" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: { band, autotune },
+    };
+  }
+
+  if (name === "pota.select_band") {
+    const band = String(p.band || "").trim();
+
+    if (!isValidBand(band)) {
+      return { ok: false, error: "invalid-band" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: { band },
+    };
+  }
+
+  if (name === "pota.select_park") {
+    const park_ref = String(p.park_ref || "").trim();
+
+    if (!park_ref || !/^K-\d{4,}$/.test(park_ref)) {
+      return { ok: false, error: "invalid-park_ref" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: { park_ref },
+    };
+  }
+
+  if (name === "ui.open_modal") {
+    const modal = String(p.modal || "").trim();
+    const payload = isPlainObject(p.payload) ? p.payload : {};
+
+    if (!modal) {
+      return { ok: false, error: "missing-modal" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: { modal, payload },
+    };
+  }
+
+  return { ok: false, error: "unknown-intent" };
+}
+
 function handleRuntimeFocusRequest(ev, runtimeCtx) {
   const slot = findOwningSlot(ev.target);
   if (!slot) {
@@ -92,7 +201,7 @@ function handleRuntimeFocusRequest(ev, runtimeCtx) {
   });
 }
 
-function handleRuntimeIntentRequest(ev, runtimeCtx) {
+async function handleRuntimeIntentRequest(ev, runtimeCtx) {
   const slot = findOwningSlot(ev.target);
   if (!slot) {
     console.warn("[rt] rt-emit-intent ignored: no owning slot");
@@ -100,17 +209,67 @@ function handleRuntimeIntentRequest(ev, runtimeCtx) {
   }
 
   const detail = ev.detail || {};
-  const intent = detail.intent || null;
-  const params = detail.params || {};
+  const rawIntent = detail.intent || null;
+  const rawParams = detail.params || {};
 
-  if (runtimeCtx?.debug) {
-    console.debug("[rt] rt-emit-intent received", {
+  const validation = validateIntent(rawIntent, rawParams);
+  if (!validation.ok) {
+    console.log("[rt] rt-emit-intent denied", {
+      reason: validation.error,
       slotId: slot.dataset.slotId || null,
-      panel: slot.dataset.panel || slot.dataset.panelId || null,
+      panelId: slot.dataset.panelId || null,
+      detail,
+    });
+    return;
+  }
+
+  const intent = validation.intent;
+  const params = validation.params;
+
+  if (typeof runtimeCtx?.isAllowedIntent === "function" && !runtimeCtx.isAllowedIntent(intent)) {
+    console.log("[rt] rt-emit-intent denied", {
+      reason: "page-intent-not-allowed",
+      intent,
+      params,
+      slotId: slot.dataset.slotId || null,
+      panelId: slot.dataset.panelId || null,
+    });
+    return;
+  }
+
+  if (intent === "ui.open_modal") {
+    if (typeof runtimeCtx?.openUiModalIntent === "function") {
+      runtimeCtx.openUiModalIntent(params, slot);
+      console.log("[rt] rt-emit-intent handled locally", {
+        intent,
+        params,
+        slotId: slot.dataset.slotId || null,
+        panelId: slot.dataset.panelId || null,
+      });
+      return;
+    }
+
+    console.warn("[rt] ui.open_modal requested but no local modal handler is installed");
+    return;
+  }
+
+  if (typeof runtimeCtx?.emitIntent !== "function") {
+    console.warn("[rt] rt-emit-intent ignored: emitIntent unavailable", {
       intent,
       params,
     });
+    return;
   }
+
+  const res = await runtimeCtx.emitIntent(intent, params);
+
+  console.log("[rt] rt-emit-intent forwarded", {
+    intent,
+    params,
+    slotId: slot.dataset.slotId || null,
+    panelId: slot.dataset.panelId || null,
+    result: res,
+  });
 }
 
 function installRuntimeExtensions(runtimeCtx) {
@@ -131,7 +290,7 @@ function installRuntimeExtensions(runtimeCtx) {
   });
 
   root.addEventListener("rt-emit-intent", (ev) => {
-    handleRuntimeIntentRequest(ev, runtimeCtx);
+    void handleRuntimeIntentRequest(ev, runtimeCtx);
   });
 
   if (runtimeCtx?.debug) {
@@ -479,6 +638,24 @@ function syncBrowseIndicator({ rootEl, navMode, browsePanelId, slotByPanelId }) 
     nav,
     getNavMode: () => navMode,
     getBrowsePanelId: () => browsePanelId,
+    isAllowedIntent: (intent) => isAllowed(intent),
+    emitIntent: (intent, params) => emitIntent(intent, params),
+    openUiModalIntent: (params) => {
+      const modal = String(params?.modal || "").trim();
+      const payload = params?.payload || {};
+
+      if (modal === "confirm") {
+        root.dispatchEvent(new CustomEvent("rt-open-modal", {
+          detail: {
+            kind: "confirm",
+            ...payload,
+          }
+        }));
+        return;
+      }
+
+      console.warn("[rt] unsupported ui.open_modal modal:", modal, payload);
+    },
   };
 
   installRuntimeExtensions(runtimeCtx);
