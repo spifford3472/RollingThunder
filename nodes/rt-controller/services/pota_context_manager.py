@@ -133,6 +133,7 @@ class Config:
 
     pota_ui_bands_key: str = env_str("RT_POTA_UI_BANDS_KEY", "rt:pota:ui:ssb:bands")
     pota_ui_spots_prefix: str = env_str("RT_POTA_UI_SPOTS_PREFIX", "rt:pota:ui:ssb:spots")
+    pota_ui_selected_spots_key: str = env_str("RT_POTA_UI_SELECTED_SPOTS_KEY","rt:pota:ui:ssb:spots:selected",)
 
 
 class RedisManager:
@@ -185,6 +186,7 @@ def default_context() -> Dict[str, Any]:
     return {
         "selected_park_ref": "",
         "selected_park_name": "Not in a park",
+        "selected_band": "",
         "grid": "",
         "selection_ts": utc_now_ms(),
     }
@@ -213,6 +215,7 @@ def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ctx = {
         "selected_park_ref": str(existing.get("selected_park_ref", "") or ""),
         "selected_park_name": str(existing.get("selected_park_name", "") or ""),
+        "selected_band": str(existing.get("selected_band", "") or ""),
         "grid": str(existing.get("grid", "") or ""),
         "selection_ts": existing.get("selection_ts", base["selection_ts"]),
     }
@@ -440,14 +443,19 @@ class Service:
     def publish_ui_state(
         self,
         r: redis.Redis,
+        context: Dict[str, Any],
         band_summary: List[Dict[str, Any]],
         per_band_spots: Dict[str, List[Dict[str, Any]]],
     ) -> None:
+        selected_band = str(context.get("selected_band", "") or "")
+        selected_spots = per_band_spots.get(selected_band, []) if selected_band else []
+
         pipe = r.pipeline(transaction=False)
         pipe.set(self.cfg.pota_ui_bands_key, compact_json(band_summary))
         for band in BAND_ORDER:
             key = f"{self.cfg.pota_ui_spots_prefix}:{band}"
             pipe.set(key, compact_json(per_band_spots.get(band, [])))
+        pipe.set(self.cfg.pota_ui_selected_spots_key, compact_json(selected_spots))
         pipe.execute()
 
     def run_once(self) -> None:
@@ -455,7 +463,7 @@ class Service:
         context = self.ensure_context_key(r)
         band_summary = self.build_ui_band_summary(r)
         per_band_spots, total_meta_hits, total_meta_malformed = self.build_ui_spots(r)
-        self.publish_ui_state(r, band_summary, per_band_spots)
+        self.publish_ui_state(r, context, band_summary, per_band_spots)
 
         total_spots = sum(len(v) for v in per_band_spots.values())
 
@@ -485,6 +493,7 @@ class Service:
             spotmeta_prefix=self.cfg.pota_ssb_spotmeta_prefix,
             ui_bands_key=self.cfg.pota_ui_bands_key,
             ui_spots_prefix=self.cfg.pota_ui_spots_prefix,
+            ui_selected_spots_key=self.cfg.pota_ui_selected_spots_key,
         )
 
         while self.running:
