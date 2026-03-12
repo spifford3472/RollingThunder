@@ -33,12 +33,73 @@ ALLOW_NODE_REBOOT = (
     or os.environ.get("RT_ALLOW_NODE_REBOOT", "0").strip() == "1"
 )
 
+# POTA UI context key in Redis, used by both the context manager and the UI intent worker.
+POTA_CONTEXT_KEY = os.environ.get("RT_POTA_CONTEXT_KEY", "rt:pota:context")
+
+POTA_BAND_ORDER = {
+    "160m", "80m", "60m", "40m", "30m",
+    "20m", "17m", "15m", "12m", "10m",
+    "6m",
+}
+
 def env_truthy(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
     if v is None:
         return default
     v = str(v).strip().lower()
     return v in ("1", "true", "yes", "y", "on")
+
+def compact_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+def default_pota_context() -> Dict[str, Any]:
+    return {
+        "selected_park_ref": "",
+        "selected_park_name": "Not in a park",
+        "selected_band": "",
+        "grid": "",
+        "selection_ts": now_ms(),
+    }
+
+def load_json_object(r: redis.Redis, key: str) -> Dict[str, Any] | None:
+    raw = r.get(key)
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+def normalize_pota_context(existing: Dict[str, Any] | None) -> Dict[str, Any]:
+    base = default_pota_context()
+    if not existing:
+        return base
+
+    ctx = {
+        "selected_park_ref": str(existing.get("selected_park_ref", "") or ""),
+        "selected_park_name": str(existing.get("selected_park_name", "") or ""),
+        "selected_band": str(existing.get("selected_band", "") or ""),
+        "grid": str(existing.get("grid", "") or ""),
+        "selection_ts": existing.get("selection_ts", base["selection_ts"]),
+    }
+
+    if not ctx["selected_park_ref"]:
+        ctx["selected_park_ref"] = ""
+        ctx["selected_park_name"] = "Not in a park"
+
+    if not ctx["selected_park_name"]:
+        ctx["selected_park_name"] = "Not in a park" if not ctx["selected_park_ref"] else ""
+
+    if ctx["selected_band"] and ctx["selected_band"] not in POTA_BAND_ORDER:
+        ctx["selected_band"] = ""
+
+    try:
+        ctx["selection_ts"] = int(ctx["selection_ts"])
+    except Exception:
+        ctx["selection_ts"] = base["selection_ts"]
+
+    return ctx
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -169,6 +230,37 @@ def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
     # Real CAT/radio execution will be added later.
     publish_bus(r, {**base, "ok": True, "msg": "accepted_not_implemented"})
 
+def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
+    band = str(params.get("band") or "").strip()
+
+    base = {
+        "topic": "ui.pota.select_band.result",
+        "node": NODE_ID,
+        "ts_ms": now_ms(),
+        "band": band,
+        "context_key": POTA_CONTEXT_KEY,
+    }
+
+    if NODE_ID != "rt-controller":
+        publish_bus(r, {**base, "ok": False, "msg": "wrong_node_role"})
+        return
+
+    if not band:
+        publish_bus(r, {**base, "ok": False, "msg": "bad_request:missing_band"})
+        return
+
+    if band not in POTA_BAND_ORDER:
+        publish_bus(r, {**base, "ok": False, "msg": "bad_request:invalid_band"})
+        return
+
+    ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
+    ctx["selected_band"] = band
+    ctx["selection_ts"] = now_ms()
+
+    r.set(POTA_CONTEXT_KEY, compact_json(ctx))
+
+    publish_bus(r, {**base, "ok": True, "msg": "selected_band_updated"})
+
 def main() -> None:
     r = redis_client()
     ps = r.pubsub(ignore_subscribe_messages=True)
@@ -184,6 +276,7 @@ def main() -> None:
             "capabilities": {
                 "node_reboot": ALLOW_NODE_REBOOT,
                 "radio_tune": NODE_ID == "rt-radio",
+                "pota_select_band": NODE_ID == "rt-controller",
                 "mode": REBOOT_MODE,
             },
         },
@@ -206,6 +299,10 @@ def main() -> None:
 
         if intent == "node.reboot":
             handle_node_reboot(r, params)
+            continue
+
+        if intent == "pota.select_band":
+            handle_pota_select_band(r, params)
             continue
 
         if intent == "radio.tune":
