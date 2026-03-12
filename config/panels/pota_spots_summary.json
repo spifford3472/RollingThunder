@@ -1,0 +1,18 @@
+{
+  "id": "pota_spots_summary",
+  "type": "pota_spots_summary",
+  "focusable": true,
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
+  "bindings": [
+    { "id": "spots", "source": "state", "key": "rt:pota:ui:ssb:spots:selected" },
+    { "id": "context", "source": "state", "key": "rt:pota:context" }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Browse spots for the currently selected POTA SSB band.",
+    "title": "POTA Spots",
+    "contract": {
+      "requiredBindings": ["spots", "context"]
+    }
+  }
+}

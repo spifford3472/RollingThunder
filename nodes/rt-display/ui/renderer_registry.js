@@ -7,7 +7,7 @@ import { renderRadioStatus } from "./renderers/radio_status.js";
 import { renderControllerServicesSummary } from  "./renderers/controller_services_summary.js";
 import { renderWpsdStatus } from "./renderers/wpsd_status.js";
 import { renderPotaBandsSummary } from "./renderers/pota_bands_summary.js";
-//import { renderPotaSpotsSummary } from "./renderers/pota_spots_summary.js";
+import { renderPotaSpotsSummary } from "./renderers/pota_spots_summary.js";
 //import { renderPotaParksSummary } from "./renderers/pota_parks_summary.js";
 
 /**
@@ -66,9 +66,9 @@ export function createRendererRegistry() {
     renderPotaBandsSummary(container, panel, data)
   );
 
-  //map.set("pota_spots_summary", (container, panel, data) =>
-  //  renderPotaSpotsSummary(container, panel, data)
-  //);
+  map.set("pota_spots_summary", (container, panel, data) =>
+    renderPotaSpotsSummary(container, panel, data)
+  );
 
   //map.set("pota_parks_summary", (container, panel, data) =>
   //  renderPotaParksSummary(container, panel, data)

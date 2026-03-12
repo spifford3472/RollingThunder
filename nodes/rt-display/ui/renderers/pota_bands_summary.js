@@ -207,6 +207,13 @@ function attachBrowseHandlersOnce(container) {
         }
       }
     }));
+
+    slot.dispatchEvent(new CustomEvent("rt-request-focus", {
+      bubbles: true,
+      detail: {
+        panelId: "pota_spots_summary"
+     }
+    }));
   };
 
   slot.addEventListener("rt-browse-delta", onDelta);
