@@ -11,6 +11,27 @@ const esc = (s) =>
     "'": "&#39;",
   }[c]));
 
+function normalizeTuneMode(rawMode, freqHz, band) {
+  const mode = String(rawMode || "").trim().toUpperCase();
+  const freq = Number(freqHz || 0);
+  const b = String(band || "").trim().toLowerCase();
+
+  if (mode === "SSB") {
+    // Standard HF convention:
+    // below 10 MHz -> LSB
+    // 10 MHz and above -> USB
+    if (Number.isFinite(freq) && freq > 0) {
+      return freq < 10_000_000 ? "LSB" : "USB";
+    }
+
+    // Fallback by band if freq is unavailable
+    if (["160m", "80m", "60m", "40m"].includes(b)) return "LSB";
+    return "USB";
+  }
+
+  return mode;
+}
+
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
@@ -159,7 +180,7 @@ function attachBrowseHandlersOnce(container) {
 
     const freq_hz = Number(cur?.freq_hz || 0);
     const band = String(container.__rtPotaSpotsContext?.selected_band || "").trim();
-    const mode = String(cur?.mode || "SSB").trim();
+    const mode = normalizeTuneMode(cur?.mode || "SSB", freq_hz, band);
 
     if (!Number.isFinite(freq_hz) || freq_hz <= 0) return;
     if (!band) return;
