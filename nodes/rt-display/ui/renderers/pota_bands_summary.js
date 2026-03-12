@@ -24,6 +24,27 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function attachBrowseModeObserverOnce(container) {
+  const slot = container.closest(".rt-slot");
+  if (!slot) return;
+  if (slot.__rtPotaBandsBrowseObserverAttached) return;
+  slot.__rtPotaBandsBrowseObserverAttached = true;
+
+  const obs = new MutationObserver(() => {
+    const m = getModel(container);
+    const list = Array.isArray(m.lastList) ? m.lastList : [];
+    const selectedBandFromContext = container.__rtPotaBandsSelectedBandFromContext || "";
+    renderBandsWindow(container, list, m, selectedBandFromContext);
+  });
+
+  obs.observe(slot, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
+  slot.__rtPotaBandsBrowseObserver = obs;
+}
+
 function getModel(container) {
   if (!container.__rtPotaBandsModel) {
     container.__rtPotaBandsModel = {
@@ -182,6 +203,7 @@ function attachBrowseHandlersOnce(container) {
 
 export function renderPotaBandsSummary(container, panel, data) {
   attachBrowseHandlersOnce(container);
+  attachBrowseModeObserverOnce(container);
 
   const bandsRaw = data?.bands;
   const context = data?.context || {};
