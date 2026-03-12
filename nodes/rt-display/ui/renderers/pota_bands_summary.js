@@ -201,8 +201,10 @@ function attachBrowseHandlersOnce(container) {
     slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
       detail: {
-        type: "pota.select_band",
-        band
+        intent: "pota.select_band",
+        params: {
+          band
+        }
       }
     }));
   };
