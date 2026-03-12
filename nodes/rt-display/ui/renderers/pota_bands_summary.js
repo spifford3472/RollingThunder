@@ -95,17 +95,22 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
     const count = Number(item?.count || 0);
 
     const isCursor = absoluteIndex === m.cursor;
-    const isSelectedBand = band === String(selectedBandFromContext || "");
+    const selectedBand = String(selectedBandFromContext || m.selectedBand || "");
+    const isSelectedBand = band === selectedBand;
 
     const trClass = [
       "sev-ok",
       browseMode && isCursor ? "rt-selected" : "",
-      !browseMode && isSelectedBand ? "rt-selected" : "",
+      isSelectedBand ? "rt-pota-band-selected" : "",
     ].filter(Boolean).join(" ");
+
+    const labelHtml = isSelectedBand
+      ? `<span class="rt-pota-band-label"><strong>📡 ${esc(band)}</strong></span>`
+      : `<span>${esc(band)}</span>`;
 
     return `
       <tr class="${trClass}" data-band="${esc(band)}">
-        <td><strong>${esc(band)}</strong></td>
+        <td>${labelHtml}</td>
         <td>${esc(String(count))}</td>
       </tr>
     `;
@@ -176,8 +181,6 @@ function attachBrowseHandlersOnce(container) {
   };
 
   const onOk = () => {
-    console.log("[pota_bands] rt-browse-ok");
-
     const m = getModel(container);
     const list = Array.isArray(m.lastList) ? m.lastList : [];
     const total = list.length;
@@ -187,6 +190,13 @@ function attachBrowseHandlersOnce(container) {
     const cur = list[m.cursor];
     const band = String(cur?.band || "").trim();
     if (!band) return;
+
+    // Optimistic local selection for immediate UI feedback
+    m.selectedBand = band;
+    container.__rtPotaBandsSelectedBandFromContext = band;
+    renderBandsWindow(container, list, m, band);
+
+    console.log("[pota_bands] emitting pota.select_band", { band });
 
     slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
