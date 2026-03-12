@@ -5,5 +5,6 @@
 "hf_status.json",
 "controller_services_summary.json",
 "wpsd_status.json",
-"pota_bands_summary.json"
+"pota_bands_summary.json",
+"pota_spots_summary.json"
 ] }
