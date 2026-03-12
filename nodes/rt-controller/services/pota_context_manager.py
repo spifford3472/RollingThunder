@@ -19,6 +19,7 @@ Writes:
 - rt:pota:context                  (string JSON object)
 - rt:pota:ui:ssb:bands             (string JSON array)
 - rt:pota:ui:ssb:spots:<band>      (string JSON array)
+- rt:pota:ui:ssb:spots:selected    (string JSON array)
 """
 
 from __future__ import annotations
@@ -133,7 +134,10 @@ class Config:
 
     pota_ui_bands_key: str = env_str("RT_POTA_UI_BANDS_KEY", "rt:pota:ui:ssb:bands")
     pota_ui_spots_prefix: str = env_str("RT_POTA_UI_SPOTS_PREFIX", "rt:pota:ui:ssb:spots")
-    pota_ui_selected_spots_key: str = env_str("RT_POTA_UI_SELECTED_SPOTS_KEY","rt:pota:ui:ssb:spots:selected",)
+    pota_ui_selected_spots_key: str = env_str(
+        "RT_POTA_UI_SELECTED_SPOTS_KEY",
+        "rt:pota:ui:ssb:spots:selected",
+    )
 
 
 class RedisManager:
@@ -186,6 +190,9 @@ def default_context() -> Dict[str, Any]:
     return {
         "selected_park_ref": "",
         "selected_park_name": "Not in a park",
+        "selected_park_refs": [],
+        "selected_park_names": [],
+        "left_selected_park_refs": [],
         "selected_band": "",
         "grid": "",
         "selection_ts": utc_now_ms(),
@@ -207,6 +214,20 @@ def load_json_object(r: redis.Redis, key: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _normalize_string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in value:
+        s = str(item).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
 def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     base = default_context()
     if not existing:
@@ -215,11 +236,15 @@ def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ctx = {
         "selected_park_ref": str(existing.get("selected_park_ref", "") or ""),
         "selected_park_name": str(existing.get("selected_park_name", "") or ""),
+        "selected_park_refs": _normalize_string_list(existing.get("selected_park_refs", [])),
+        "selected_park_names": _normalize_string_list(existing.get("selected_park_names", [])),
+        "left_selected_park_refs": _normalize_string_list(existing.get("left_selected_park_refs", [])),
         "selected_band": str(existing.get("selected_band", "") or ""),
         "grid": str(existing.get("grid", "") or ""),
         "selection_ts": existing.get("selection_ts", base["selection_ts"]),
     }
 
+    # Normalize singular park fields first.
     if not ctx["selected_park_ref"]:
         ctx["selected_park_ref"] = ""
         ctx["selected_park_name"] = "Not in a park"
@@ -227,12 +252,103 @@ def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not ctx["selected_park_name"]:
         ctx["selected_park_name"] = "Not in a park" if not ctx["selected_park_ref"] else ""
 
+    # Validate selected_band.
+    if ctx["selected_band"] and ctx["selected_band"] not in BAND_ORDER:
+        ctx["selected_band"] = ""
+
+    # Keep singular/plural fields compatible.
+    if ctx["selected_park_refs"]:
+        ctx["selected_park_ref"] = ctx["selected_park_refs"][0]
+        if ctx["selected_park_names"]:
+            ctx["selected_park_name"] = ctx["selected_park_names"][0]
+        elif not ctx["selected_park_name"]:
+            ctx["selected_park_name"] = ""
+    else:
+        if ctx["selected_park_ref"]:
+            ctx["selected_park_refs"] = [ctx["selected_park_ref"]]
+            if ctx["selected_park_name"] and ctx["selected_park_name"] != "Not in a park":
+                ctx["selected_park_names"] = [ctx["selected_park_name"]]
+        else:
+            ctx["selected_park_ref"] = ""
+            ctx["selected_park_name"] = "Not in a park"
+            ctx["selected_park_refs"] = []
+            ctx["selected_park_names"] = []
+
     try:
         ctx["selection_ts"] = int(ctx["selection_ts"])
     except (TypeError, ValueError):
         ctx["selection_ts"] = base["selection_ts"]
 
     return ctx
+
+
+def nearby_reference_name_map(nearby: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    if not isinstance(nearby, dict):
+        return {}
+
+    choices = nearby.get("choices")
+    if not isinstance(choices, list):
+        return {}
+
+    out: Dict[str, str] = {}
+    for item in choices:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("reference", "") or "").strip()
+        if not ref:
+            continue
+        name = str(item.get("name", "") or "").strip()
+        out[ref] = name
+    return out
+
+
+def derive_context_from_nearby(
+    ctx: Dict[str, Any],
+    nearby: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Keep selected park arrays stable, and derive which selected parks have
+    been left by comparing them against current nearby choices.
+
+    Important:
+    - This does NOT auto-clear operator selections.
+    - It only derives left_selected_park_refs.
+    """
+    result = dict(ctx)
+
+    ref_to_name = nearby_reference_name_map(nearby)
+    nearby_refs = set(ref_to_name.keys())
+
+    selected_refs = _normalize_string_list(result.get("selected_park_refs", []))
+    selected_names = _normalize_string_list(result.get("selected_park_names", []))
+
+    # Build a stable selected_park_names array aligned to selected_park_refs.
+    selected_names_by_ref: Dict[str, str] = {}
+    for i, ref in enumerate(selected_refs):
+        if i < len(selected_names):
+            name = str(selected_names[i]).strip()
+            if name:
+                selected_names_by_ref[ref] = name
+
+    aligned_names: List[str] = []
+    for ref in selected_refs:
+        name = selected_names_by_ref.get(ref) or ref_to_name.get(ref) or ""
+        aligned_names.append(name)
+
+    result["selected_park_refs"] = selected_refs
+    result["selected_park_names"] = aligned_names
+
+    if selected_refs:
+        result["selected_park_ref"] = selected_refs[0]
+        result["selected_park_name"] = aligned_names[0] if aligned_names else ""
+    else:
+        result["selected_park_ref"] = ""
+        result["selected_park_name"] = "Not in a park"
+
+    # Derive which selected parks are no longer nearby.
+    result["left_selected_park_refs"] = [ref for ref in selected_refs if ref not in nearby_refs]
+
+    return result
 
 
 def parse_band_spot_member(member: str, score: float) -> Dict[str, Any]:
@@ -411,12 +527,14 @@ class Service:
         self.running = False
         log_info("Shutdown requested", event="shutdown_requested")
 
-    def ensure_context_key(self, r: redis.Redis) -> Dict[str, Any]:
+    def ensure_context_key(self, r: redis.Redis, nearby: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         existing = load_json_object(r, self.cfg.pota_context_key)
         normalized = normalize_context(existing)
-        if existing != normalized:
-            r.set(self.cfg.pota_context_key, compact_json(normalized))
-        return normalized
+        derived = derive_context_from_nearby(normalized, nearby)
+
+        if existing != derived:
+            r.set(self.cfg.pota_context_key, compact_json(derived))
+        return derived
 
     def build_ui_band_summary(self, r: redis.Redis) -> List[Dict[str, Any]]:
         counts = zset_band_counts(r, self.cfg.pota_ssb_spots_source_prefix)
@@ -460,7 +578,8 @@ class Service:
 
     def run_once(self) -> None:
         r = self.redis_mgr.get()
-        context = self.ensure_context_key(r)
+        nearby = load_json_object(r, self.cfg.pota_nearby_key)
+        context = self.ensure_context_key(r, nearby)
         band_summary = self.build_ui_band_summary(r)
         per_band_spots, total_meta_hits, total_meta_malformed = self.build_ui_spots(r)
         self.publish_ui_state(r, context, band_summary, per_band_spots)
@@ -473,6 +592,9 @@ class Service:
             active_bands=len(band_summary),
             total_ui_spots=total_spots,
             selected_park_ref=context.get("selected_park_ref", ""),
+            selected_park_refs=context.get("selected_park_refs", []),
+            left_selected_park_refs=context.get("left_selected_park_refs", []),
+            selected_band=context.get("selected_band", ""),
             spotmeta_hits=total_meta_hits,
             spotmeta_malformed=total_meta_malformed,
         )
