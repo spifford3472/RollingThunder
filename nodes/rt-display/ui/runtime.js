@@ -408,9 +408,9 @@ function isBrowseCapableType(panelType) {
   return (
     t === "controller_services_summary" ||
     t === "node_health_summary" ||
-    t === "pota_bands_summary" // ADD OTHER TYPES HERE AS THEY BECOME BROWSE-CAPABLE
-    // || t === "pota_parks_summary" --- IGNORE ---
-    // || t === "pota_spots_summary" --- IGNORE ---
+    t === "pota_bands_summary" ||
+    t === "pota_parks_summary" ||
+    t === "pota_spots_summary"
   );
 }
 

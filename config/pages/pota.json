@@ -22,6 +22,7 @@
       "ui.focus.prev",
       "ui.ok",
       "ui.cancel",
+      "ui.browse.delta",
       "alert.ack",
       "alert.silence",
       "pota.select_band"
