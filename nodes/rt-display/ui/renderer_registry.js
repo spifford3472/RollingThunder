@@ -70,9 +70,9 @@ export function createRendererRegistry() {
     renderPotaSpotsSummary(container, panel, data)
   );
 
-  //map.set("pota_parks_summary", (container, panel, data) =>
-  //  renderPotaParksSummary(container, panel, data)
-  //);
+  map.set("pota_parks_summary", (container, panel, data) =>
+    renderPotaParksSummary(container, panel, data)
+  );
 
   return map;
 }

@@ -1,0 +1,19 @@
+{
+  "id": "pota_parks_summary",
+  "type": "pota_parks_summary",
+  "focusable": true,
+  "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
+  "bindings": [
+    { "id": "context", "source": "state", "key": "rt:pota:context" },
+    { "id": "nearby", "source": "state", "key": "rt:pota:nearby" }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Browse nearby parks and select current POTA park context.",
+    "title": "Nearby Parks",
+    "contract": {
+      "requiredBindings": ["context"],
+      "allowNull": ["nearby"]
+    }
+  }
+}

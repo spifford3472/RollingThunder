@@ -6,9 +6,9 @@
   "layout": {
     "top": ["topbar_core"],
     "middle": [
-      ["pota_bands_summary"],
-      ["pota_spots_summary"]
-    ],
+      ["pota_parks_summary"],
+      ["pota_bands_summary", "pota_spots_summary"]
+    ]
     "bottom": ["alerts_overlay"]
   },
 
@@ -32,9 +32,13 @@
   },
 
   "focusPolicy": {
-    "defaultPanel": "pota_bands_summary",
-    "rotation": ["pota_bands_summary", "pota_spots_summary"]
-  },
+    "defaultPanel": "pota_parks_summary",
+    "rotation": [
+      "pota_parks_summary",
+      "pota_bands_summary",
+      "pota_spots_summary"
+    ]
+  }
 
   "meta": {
     "purpose": "Workable POTA station page."

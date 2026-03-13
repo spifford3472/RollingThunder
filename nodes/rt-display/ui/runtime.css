@@ -248,4 +248,7 @@
   display: inline-block;
 }
 
-
+.rt-pota-park-selected td:first-child {
+  color: #4db8ff;
+  font-weight: 700;
+}
