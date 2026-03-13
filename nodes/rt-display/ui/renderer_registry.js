@@ -8,7 +8,7 @@ import { renderControllerServicesSummary } from  "./renderers/controller_service
 import { renderWpsdStatus } from "./renderers/wpsd_status.js";
 import { renderPotaBandsSummary } from "./renderers/pota_bands_summary.js";
 import { renderPotaSpotsSummary } from "./renderers/pota_spots_summary.js";
-//import { renderPotaParksSummary } from "./renderers/pota_parks_summary.js";
+import { renderPotaParksSummary } from "./renderers/pota_parks_summary.js";
 
 /**
  * createRendererRegistry()
