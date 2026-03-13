@@ -119,9 +119,20 @@ function validateIntent(intent, params) {
   }
 
   if (name === "pota.select_park") {
-    const park_ref = String(p.park_ref || "").trim();
+    const park_ref = String(p.park_ref ?? p.reference ?? "").trim();
 
-    if (!park_ref || !/^K-\d{4,}$/.test(park_ref)) {
+    // Allow empty string for the synthetic "Not in a park" selection.
+    if (park_ref === "") {
+      return {
+        ok: true,
+        intent: name,
+        params: { park_ref: "" },
+      };
+    }
+
+    // Accept POTA-style refs like US-1940, K-1234, VE-0001, etc.
+    // Format: 2+ uppercase letters, dash, 1+ digits.
+    if (!/^[A-Z]{2,}-\d+$/.test(park_ref)) {
       return { ok: false, error: "invalid-park_ref" };
     }
 
