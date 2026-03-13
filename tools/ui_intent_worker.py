@@ -331,7 +331,7 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
 
-    # Empty ref means "Not in a park" / clear selection.
+    # Empty ref means "Not in a park" / clear all selections.
     if not park_ref:
         ctx["selected_park_ref"] = ""
         ctx["selected_park_name"] = "Not in a park"
@@ -353,21 +353,67 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
     park_name = str(choice.get("name") or "").strip()
     grid = str(choice.get("grid") or ctx.get("grid", "") or "").strip()
 
-    ctx["selected_park_ref"] = park_ref
-    ctx["selected_park_name"] = park_name or ""
-    ctx["selected_park_refs"] = [park_ref]
-    ctx["selected_park_names"] = [park_name] if park_name else []
-    ctx["left_selected_park_refs"] = []
+    selected_refs = list(ctx.get("selected_park_refs", []))
+    selected_names = list(ctx.get("selected_park_names", []))
+
+    # Build a stable name map from existing selections.
+    name_by_ref: dict[str, str] = {}
+    for i, ref in enumerate(selected_refs):
+        ref_s = str(ref).strip()
+        if not ref_s:
+            continue
+        if i < len(selected_names):
+            nm = str(selected_names[i]).strip()
+            if nm:
+                name_by_ref[ref_s] = nm
+
+    # Toggle membership.
+    if park_ref in selected_refs:
+        selected_refs = [ref for ref in selected_refs if ref != park_ref]
+        name_by_ref.pop(park_ref, None)
+        result_msg = "selected_park_removed"
+    else:
+        selected_refs.append(park_ref)
+        if park_name:
+            name_by_ref[park_ref] = park_name
+        result_msg = "selected_park_added"
+
+    # Rebuild aligned names in selected_refs order.
+    rebuilt_names: list[str] = []
+    for ref in selected_refs:
+        nm = name_by_ref.get(ref) or str(nearby_map.get(ref, {}).get("name") or "").strip()
+        if nm:
+            rebuilt_names.append(nm)
+        else:
+            rebuilt_names.append("")
+
+    # Drop parks from left_selected_park_refs if they are now actively selected.
+    prior_left = [str(x).strip() for x in ctx.get("left_selected_park_refs", []) if str(x).strip()]
+    left_selected = [ref for ref in prior_left if ref not in selected_refs]
+
+    ctx["selected_park_refs"] = selected_refs
+    ctx["selected_park_names"] = rebuilt_names
+    ctx["left_selected_park_refs"] = left_selected
     ctx["grid"] = grid
     ctx["selection_ts"] = now_ms()
+
+    # Backward-compatible singular fields.
+    if selected_refs:
+        ctx["selected_park_ref"] = selected_refs[0]
+        first_name = rebuilt_names[0] if rebuilt_names else ""
+        ctx["selected_park_name"] = first_name or ""
+    else:
+        ctx["selected_park_ref"] = ""
+        ctx["selected_park_name"] = "Not in a park"
 
     r.set(POTA_CONTEXT_KEY, compact_json(ctx))
 
     publish_bus(r, {
         **base,
         "ok": True,
-        "msg": "selected_park_updated",
+        "msg": result_msg,
         "park_name": park_name,
+        "selected_park_refs": selected_refs,
     })
 
 
