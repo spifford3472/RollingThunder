@@ -56,6 +56,9 @@ def default_pota_context() -> Dict[str, Any]:
     return {
         "selected_park_ref": "",
         "selected_park_name": "Not in a park",
+        "selected_park_refs": [],
+        "selected_park_names": [],
+        "left_selected_park_refs": [],
         "selected_band": "",
         "grid": "",
         "selection_ts": now_ms(),
@@ -71,6 +74,19 @@ def load_json_object(r: redis.Redis, key: str) -> Dict[str, Any] | None:
     except Exception:
         return None
 
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen = set()
+    for item in value:
+        s = str(item).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
 def normalize_pota_context(existing: Dict[str, Any] | None) -> Dict[str, Any]:
     base = default_pota_context()
     if not existing:
@@ -79,20 +95,34 @@ def normalize_pota_context(existing: Dict[str, Any] | None) -> Dict[str, Any]:
     ctx = {
         "selected_park_ref": str(existing.get("selected_park_ref", "") or ""),
         "selected_park_name": str(existing.get("selected_park_name", "") or ""),
+        "selected_park_refs": _normalize_string_list(existing.get("selected_park_refs", [])),
+        "selected_park_names": _normalize_string_list(existing.get("selected_park_names", [])),
+        "left_selected_park_refs": _normalize_string_list(existing.get("left_selected_park_refs", [])),
         "selected_band": str(existing.get("selected_band", "") or ""),
         "grid": str(existing.get("grid", "") or ""),
         "selection_ts": existing.get("selection_ts", base["selection_ts"]),
     }
 
-    if not ctx["selected_park_ref"]:
-        ctx["selected_park_ref"] = ""
-        ctx["selected_park_name"] = "Not in a park"
-
-    if not ctx["selected_park_name"]:
-        ctx["selected_park_name"] = "Not in a park" if not ctx["selected_park_ref"] else ""
-
     if ctx["selected_band"] and ctx["selected_band"] not in POTA_BAND_ORDER:
         ctx["selected_band"] = ""
+
+    # Keep singular/plural park fields compatible
+    if ctx["selected_park_refs"]:
+        ctx["selected_park_ref"] = ctx["selected_park_refs"][0]
+        if ctx["selected_park_names"]:
+            ctx["selected_park_name"] = ctx["selected_park_names"][0]
+        elif not ctx["selected_park_name"]:
+            ctx["selected_park_name"] = ""
+    else:
+        if ctx["selected_park_ref"]:
+            ctx["selected_park_refs"] = [ctx["selected_park_ref"]]
+            if ctx["selected_park_name"] and ctx["selected_park_name"] != "Not in a park":
+                ctx["selected_park_names"] = [ctx["selected_park_name"]]
+        else:
+            ctx["selected_park_ref"] = ""
+            ctx["selected_park_name"] = "Not in a park"
+            ctx["selected_park_refs"] = []
+            ctx["selected_park_names"] = []
 
     try:
         ctx["selection_ts"] = int(ctx["selection_ts"])
@@ -261,6 +291,86 @@ def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     publish_bus(r, {**base, "ok": True, "msg": "selected_band_updated"})
 
+POTA_NEARBY_KEY = os.environ.get("RT_POTA_NEARBY_KEY", "rt:pota:nearby")
+
+def nearby_choices_by_ref(r: redis.Redis) -> dict[str, dict[str, Any]]:
+    nearby = load_json_object(r, POTA_NEARBY_KEY)
+    if not isinstance(nearby, dict):
+        return {}
+
+    choices = nearby.get("choices")
+    if not isinstance(choices, list):
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for item in choices:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("reference", "") or "").strip()
+        # allow synthetic empty ref row to exist in nearby, but do not index it
+        if not ref:
+            continue
+        out[ref] = item
+    return out
+
+def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
+    park_ref = str(params.get("park_ref") or params.get("reference") or "").strip()
+
+    base = {
+        "topic": "ui.pota.select_park.result",
+        "node": NODE_ID,
+        "ts_ms": now_ms(),
+        "park_ref": park_ref,
+        "context_key": POTA_CONTEXT_KEY,
+        "nearby_key": POTA_NEARBY_KEY,
+    }
+
+    if NODE_ID != "rt-controller":
+        publish_bus(r, {**base, "ok": False, "msg": "wrong_node_role"})
+        return
+
+    ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
+
+    # Empty ref means "Not in a park" / clear selection.
+    if not park_ref:
+        ctx["selected_park_ref"] = ""
+        ctx["selected_park_name"] = "Not in a park"
+        ctx["selected_park_refs"] = []
+        ctx["selected_park_names"] = []
+        ctx["left_selected_park_refs"] = []
+        ctx["selection_ts"] = now_ms()
+
+        r.set(POTA_CONTEXT_KEY, compact_json(ctx))
+        publish_bus(r, {**base, "ok": True, "msg": "selected_park_cleared"})
+        return
+
+    nearby_map = nearby_choices_by_ref(r)
+    choice = nearby_map.get(park_ref)
+    if not choice:
+        publish_bus(r, {**base, "ok": False, "msg": "bad_request:park_not_in_nearby_choices"})
+        return
+
+    park_name = str(choice.get("name") or "").strip()
+    grid = str(choice.get("grid") or ctx.get("grid", "") or "").strip()
+
+    ctx["selected_park_ref"] = park_ref
+    ctx["selected_park_name"] = park_name or ""
+    ctx["selected_park_refs"] = [park_ref]
+    ctx["selected_park_names"] = [park_name] if park_name else []
+    ctx["left_selected_park_refs"] = []
+    ctx["grid"] = grid
+    ctx["selection_ts"] = now_ms()
+
+    r.set(POTA_CONTEXT_KEY, compact_json(ctx))
+
+    publish_bus(r, {
+        **base,
+        "ok": True,
+        "msg": "selected_park_updated",
+        "park_name": park_name,
+    })
+
+
 def main() -> None:
     r = redis_client()
     ps = r.pubsub(ignore_subscribe_messages=True)
@@ -277,6 +387,7 @@ def main() -> None:
                 "node_reboot": ALLOW_NODE_REBOOT,
                 "radio_tune": NODE_ID == "rt-radio",
                 "pota_select_band": NODE_ID == "rt-controller",
+                "pota_select_park": NODE_ID == "rt-controller",
                 "mode": REBOOT_MODE,
             },
         },
@@ -307,6 +418,10 @@ def main() -> None:
 
         if intent == "radio.tune":
             handle_radio_tune(r, params)
+            continue
+
+        if intent == "pota.select_park":
+            handle_pota_select_park(r, params)
             continue
 
 if __name__ == "__main__":
