@@ -8,7 +8,7 @@
     "middle": [
       ["pota_parks_summary"],
       ["pota_bands_summary", "pota_spots_summary"]
-    ]
+    ],
     "bottom": ["alerts_overlay"]
   },
 
