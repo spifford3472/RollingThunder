@@ -46,6 +46,9 @@ function ensureCursorInWindow(m, total) {
 
 function renderParksWindow(container, list, m, context) {
   const total = list.length;
+  const selectedRefs = Array.isArray(context?.selected_park_refs)
+    ? context.selected_park_refs.map(x => String(x || "").trim()).filter(Boolean)
+    : [];
   const selectedRef = String(context?.selected_park_ref || "").trim();
 
   if (total === 0) {
@@ -68,7 +71,7 @@ function renderParksWindow(container, list, m, context) {
     const dist = item?.distance_miles == null ? "" : `${Number(item.distance_miles).toFixed(1)} mi`;
 
     const isCursor = absoluteIndex === m.cursor;
-    const isSelected = ref === selectedRef;
+    const isSelected = selectedRefs.includes(ref);
 
     const trClass = [
       "sev-ok",
@@ -94,6 +97,8 @@ function renderParksWindow(container, list, m, context) {
   let footerLeft = `Showing ${Math.min(WINDOW, total)}/${total}`;
   if (browseMode) {
     footerLeft = `Cursor ${clamp(m.cursor, 0, total - 1) + 1}/${total}`;
+  } else if (selectedRefs.length > 0) {
+    footerLeft = `Selected parks: ${esc(selectedRefs.join(", "))}`;
   } else if (selectedRef) {
     footerLeft = `Selected park: ${esc(selectedRef)}`;
   } else {
