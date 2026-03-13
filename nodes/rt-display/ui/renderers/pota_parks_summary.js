@@ -148,7 +148,7 @@ function attachBrowseHandlersOnce(container) {
     const cur = list[m.cursor];
     const park_ref = String(cur?.reference || "").trim();
 
-    console.log("[pota_parks] emitting pota.select_park", { park_ref });
+    console.log("[pota_parks] emitting pota.select_park", { reference: park_ref });
 
     slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
