@@ -154,7 +154,7 @@ function attachBrowseHandlersOnce(container) {
       bubbles: true,
       detail: {
         intent: "pota.select_park",
-        params: { park_ref }
+        params: { reference: park_ref }
       }
     }));
   };
