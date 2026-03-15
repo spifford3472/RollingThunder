@@ -1,0 +1,29 @@
+[Unit]
+Description=Hamlib rigctld for Yaesu FT-891 via DigiRig
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=dialout
+EnvironmentFile=-/etc/rollingthunder/radio.env
+ExecStart=/usr/bin/rigctld \
+  -m ${RT_HAMLIB_MODEL} \
+  -r ${RT_RIG_DEVICE} \
+  -s ${RT_RIG_BAUD} \
+  -P ${RT_RIG_PTT_MODE} \
+  -T ${RT_HAMLIB_BIND_HOST} \
+  -t ${RT_HAMLIB_PORT} \
+  --set-conf=retry=${RT_HAMLIB_RETRY} \
+  --set-conf=timeout=${RT_HAMLIB_TIMEOUT_MS} \
+  --set-conf=disable_yaesu_bandselect=1
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

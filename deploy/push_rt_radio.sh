@@ -29,6 +29,8 @@ NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-radio"
 SYSTEMD_DIR="${NODE_SRC_DIR}/systemd"
 TOOLS_DIR="${NODE_SRC_DIR}/tools"
 SVC_DIR="${NODE_SRC_DIR}/services"
+ETC_SRC_DIR="${NODE_SRC_DIR}/etc" 
+UDEV_SRC_DIR="${NODE_SRC_DIR}/udev"
 
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 
@@ -38,6 +40,8 @@ RT_NODE="${RT_ROOT}/nodes/rt-radio"
 RT_SVC="${RT_NODE}/services"
 RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
+ETC_DST_DIR="/etc/rollingthunder"
+UDEV_DST_DIR="/etc/udev/rules.d"
 
 UNIT_DST_DIR="/etc/systemd/system"
 
@@ -56,6 +60,9 @@ UNITS=(
   # deploy report publisher
   "rt-radio-deploy-report-publisher.timer"
   "rt-radio-deploy-report-publisher.service"
+
+  #Radio Deploy  
+  "rigctld.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -65,7 +72,10 @@ fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SYSTEMD_DIR}"
 fail_missing_dir "${TOOLS_DIR}"
 fail_missing_dir "${SVC_DIR}"
+fail_missing_dir "${ENV_SRC_DIR}"
+fail_missing_dir "${UDEV_SRC_DIR}"
 
+fail_missing "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules"
 fail_missing "${SYSTEMD_DIR}/rt-radio-presence.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
@@ -73,7 +83,6 @@ fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 
 # NEW: intent worker artifacts
 fail_missing "${SYSTEMD_DIR}/rt-radio-ui-intent-worker.service"
-fail_missing "${SVC_DIR}/rt-radio-ui-intent-worker.py"
 fail_missing_dir "${GLOBAL_TOOLS_DIR}"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
 
@@ -91,6 +100,7 @@ echo "[push] Ensure runtime dirs exist (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
   sudo mkdir -p '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
   sudo mkdir -p /etc/rollingthunder
+  sudo mkdir -p /etc/udev/rules.d
   sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
   sudo chmod 0755 /etc/rollingthunder
 "
@@ -111,9 +121,9 @@ echo "[push] Ensure runtime dirs exist (user-owned where needed)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     # Create as root so we can always succeed, then hand ownership to ${TARGET_USER}
-    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
+    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_TOOLS}'${RT_ROOT}/.deploy'
     sudo mkdir -p /etc/rollingthunder
-
+    sudo mkdir -p /etc/rollingthunder /etc/udev/rules.d
     # Make the runtime tree writable by the deploy user (spiff)
     sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
 
@@ -177,6 +187,11 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
+echo "[push] Sync node env dir -> ${ETC_DST_DIR} (e.g., radio.env)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${ETC_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${ETC_DST_DIR}/"
+
 # Ensure scripts executable
 if [[ "${DRY_RUN}" != "1" ]]; then
   echo "[push] Ensure scripts executable"
@@ -201,14 +216,12 @@ else
   echo \"[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}\"
 fi
 
-# ---- ROOT-OWNED: install systemd units ----
 echo "[push] Install systemd units (root-owned)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-radio-presence.service" \
     "${UNIT_DST_DIR}/rt-radio-presence.service" "644"
 
-  # NEW: intent worker unit
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-radio-ui-intent-worker.service" \
     "${UNIT_DST_DIR}/rt-radio-ui-intent-worker.service" "644"
@@ -220,20 +233,27 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer" \
     "${UNIT_DST_DIR}/rt-radio-deploy-report-publisher.timer" "644"
+
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules" \
+    "${UDEV_DST_DIR}/99-rollingthunder-ft891.rules" "644"
 else
   echo "[dry] would install systemd units to ${UNIT_DST_DIR}: ${UNITS[*]}"
+  echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"
 fi
 
 # ---- systemd reload + enable + restart ----
-echo "[push] systemd daemon-reload + enable + restart"
+echo "[push] udev reload + systemd daemon-reload + enable + restart"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
     sudo systemctl daemon-reload
     sudo systemctl enable ${UNITS_STR}
     sudo systemctl restart ${UNITS_STR}
   "
 else
-  echo "[dry] would daemon-reload + enable + restart: ${UNITS[*]}"
+  echo "[dry] would reload udev, daemon-reload + enable + restart: ${UNITS[*]}"
 fi
 
 # Record deployed commit
@@ -254,6 +274,11 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl --no-pager --full status rt-radio-presence.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-ui-intent-worker.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,40p' || true
+    exit 0
+  "
+  echo "[smoke] udev symlink (non-fatal)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    ls -l /dev/rollingthunder/ft891-cat || true
     exit 0
   "
 

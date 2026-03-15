@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea70", ATTRS{serial}=="011F42E9", ATTRS{interface}=="Enhanced Com Port", SYMLINK+="rollingthunder/ft891-cat", GROUP="dialout", MODE="0660"

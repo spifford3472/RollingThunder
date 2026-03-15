@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -42,6 +43,56 @@ POTA_BAND_ORDER = {
     "6m",
 }
 
+RT_RADIO_SERVICES_DIR = Path("/opt/rollingthunder/nodes/rt-radio/services")
+
+_radio_runtime: Dict[str, Any] | None = None
+_radio_runtime_error: str | None = None
+
+
+def _load_radio_runtime() -> Dict[str, Any]:
+    """
+    Lazy-load the rt-radio local radio package only when needed.
+    This worker is shared across nodes, so we do not want import-time
+    failures on nodes that never execute radio control.
+    """
+    global _radio_runtime, _radio_runtime_error
+
+    if _radio_runtime is not None:
+        return _radio_runtime
+
+    if _radio_runtime_error is not None:
+        raise RuntimeError(_radio_runtime_error)
+
+    try:
+        if str(RT_RADIO_SERVICES_DIR) not in sys.path:
+            sys.path.insert(0, str(RT_RADIO_SERVICES_DIR))
+
+        from radio import RadioService, load_radio_config
+        from radio.hamlib_client import (
+            HamlibError,
+            RigctldCommandError,
+            RigctldProtocolError,
+            RigctldUnreachable,
+        )
+        from radio.radios.ft891 import RadioValidationError
+
+        service = RadioService(load_radio_config())
+
+        _radio_runtime = {
+            "service": service,
+            "HamlibError": HamlibError,
+            "RigctldCommandError": RigctldCommandError,
+            "RigctldProtocolError": RigctldProtocolError,
+            "RigctldUnreachable": RigctldUnreachable,
+            "RadioValidationError": RadioValidationError,
+        }
+        return _radio_runtime
+
+    except Exception as e:
+        _radio_runtime_error = f"{type(e).__name__}:{e}"
+        raise
+
+
 def env_truthy(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -49,8 +100,10 @@ def env_truthy(name: str, default: bool = False) -> bool:
     v = str(v).strip().lower()
     return v in ("1", "true", "yes", "y", "on")
 
+
 def compact_json(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
 
 def default_pota_context() -> Dict[str, Any]:
     return {
@@ -64,6 +117,7 @@ def default_pota_context() -> Dict[str, Any]:
         "selection_ts": now_ms(),
     }
 
+
 def load_json_object(r: redis.Redis, key: str) -> Dict[str, Any] | None:
     raw = r.get(key)
     if not raw:
@@ -73,6 +127,7 @@ def load_json_object(r: redis.Redis, key: str) -> Dict[str, Any] | None:
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
+
 
 def _normalize_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
@@ -86,6 +141,7 @@ def _normalize_string_list(value: Any) -> list[str]:
         seen.add(s)
         out.append(s)
     return out
+
 
 def normalize_pota_context(existing: Dict[str, Any] | None) -> Dict[str, Any]:
     base = default_pota_context()
@@ -131,8 +187,10 @@ def normalize_pota_context(existing: Dict[str, Any] | None) -> Dict[str, Any]:
 
     return ctx
 
+
 def now_ms() -> int:
     return int(time.time() * 1000)
+
 
 def redis_client() -> redis.Redis:
     r = redis.Redis(
@@ -147,8 +205,10 @@ def redis_client() -> redis.Redis:
     r.ping()
     return r
 
+
 def publish_bus(r: redis.Redis, payload: Dict[str, Any]) -> None:
     r.publish(UI_BUS_CH, json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+
 
 def _truthy(x: Any) -> bool:
     if x is True:
@@ -158,6 +218,71 @@ def _truthy(x: Any) -> bool:
     if isinstance(x, (int, float)) and x == 1:
         return True
     return False
+
+
+def _radio_result_base(params: Dict[str, Any]) -> Dict[str, Any]:
+    target = str(params.get("nodeId") or params.get("node_id") or "rt-radio").strip()
+    return {
+        "topic": "ui.radio.tune.result",
+        "node": NODE_ID,
+        "target": target,
+        "ts_ms": now_ms(),
+        "freq_hz": params.get("freq_hz"),
+        "band": str(params.get("band") or "").strip(),
+        "mode": str(params.get("mode") or "").strip(),
+        "passband_hz": params.get("passband_hz"),
+        "autotune": _truthy(params.get("autotune")),
+    }
+
+
+def _publish_radio_tune_ok(
+    r: redis.Redis,
+    base: Dict[str, Any],
+    *,
+    freq_hz: int,
+    mode: str,
+    passband_hz: int,
+    autotune_requested: bool,
+    autotune_attempted: bool,
+    autotune_error: str | None = None,
+) -> None:
+    payload = {
+        **base,
+        "ok": True,
+        "status": "ok",
+        "msg": "tuned_successfully",
+        "message": "tuned successfully",
+        "freq_hz": freq_hz,
+        "mode": mode,
+        "passband_hz": passband_hz,
+        "autotune_requested": autotune_requested,
+        "autotune_attempted": autotune_attempted,
+    }
+    if autotune_error:
+        payload["autotune_error"] = autotune_error
+
+    publish_bus(r, payload)
+
+
+def _publish_radio_tune_error(
+    r: redis.Redis,
+    base: Dict[str, Any],
+    *,
+    error_code: str,
+    message: str,
+) -> None:
+    publish_bus(
+        r,
+        {
+            **base,
+            "ok": False,
+            "status": "error",
+            "error_code": error_code,
+            "msg": message,
+            "message": message,
+        },
+    )
+
 
 def reboot_this_node() -> tuple[bool, str]:
     cmd = ["systemctl", "--no-wall"]
@@ -182,6 +307,7 @@ def reboot_this_node() -> tuple[bool, str]:
         return True, f"{REBOOT_MODE}_initiated_timeout"
     except Exception as e:
         return False, f"exception:{type(e).__name__}:{e}"
+
 
 def handle_node_reboot(r: redis.Redis, params: Dict[str, Any]) -> None:
     target = str(params.get("nodeId") or params.get("node_id") or "").strip()
@@ -213,52 +339,142 @@ def handle_node_reboot(r: redis.Redis, params: Dict[str, Any]) -> None:
     ok, msgtxt = reboot_this_node()
     publish_bus(r, {**base, "ok": ok, "msg": msgtxt})
 
-def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
-    freq_hz = params.get("freq_hz")
-    band = str(params.get("band") or "").strip()
-    mode = str(params.get("mode") or "").strip()
-    autotune = bool(params.get("autotune", False))
-    target = str(params.get("nodeId") or params.get("node_id") or "rt-radio").strip()
 
-    base = {
-        "topic": "ui.radio.tune.result",
-        "node": NODE_ID,
-        "target": target,
-        "ts_ms": now_ms(),
-        "freq_hz": freq_hz,
-        "band": band,
-        "mode": mode,
-        "autotune": autotune,
-    }
+def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
+    base = _radio_result_base(params)
+    target = str(base["target"]).strip()
 
     if target != NODE_ID:
-        publish_bus(r, {**base, "ok": False, "msg": "not_for_this_node"})
+        _publish_radio_tune_error(r, base, error_code="not_for_this_node", message="not_for_this_node")
         return
 
     if NODE_ID != "rt-radio":
-        publish_bus(r, {**base, "ok": False, "msg": "wrong_node_role"})
+        _publish_radio_tune_error(r, base, error_code="wrong_node_role", message="wrong_node_role")
         return
 
-    if not isinstance(freq_hz, int):
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:invalid_freq_hz"})
+    freq_raw = params.get("freq_hz")
+    try:
+        freq_hz = int(freq_raw)
+    except Exception:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="invalid_payload",
+            message="freq_hz is required and must be an integer",
+        )
         return
 
-    if freq_hz < 1_000_000 or freq_hz > 60_000_000:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:freq_out_of_range"})
+    if freq_hz < 30_000 or freq_hz > 56_000_000:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="invalid_payload",
+            message="freq_hz out of supported range",
+        )
         return
 
-    if not band:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:missing_band"})
+    mode_raw = params.get("mode")
+    mode = str(mode_raw).strip() if mode_raw is not None else None
+    if mode == "":
+        mode = None
+
+    passband_raw = params.get("passband_hz")
+    if passband_raw in (None, ""):
+        passband_hz = None
+    else:
+        try:
+            passband_hz = int(passband_raw)
+        except Exception:
+            _publish_radio_tune_error(
+                r,
+                base,
+                error_code="invalid_payload",
+                message="passband_hz must be an integer when provided",
+            )
+            return
+
+    autotune = _truthy(params.get("autotune"))
+
+    try:
+        runtime = _load_radio_runtime()
+    except Exception as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="radio_runtime_unavailable",
+            message=f"radio runtime unavailable: {type(e).__name__}: {e}",
+        )
         return
 
-    if not mode:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:missing_mode"})
-        return
+    service = runtime["service"]
+    HamlibError = runtime["HamlibError"]
+    RigctldCommandError = runtime["RigctldCommandError"]
+    RigctldProtocolError = runtime["RigctldProtocolError"]
+    RigctldUnreachable = runtime["RigctldUnreachable"]
+    RadioValidationError = runtime["RadioValidationError"]
 
-    # MVP behavior:
-    # Accept the request and acknowledge receipt on rt-radio.
-    # Real CAT/radio execution will be added later.
-    publish_bus(r, {**base, "ok": True, "msg": "accepted_not_implemented"})
+    try:
+        result = service.tune(
+            freq_hz=freq_hz,
+            mode=mode,
+            passband_hz=passband_hz,
+            autotune=autotune,
+        )
+
+        _publish_radio_tune_ok(
+            r,
+            base,
+            freq_hz=int(result.freq_hz),
+            mode=str(result.mode),
+            passband_hz=int(result.passband_hz),
+            autotune_requested=bool(result.autotune_requested),
+            autotune_attempted=bool(result.autotune_attempted),
+            autotune_error=result.autotune_error,
+        )
+
+    except RadioValidationError as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="invalid_payload",
+            message=str(e),
+        )
+    except RigctldUnreachable:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="rigctld_unreachable",
+            message="unable to contact rigctld",
+        )
+    except RigctldProtocolError as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="rigctld_protocol_error",
+            message=str(e),
+        )
+    except RigctldCommandError as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="rigctld_command_error",
+            message=f"rigctld rejected command: {e.code}",
+        )
+    except HamlibError as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="radio_error",
+            message=str(e),
+        )
+    except Exception as e:
+        _publish_radio_tune_error(
+            r,
+            base,
+            error_code="unexpected_error",
+            message=f"{type(e).__name__}:{e}",
+        )
+
 
 def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
     band = str(params.get("band") or "").strip()
@@ -291,7 +507,9 @@ def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     publish_bus(r, {**base, "ok": True, "msg": "selected_band_updated"})
 
+
 POTA_NEARBY_KEY = os.environ.get("RT_POTA_NEARBY_KEY", "rt:pota:nearby")
+
 
 def nearby_choices_by_ref(r: redis.Redis) -> dict[str, dict[str, Any]]:
     nearby = load_json_object(r, POTA_NEARBY_KEY)
@@ -307,11 +525,11 @@ def nearby_choices_by_ref(r: redis.Redis) -> dict[str, dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         ref = str(item.get("reference", "") or "").strip()
-        # allow synthetic empty ref row to exist in nearby, but do not index it
         if not ref:
             continue
         out[ref] = item
     return out
+
 
 def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
     park_ref = str(params.get("park_ref") or params.get("reference") or "").strip()
@@ -331,7 +549,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
 
-    # Empty ref means "Not in a park" / clear all selections.
     if not park_ref:
         ctx["selected_park_ref"] = ""
         ctx["selected_park_name"] = "Not in a park"
@@ -356,7 +573,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
     selected_refs = list(ctx.get("selected_park_refs", []))
     selected_names = list(ctx.get("selected_park_names", []))
 
-    # Build a stable name map from existing selections.
     name_by_ref: dict[str, str] = {}
     for i, ref in enumerate(selected_refs):
         ref_s = str(ref).strip()
@@ -367,7 +583,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
             if nm:
                 name_by_ref[ref_s] = nm
 
-    # Toggle membership.
     if park_ref in selected_refs:
         selected_refs = [ref for ref in selected_refs if ref != park_ref]
         name_by_ref.pop(park_ref, None)
@@ -378,7 +593,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
             name_by_ref[park_ref] = park_name
         result_msg = "selected_park_added"
 
-    # Rebuild aligned names in selected_refs order.
     rebuilt_names: list[str] = []
     for ref in selected_refs:
         nm = name_by_ref.get(ref) or str(nearby_map.get(ref, {}).get("name") or "").strip()
@@ -387,7 +601,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
         else:
             rebuilt_names.append("")
 
-    # Drop parks from left_selected_park_refs if they are now actively selected.
     prior_left = [str(x).strip() for x in ctx.get("left_selected_park_refs", []) if str(x).strip()]
     left_selected = [ref for ref in prior_left if ref not in selected_refs]
 
@@ -397,7 +610,6 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
     ctx["grid"] = grid
     ctx["selection_ts"] = now_ms()
 
-    # Backward-compatible singular fields.
     if selected_refs:
         ctx["selected_park_ref"] = selected_refs[0]
         first_name = rebuilt_names[0] if rebuilt_names else ""
@@ -432,6 +644,7 @@ def main() -> None:
             "capabilities": {
                 "node_reboot": ALLOW_NODE_REBOOT,
                 "radio_tune": NODE_ID == "rt-radio",
+                "radio_tune_backend": NODE_ID == "rt-radio",
                 "pota_select_band": NODE_ID == "rt-controller",
                 "pota_select_park": NODE_ID == "rt-controller",
                 "mode": REBOOT_MODE,
@@ -469,6 +682,7 @@ def main() -> None:
         if intent == "pota.select_park":
             handle_pota_select_park(r, params)
             continue
+
 
 if __name__ == "__main__":
     main()
