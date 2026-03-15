@@ -159,6 +159,18 @@ def _read_live_state(r: redis.Redis) -> Dict[str, Dict[str, Any]]:
         "gps_pos": _load_hash_or_json(r, GPS_POS_KEY),
     }
 
+def _warn_if_state_missing(live: dict[str, dict[str, Any]]) -> None:
+    missing = []
+
+    if not live["radio_state"]:
+        missing.append(f"radio_state:{RADIO_STATE_KEY}")
+    if not live["operator_state"]:
+        missing.append(f"operator_state:{OPERATOR_STATE_KEY}")
+    if not live["motion_state"]:
+        missing.append(f"motion_state:{MOTION_STATE_KEY}")
+
+    if missing:
+        logger.warning("QSO logging proceeding with missing live state: %s", ", ".join(missing))
 
 def _extract_intent_name(message: Mapping[str, Any]) -> str:
     return str(message.get("intent") or "").strip()
@@ -266,6 +278,21 @@ def process_radio_log_qso_intent(
 
     params = _extract_intent_params(message_obj)
     live = _read_live_state(r)
+    logger.info(
+        "live state keys radio=%s operator=%s motion=%s gps=%s",
+        RADIO_STATE_KEY, OPERATOR_STATE_KEY, MOTION_STATE_KEY, GPS_POS_KEY,
+    )
+    logger.info(
+        "live state snapshot radio=%r operator=%r motion=%r gps=%r",
+        live["radio_state"], live["operator_state"], live["motion_state"], live["gps_pos"],
+    )
+
+    if not live["radio_state"]:
+        raise RuntimeError(f"missing radio state at {RADIO_STATE_KEY}")
+
+    if not live["operator_state"]:
+        raise RuntimeError(f"missing operator state at {OPERATOR_STATE_KEY}")
+    _warn_if_state_missing(live)
 
     logger.info(
         "Processing radio.log_qso call=%s freq_hz=%s mode=%s",
