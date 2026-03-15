@@ -160,7 +160,7 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='ops/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
 
-echo "[push] Sync POTA park data files dir {POTA_PARK_DATA_SRC_DIR} -> ${POTA_PARK_DATA_DST_DIR}"
+echo "[push] Sync POTA park data files dir ${POTA_PARK_DATA_SRC_DIR} -> ${POTA_PARK_DATA_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${POTA_PARK_DATA_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${POTA_PARK_DATA_DST_DIR}"
@@ -353,6 +353,7 @@ fi
 # Smoke checks
 if [[ "${DRY_RUN}" != "1" ]]; then
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
+  require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "redis-cli" "install with: sudo apt-get update && sudo apt-get install -y redis-tools"
 
   echo "[smoke] api nodes"
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
@@ -364,24 +365,109 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/config/app.json" 5 1.5
 
   echo "[smoke] redis ping"
-  ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli ping || true"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -a
+    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+    set +a
+    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli ping || true
+  '
 
   echo "[smoke] presence key rt:nodes:rt-display"
-  ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli HGETALL rt:nodes:rt-display || true"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -a
+    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+    set +a
+    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGETALL rt:nodes:rt-display || true
+  '
 
   echo "[smoke] presence key rt:nodes:rt-controller (3 samples)"
-  ssh "${TARGET_USER}@${TARGET_HOST}" "
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -a
+    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+    set +a
     for i in 1 2 3; do
-      echo \"sample=\$i\"
-      redis-cli HMGET rt:nodes:rt-controller status age_sec last_seen_ms last_update_ms
+      echo "sample=$i"
+      REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HMGET rt:nodes:rt-controller status age_sec last_seen_ms last_update_ms || true
       sleep 0.8
     done
-  " || true
+  '
 
   echo "[smoke] deploy report key rt:deploy:report:rt-controller"
-  ssh "${TARGET_USER}@${TARGET_HOST}" "redis-cli GET rt:deploy:report:rt-controller | head -c 200 && echo || true"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -a
+    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+    set +a
+    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli GET rt:deploy:report:rt-controller | head -c 200
+    echo
+  ' || true
 else
   echo "[dry] skipping smoke checks"
 fi
+
+echo "[smoke] critical services active"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  set -e
+  for u in \
+    rt-ui-snapshot-api.service \
+    rt-service-state-publisher.service \
+    rt-node-presence-ingestor.service \
+    rt-ui-intent-worker.service \
+    rt-controller-presence.service
+  do
+    printf "%s: " "$u"
+    systemctl is-active "$u"
+  done
+'
+
+echo "[smoke] failed systemd units"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  systemctl --failed --no-pager --plain || true
+'
+
+echo "[smoke] deployed commit marker"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  cat /opt/rollingthunder/.deploy/DEPLOYED_COMMIT || true
+'
+
+echo "[smoke] python service imports"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  cd /opt/rollingthunder/services &&
+  python3 - <<'"'"'PY'"'"'
+import rt_config
+import qso_model
+import qso_normalize
+print("imports=ok")
+PY
+'
+
+echo "[smoke] app.json parse"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  python3 - <<'"'"'PY'"'"'
+import json
+with open("/opt/rollingthunder/config/app.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+print("app.json=ok")
+print("runtimeVersion=", data.get("runtimeVersion"))
+PY
+'
+
+echo "[smoke] api nodes JSON parse"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  curl -fsS http://127.0.0.1:8625/api/v1/ui/nodes | python3 -m json.tool >/dev/null &&
+  echo "api-json=ok"
+'
+
+echo "[smoke] rt-controller presence populated"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  set -a
+  [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+  set +a
+  val="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGET rt:nodes:rt-controller status || true)"
+  test -n "$val" && echo "status=$val" || { echo "missing rt-controller status"; exit 1; }
+'
+echo "[smoke] ui api listening"
+ssh "${TARGET_USER}@${TARGET_HOST}" '
+  ss -ltnp | grep ":8625" || true
+'
 
 echo "[push] Done. Deployed commit ${GIT_SHA}"
