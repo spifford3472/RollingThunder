@@ -16,9 +16,10 @@ This module:
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import rt_config
 
@@ -30,7 +31,56 @@ ADIF_FILENAME = "rollingthunder.adi"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _load_config() -> Dict[str, Any]:
+    """
+    Load app config using the existing RollingThunder helper.
+
+    Expected contract:
+        rt_config.load_app_config()
+    """
+    cfg = rt_config.load_app_config()
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _get_program_version() -> str:
+    """
+    Resolve RollingThunder program/runtime version.
+
+    Preferred:
+        rt_config.get_program_version()
+
+    Fallbacks:
+        runtime.version from config
+        version from config
+        "0.3700"
+    """
+    if hasattr(rt_config, "get_program_version"):
+        try:
+            value = rt_config.get_program_version()
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        except Exception:
+            pass
+
+    cfg = _load_config()
+
+    runtime_version = cfg.get("runtime", {}).get("version")
+    if runtime_version is not None and str(runtime_version).strip():
+        return str(runtime_version).strip()
+
+    top_level_version = cfg.get("version")
+    if top_level_version is not None and str(top_level_version).strip():
+        return str(top_level_version).strip()
+
+    return "0.3700"
 
 
 def get_log_dir() -> Path:
@@ -39,16 +89,12 @@ def get_log_dir() -> Path:
 
     Expected existing config contract:
         logging.log_dir from app.json
+
     Default:
         /opt/rollingthunder/data/logs
     """
-    # Assumes existing helper contract from Step 1-4 foundation.
-    # If your rt_config helper uses a different function name, adjust only this line.
-    cfg = rt_config.get_app_config()
-    log_dir = (
-        cfg.get("logging", {}).get("log_dir")
-        or "/opt/rollingthunder/data/logs"
-    )
+    cfg = _load_config()
+    log_dir = cfg.get("logging", {}).get("log_dir") or "/opt/rollingthunder/data/logs"
     return Path(log_dir)
 
 
@@ -73,7 +119,7 @@ def _touch_if_missing(path: Path) -> None:
 
 
 def _adif_header_text() -> str:
-    version = rt_config.get_program_version()
+    version = _get_program_version()
     created_utc = _utc_now_iso()
     lines = [
         f"Created by RollingThunder v{version} on {created_utc}",
@@ -135,7 +181,7 @@ def iter_recent_qsos(limit: Optional[int] = 100) -> List[CanonicalQSO]:
                 if isinstance(obj, dict):
                     records.append(obj)
             except json.JSONDecodeError:
-                # Ignore malformed trailing junk instead of exploding the tractor.
+                # Ignore malformed lines rather than failing the whole read.
                 continue
 
     records.reverse()  # newest first
@@ -195,9 +241,6 @@ def append_adif_text(text: str) -> Path:
 
 
 if __name__ == "__main__":
-    import json
-    import tempfile
-
     # Demo monkeypatching note:
     # This block patches rt_config access only for local smoke testing,
     # without changing production function signatures.
@@ -205,12 +248,17 @@ if __name__ == "__main__":
     tmp_root = Path(tempfile.mkdtemp(prefix="rt-qso-storage-"))
     demo_log_dir = tmp_root / "logs"
 
-    original_get_app_config = rt_config.get_app_config
-    original_get_program_version = rt_config.get_program_version
+    original_load_app_config = rt_config.load_app_config
+    original_get_program_version = getattr(rt_config, "get_program_version", None)
 
     try:
-        rt_config.get_app_config = lambda: {"logging": {"log_dir": str(demo_log_dir)}}  # type: ignore[assignment]
-        rt_config.get_program_version = lambda: "0.3700-demo"  # type: ignore[assignment]
+        rt_config.load_app_config = lambda: {  # type: ignore[assignment]
+            "logging": {"log_dir": str(demo_log_dir)},
+            "runtime": {"version": "0.3700-demo"},
+        }
+
+        if hasattr(rt_config, "get_program_version"):
+            rt_config.get_program_version = lambda: "0.3700-demo"  # type: ignore[assignment]
 
         print(f"Demo log dir: {demo_log_dir}")
 
@@ -254,5 +302,9 @@ if __name__ == "__main__":
         print(get_adif_path().read_text(encoding="utf-8"))
 
     finally:
-        rt_config.get_app_config = original_get_app_config  # type: ignore[assignment]
-        rt_config.get_program_version = original_get_program_version  # type: ignore[assignment]
+        rt_config.load_app_config = original_load_app_config  # type: ignore[assignment]
+
+        if original_get_program_version is not None:
+            rt_config.get_program_version = original_get_program_version  # type: ignore[assignment]
+        elif hasattr(rt_config, "get_program_version"):
+            delattr(rt_config, "get_program_version")
