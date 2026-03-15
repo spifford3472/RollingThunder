@@ -40,12 +40,13 @@ class HamlibClient:
         self._sock: socket.socket | None = None
 
     def close(self) -> None:
-        with self._lock:
-            if self._sock is not None:
-                try:
-                    self._sock.close()
-                finally:
-                    self._sock = None
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
     def _connect(self) -> None:
         try:
@@ -63,21 +64,77 @@ class HamlibClient:
         if self._sock is None:
             self._connect()
 
+    def _send(self, cmd: str) -> None:
+        self._ensure_connected()
+        assert self._sock is not None
+        payload = (cmd.strip() + "\n").encode("utf-8")
+        try:
+            self._sock.sendall(payload)
+        except OSError:
+            self.close()
+            self._ensure_connected()
+            assert self._sock is not None
+            self._sock.sendall(payload)
+
     def _recv_until_rprt(self) -> str:
+        """
+        For set/action commands, rigctld replies with one or more lines ending in:
+            RPRT <code>
+        """
         assert self._sock is not None
         chunks: list[bytes] = []
         while True:
             try:
                 data = self._sock.recv(4096)
+            except socket.timeout as exc:
+                self.close()
+                raise RigctldProtocolError("timed out waiting for RPRT response from rigctld") from exc
             except OSError as exc:
                 self.close()
                 raise RigctldUnreachable("connection to rigctld dropped") from exc
+
             if not data:
                 self.close()
                 raise RigctldUnreachable("rigctld closed connection")
+
             chunks.append(data)
-            if b"RPRT " in b"".join(chunks):
-                break
+            joined = b"".join(chunks)
+            if b"RPRT " in joined:
+                return joined.decode("utf-8", errors="replace").strip()
+
+    def _recv_until_quiet(self) -> str:
+        """
+        For query/read commands, rigctld often returns payload lines without an RPRT line.
+        Read until the socket goes quiet after at least one chunk arrives.
+        """
+        assert self._sock is not None
+        chunks: list[bytes] = []
+        received_any = False
+
+        while True:
+            try:
+                data = self._sock.recv(4096)
+            except socket.timeout:
+                if received_any:
+                    break
+                self.close()
+                raise RigctldProtocolError("timed out waiting for payload response from rigctld")
+            except OSError as exc:
+                self.close()
+                raise RigctldUnreachable("connection to rigctld dropped") from exc
+
+            if not data:
+                if received_any:
+                    break
+                self.close()
+                raise RigctldUnreachable("rigctld closed connection")
+
+            chunks.append(data)
+            received_any = True
+
+            # Common cases return in a single recv; keep reading until timeout
+            # so multi-line query responses like "m" are handled cleanly.
+
         return b"".join(chunks).decode("utf-8", errors="replace").strip()
 
     @staticmethod
@@ -99,27 +156,27 @@ class HamlibClient:
         ]
 
     def command(self, cmd: str) -> str:
+        """
+        For set/action commands that should end with RPRT.
+        """
         with self._lock:
-            self._ensure_connected()
-            assert self._sock is not None
-
-            payload = (cmd.strip() + "\n").encode("utf-8")
-            try:
-                self._sock.sendall(payload)
-            except OSError:
-                self.close()
-                self._ensure_connected()
-                assert self._sock is not None
-                self._sock.sendall(payload)
-
+            self._send(cmd)
             response = self._recv_until_rprt()
             rc = self._parse_rprt(response)
             if rc != 0:
                 raise RigctldCommandError(code=rc, command=cmd, response=response)
             return response
 
+    def query(self, cmd: str) -> str:
+        """
+        For read/query commands that return payload only.
+        """
+        with self._lock:
+            self._send(cmd)
+            return self._recv_until_quiet()
+
     def get_freq(self) -> int:
-        response = self.command("f")
+        response = self.query("f")
         lines = self._payload_lines(response)
         if not lines:
             raise RigctldProtocolError("empty get_freq response")
@@ -129,7 +186,7 @@ class HamlibClient:
         self.command(f"F {int(freq_hz)}")
 
     def get_mode(self) -> ModeReadback:
-        response = self.command("m")
+        response = self.query("m")
         lines = self._payload_lines(response)
         if len(lines) < 2:
             raise RigctldProtocolError(f"unexpected get_mode response: {response!r}")
@@ -142,7 +199,7 @@ class HamlibClient:
         self.command("U TUNER 1")
 
     def get_tuner_state(self) -> str:
-        response = self.command("u TUNER")
+        response = self.query("u TUNER")
         lines = self._payload_lines(response)
         return lines[0] if lines else ""
 
