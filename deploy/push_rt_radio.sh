@@ -29,20 +29,20 @@ NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-radio"
 SYSTEMD_DIR="${NODE_SRC_DIR}/systemd"
 TOOLS_DIR="${NODE_SRC_DIR}/tools"
 SVC_DIR="${NODE_SRC_DIR}/services"
-ETC_SRC_DIR="${NODE_SRC_DIR}/etc" 
+ENV_SRC_DIR="${NODE_SRC_DIR}/env"
 UDEV_SRC_DIR="${NODE_SRC_DIR}/udev"
 
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 
-# ---- Runtime destinations (spiff-owned) ----
+# ---- Runtime destinations (spiff-owned where appropriate) ----
 RT_ROOT="/opt/rollingthunder"
 RT_NODE="${RT_ROOT}/nodes/rt-radio"
 RT_SVC="${RT_NODE}/services"
 RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
-ETC_DST_DIR="/etc/rollingthunder"
-UDEV_DST_DIR="/etc/udev/rules.d"
 
+ENV_DST_DIR="/etc/rollingthunder"
+UDEV_DST_DIR="/etc/udev/rules.d"
 UNIT_DST_DIR="/etc/systemd/system"
 
 # ---- Units ----
@@ -53,15 +53,9 @@ LEGACY_UNITS=(
 
 UNITS=(
   "rt-radio-presence.service"
-
-  # NEW: per-node intent worker
   "rt-radio-ui-intent-worker.service"
-
-  # deploy report publisher
   "rt-radio-deploy-report-publisher.timer"
   "rt-radio-deploy-report-publisher.service"
-
-  #Radio Deploy  
   "rigctld.service"
 )
 
@@ -74,17 +68,27 @@ fail_missing_dir "${TOOLS_DIR}"
 fail_missing_dir "${SVC_DIR}"
 fail_missing_dir "${ENV_SRC_DIR}"
 fail_missing_dir "${UDEV_SRC_DIR}"
+fail_missing_dir "${GLOBAL_TOOLS_DIR}"
 
 fail_missing "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules"
+fail_missing "${ENV_SRC_DIR}/radio.env"
+
 fail_missing "${SYSTEMD_DIR}/rt-radio-presence.service"
+fail_missing "${SYSTEMD_DIR}/rt-radio-ui-intent-worker.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
-fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
+fail_missing "${SYSTEMD_DIR}/rigctld.service"
 
-# NEW: intent worker artifacts
-fail_missing "${SYSTEMD_DIR}/rt-radio-ui-intent-worker.service"
-fail_missing_dir "${GLOBAL_TOOLS_DIR}"
+fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
+
+# radio package files required by shared ui_intent_worker.py on rt-radio
+fail_missing "${SVC_DIR}/radio/__init__.py"
+fail_missing "${SVC_DIR}/radio/config.py"
+fail_missing "${SVC_DIR}/radio/hamlib_client.py"
+fail_missing "${SVC_DIR}/radio/service.py"
+fail_missing "${SVC_DIR}/radio/radios/__init__.py"
+fail_missing "${SVC_DIR}/radio/radios/ft891.py"
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(
@@ -96,14 +100,17 @@ RSYNC_EXCLUDES=(
   --exclude='.dev/'
 )
 
-echo "[push] Ensure runtime dirs exist (user-owned)"
-ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
-  sudo mkdir -p '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
-  sudo mkdir -p /etc/rollingthunder
-  sudo mkdir -p /etc/udev/rules.d
-  sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
-  sudo chmod 0755 /etc/rollingthunder
-"
+echo "[push] Ensure runtime dirs exist"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
+    sudo mkdir -p '${ENV_DST_DIR}' '${UDEV_DST_DIR}'
+    sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
+    sudo chmod 0755 '${ENV_DST_DIR}'
+  "
+else
+  echo "[dry] would create runtime dirs under ${RT_ROOT}, ${ENV_DST_DIR}, ${UDEV_DST_DIR}"
+fi
 
 echo "[push] Ensure mosquitto_pub exists (mosquitto-clients)"
 if [[ "${DRY_RUN}" != "1" ]]; then
@@ -117,23 +124,6 @@ else
   echo "[dry] would ensure mosquitto-clients installed"
 fi
 
-echo "[push] Ensure runtime dirs exist (user-owned where needed)"
-if [[ "${DRY_RUN}" != "1" ]]; then
-  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
-    # Create as root so we can always succeed, then hand ownership to ${TARGET_USER}
-    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_TOOLS}'${RT_ROOT}/.deploy'
-    sudo mkdir -p /etc/rollingthunder
-    sudo mkdir -p /etc/rollingthunder /etc/udev/rules.d
-    # Make the runtime tree writable by the deploy user (spiff)
-    sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
-
-    # Keep /etc/rollingthunder root-owned but traversable
-    sudo chmod 0755 /etc/rollingthunder
-  "
-else
-  echo "[dry] would sudo mkdir -p ${RT_ROOT} ${RT_NODE} ${RT_SVC} ${RT_TOOLS} ${RT_ROOT}/.deploy /etc/rollingthunder and chown -R ${TARGET_USER}:${TARGET_USER} ${RT_ROOT}"
-fi
-
 echo "[push] Ensure venv exists + deps (redis + paho-mqtt)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
@@ -142,7 +132,6 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     cd '${RT_ROOT}'
     if [ ! -x '${RT_ROOT}/.venv/bin/python' ]; then
       python3 -m venv '${RT_ROOT}/.venv'
-      # ensure ownership stays with ${TARGET_USER}
       sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}/.venv'
     fi
     '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
@@ -153,7 +142,7 @@ else
   echo "[dry] would ensure venv exists and install deps"
 fi
 
-# node.json (as you had it)
+# node.json
 NODE_JSON_SRC="${REPO_ROOT}/deploy/common/node_json/${TARGET_HOST}.node.json"
 if [[ "${DRY_RUN}" != "1" ]]; then
   push_node_json "${TARGET_HOST}" "${TARGET_USER}" "${NODE_JSON_SRC}" "644"
@@ -166,10 +155,16 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-group --no-perms --omit-dir-times \
   "${RSYNC_EXCLUDES[@]}" \
   --exclude='systemd/' \
+  --exclude='env/' \
+  --exclude='udev/' \
   "${NODE_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_NODE}/"
 
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
-ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p '${COMMON_SERVICES_DST_DIR}'"
+else
+  echo "[dry] would mkdir -p ${COMMON_SERVICES_DST_DIR}"
+fi
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-times \
   --no-group --no-perms --omit-dir-times \
@@ -182,25 +177,28 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${GLOBAL_TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
-echo "[push] Sync node tools dir -> ${RT_TOOLS} (e.g., publish_deploy_report.sh)"
+echo "[push] Sync node tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
-echo "[push] Sync node env dir -> ${ETC_DST_DIR} (e.g., radio.env)"
-rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
-  "${RSYNC_EXCLUDES[@]}" \
-  "${ETC_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${ETC_DST_DIR}/"
-
-# Ensure scripts executable
+echo "[push] Install node env files (root-owned)"
 if [[ "${DRY_RUN}" != "1" ]]; then
-  echo "[push] Ensure scripts executable"
-  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${ENV_SRC_DIR}/radio.env" \
+    "${ENV_DST_DIR}/radio.env" "644"
+else
+  echo "[dry] would install env file to ${ENV_DST_DIR}/radio.env"
+fi
+
+echo "[push] Ensure scripts executable"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     chmod +x '${RT_TOOLS}/publish_deploy_report.sh' || true
-    chmod +x '${RT_SVC}/rt-radio-ui-intent-worker.py' || true
+    chmod +x '${RT_TOOLS}/ui_intent_worker.py' || true
   "
 else
-  echo "[dry] would chmod +x publish_deploy_report.sh + rt-radio-ui-intent-worker.py"
+  echo "[dry] would chmod +x ${RT_TOOLS}/publish_deploy_report.sh ${RT_TOOLS}/ui_intent_worker.py"
 fi
 
 echo "[push] Remove legacy deploy-report units (if present)"
@@ -213,10 +211,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     exit 0
   "
 else
-  echo \"[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}\"
+  echo "[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}"
 fi
 
-echo "[push] Install systemd units (root-owned)"
+echo "[push] Install systemd units and udev rule (root-owned)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-radio-presence.service" \
@@ -235,14 +233,17 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${UNIT_DST_DIR}/rt-radio-deploy-report-publisher.timer" "644"
 
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rigctld.service" \
+    "${UNIT_DST_DIR}/rigctld.service" "644"
+
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules" \
     "${UDEV_DST_DIR}/99-rollingthunder-ft891.rules" "644"
 else
-  echo "[dry] would install systemd units to ${UNIT_DST_DIR}: ${UNITS[*]}"
+  echo "[dry] would install units to ${UNIT_DST_DIR}: ${UNITS[*]}"
   echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"
 fi
 
-# ---- systemd reload + enable + restart ----
 echo "[push] udev reload + systemd daemon-reload + enable + restart"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
@@ -259,7 +260,7 @@ fi
 # Record deployed commit
 GIT_SHA="$(cd "${REPO_ROOT}" && git rev-parse --short HEAD)"
 if [[ "${DRY_RUN}" != "1" ]]; then
-  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     sudo mkdir -p '${RT_ROOT}/.deploy'
     echo '${GIT_SHA}' | sudo tee '${RT_ROOT}/.deploy/DEPLOYED_COMMIT' >/dev/null
   "
@@ -272,13 +273,27 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   echo "[smoke] status (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl --no-pager --full status rt-radio-presence.service | sed -n '1,40p' || true
-    sudo systemctl --no-pager --full status rt-radio-ui-intent-worker.service | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-radio-ui-intent-worker.service | sed -n '1,60p' || true
+    sudo systemctl --no-pager --full status rigctld.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,40p' || true
     exit 0
   "
-  echo "[smoke] udev symlink (non-fatal)"
+
+  echo "[smoke] radio package files on target (non-fatal)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    find '${RT_SVC}/radio' -maxdepth 3 -type f | sort || true
+    exit 0
+  "
+
+  echo "[smoke] custom udev alias (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     ls -l /dev/rollingthunder/ft891-cat || true
+    exit 0
+  "
+
+  echo "[smoke] stable by-id serial path (non-fatal)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    ls -l /dev/serial/by-id || true
     exit 0
   "
 
