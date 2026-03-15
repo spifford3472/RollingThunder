@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional
 
-from . import rt_config
+import rt_config
 
 
 CanonicalQSO = Dict[str, Any]
