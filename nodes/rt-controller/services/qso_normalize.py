@@ -150,11 +150,40 @@ def _normalize_mobile_state(motion_state: Optional[Dict[str, Any]]) -> Dict[str,
     }
 
 
+def _normalize_my_grid(
+    gps_pos: Optional[Dict[str, Any]],
+    operator_state: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Choose my_grid using the current architecture:
+
+    1. Prefer GPS-derived grid6 from rt:gps:pos
+    2. Fall back to GPS-derived grid4 from rt:gps:pos
+    3. Fall back to operator_state.my_grid for compatibility
+    4. Otherwise blank
+
+    This function does not read Redis; callers pass in plain dicts.
+    """
+    gps_pos = gps_pos or {}
+    operator_state = operator_state or {}
+
+    grid6 = _upper_trim(gps_pos.get("grid6", ""))
+    if grid6:
+        return grid6
+
+    grid4 = _upper_trim(gps_pos.get("grid4", ""))
+    if grid4:
+        return grid4
+
+    return _upper_trim(operator_state.get("my_grid", ""))
+
+
 def normalize_qso_intent(
     intent_params: Dict[str, Any] | None,
     radio_state: Dict[str, Any] | None,
     operator_state: Dict[str, Any] | None,
     motion_state: Dict[str, Any] | None,
+    gps_pos: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Normalize a radio.log_qso intent plus live state into a canonical QSO draft.
@@ -165,6 +194,7 @@ def normalize_qso_intent(
     radio_state = radio_state or {}
     operator_state = operator_state or {}
     motion_state = motion_state or {}
+    gps_pos = gps_pos or {}
 
     qso = new_qso_base()
 
@@ -181,8 +211,7 @@ def normalize_qso_intent(
 
     qso["operator_callsign"] = _normalize_callsign(operator_state.get("operator_callsign", ""))
     qso["station_callsign"] = _normalize_callsign(operator_state.get("station_callsign", ""))
-    #qso["my_grid"] = _upper_trim(operator_state.get("my_grid", ""))
-    qso["my_grid"]  = (gps_pos.get("grid6") or gps_pos.get("grid4") or "").strip() or None
+    qso["my_grid"] = _normalize_my_grid(gps_pos, operator_state)
     qso["their_grid"] = _upper_trim(intent_params.get("their_grid", ""))
     qso["my_pota_refs"] = _normalize_pota_refs(operator_state.get("my_pota_refs", []))
     qso["their_pota_ref"] = _upper_trim(intent_params.get("their_pota_ref", ""))
@@ -205,6 +234,8 @@ def normalize_qso_intent(
         defaults_applied["qso_complete"] = "default:Y"
     if "submode" not in radio_state or not _trim(radio_state.get("submode", "")):
         defaults_applied["submode"] = "empty"
+    if not qso["my_grid"]:
+        defaults_applied["my_grid"] = "empty"
 
     qso["defaults_applied"] = defaults_applied
 
@@ -236,7 +267,21 @@ if __name__ == "__main__":
         "motion_free_sec": 42,
     }
 
-    qso = normalize_qso_intent(intent_params, radio_state, operator_state, motion_state)
+    gps_pos = {
+        "valid": "true",
+        "lat": "39.524545",
+        "lon": "-84.062443333",
+        "grid4": "EM79",
+        "grid6": "EM79xm",
+    }
+
+    qso = normalize_qso_intent(
+        intent_params,
+        radio_state,
+        operator_state,
+        motion_state,
+        gps_pos,
+    )
 
     import json
     print(json.dumps(qso, indent=2, sort_keys=True))
