@@ -17,6 +17,8 @@ from typing import Any, Dict, Iterable, Optional
 
 from qso_model import new_qso_base, validate_qso_shape
 
+import json
+
 
 # Conservative common amateur band edges in Hz.
 # Enough for the foundation layer without dragging in a giant dependency octopus.
@@ -110,8 +112,26 @@ def _normalize_pota_refs(value: Any) -> list[str]:
     if value is None:
         return []
 
+    items: Iterable[Any]
+
     if isinstance(value, str):
-        items: Iterable[Any] = [value]
+        raw = value.strip()
+        if not raw:
+            return []
+
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                items = [value]
+            else:
+                if isinstance(parsed, list):
+                    items = parsed
+                else:
+                    items = [value]
+        else:
+            items = [value]
+
     elif isinstance(value, list):
         items = value
     else:
@@ -130,10 +150,25 @@ def _normalize_pota_refs(value: Any) -> list[str]:
 
     return out
 
+def _as_boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    s = str(value).strip().lower()
+    if s in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "f", "no", "n", "off", ""}:
+        return False
+
+    return bool(value)
 
 def _normalize_mobile_state(motion_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     motion_state = motion_state or {}
-    recent_motion = bool(motion_state.get("recent_motion", False))
+    recent_motion = _as_boolish(motion_state.get("recent_motion", False))
 
     motion_free_raw = motion_state.get("motion_free_sec", 0)
     try:
