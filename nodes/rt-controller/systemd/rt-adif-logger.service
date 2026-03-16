@@ -1,0 +1,20 @@
+[Unit]
+Description=RollingThunder ADIF Logger
+After=network-online.target redis-server.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder/services
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/adif_logger.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
