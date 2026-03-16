@@ -42,8 +42,52 @@ POLL_TIMEOUT_SEC = float(os.environ.get("RT_QSO_PUBSUB_TIMEOUT_SEC", "1.0"))
 IDLE_SLEEP_SEC = float(os.environ.get("RT_QSO_IDLE_SLEEP_SEC", "0.05"))
 
 
+
 logger = logging.getLogger("adif_logger")
 
+DIGITAL_SUBMODES = {
+    "FT8", "FT4", "JS8", "JS8CALL",
+    "PSK31", "PSK63", "PSK125",
+    "RTTY", "MFSK", "OLIVIA",
+    "THOR", "CONTESTIA",
+    "JT65", "JT9",
+    "VARA", "WINMOR"
+}
+
+CW_SUBMODES = {
+    "CW", "CWU", "CWL"
+}
+
+SSB_SUBMODES = {
+    "USB", "LSB"
+}
+
+
+def normalize_adif_mode(mode: str | None, submode: str | None) -> tuple[str, str]:
+    """
+    Normalize mode/submode into ADIF-friendly form.
+
+    Returns:
+        (mode, submode)
+    """
+
+    m = (mode or "").strip().upper()
+    sm = (submode or "").strip().upper()
+
+    # Prefer submode if present
+    key = sm or m
+
+    if key in SSB_SUBMODES:
+        return "SSB", key
+
+    if key in CW_SUBMODES:
+        return "CW", ""
+
+    if key in DIGITAL_SUBMODES:
+        return "DIGI", key
+
+    # Already a valid ADIF mode (AM, FM, etc.)
+    return m, sm
 
 def utc_now_iso_z() -> str:
     return (
@@ -227,17 +271,24 @@ def _publish_success(
     *,
     exported_records: int,
 ) -> None:
+
+    mode, submode = normalize_adif_mode(
+        qso.get("mode"),
+        qso.get("submode")
+    )
+
     payload = {
         **_result_base(),
         "ok": True,
         "qso_id": qso.get("qso_id", ""),
         "call": qso.get("call", ""),
         "band": qso.get("band", ""),
-        "mode": qso.get("mode", ""),
-        "submode": qso.get("submode", ""),
+        "mode": mode,
+        "submode": submode,
         "duplicate_suspected": bool(qso.get("duplicate_suspected", False)),
         "exported_records": int(exported_records),
     }
+
     publish_bus(r, payload)
 
 
