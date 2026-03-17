@@ -15,7 +15,6 @@ Environment=PYTHONUNBUFFERED=1
 Environment=RT_REDIS_HOST=127.0.0.1
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
-#Environment=RT_REDIS_PASSWORD=ra138766
 Environment="RT_POTA_PARKS_CSV=/opt/rollingthunder/data/POTA/United States of America (US).csv"
 Environment=RT_POTA_PARKS_INDEX=/opt/rollingthunder/data/POTA/us_parks.tileindex.v1.json
 Environment=RT_KEY_GPS_POS=rt:gps:pos
