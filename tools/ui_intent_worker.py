@@ -284,6 +284,35 @@ def _publish_radio_tune_error(
     )
 
 
+def _publish_radio_atas_tune_result(
+    r: redis.Redis,
+    *,
+    ok: bool,
+    target: str,
+    band: str,
+    msg: str,
+    error_code: str | None = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "topic": "ui.radio.atas_tune.result",
+        "node": NODE_ID,
+        "target": target,
+        "ts_ms": now_ms(),
+        "band": band,
+        "ok": ok,
+        "msg": msg,
+        "message": msg,
+    }
+    if ok:
+        payload["status"] = "ok"
+    else:
+        payload["status"] = "error"
+        if error_code:
+            payload["error_code"] = error_code
+
+    publish_bus(r, payload)
+
+
 def reboot_this_node() -> tuple[bool, str]:
     cmd = ["systemctl", "--no-wall"]
     if REBOOT_MODE == "poweroff":
@@ -476,6 +505,168 @@ def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
         )
 
 
+def handle_radio_atas_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
+    target = str(params.get("nodeId") or params.get("node_id") or "rt-radio").strip()
+    band = str(params.get("band") or "").strip()
+
+    if target != NODE_ID:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg="not_for_this_node",
+            error_code="not_for_this_node",
+        )
+        return
+
+    if NODE_ID != "rt-radio":
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg="wrong_node_role",
+            error_code="wrong_node_role",
+        )
+        return
+
+    if not band:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg="band is required",
+            error_code="invalid_payload",
+        )
+        return
+
+    try:
+        runtime = _load_radio_runtime()
+    except Exception as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=f"radio runtime unavailable: {type(e).__name__}: {e}",
+            error_code="radio_runtime_unavailable",
+        )
+        return
+
+    service = runtime["service"]
+    HamlibError = runtime["HamlibError"]
+    RigctldCommandError = runtime["RigctldCommandError"]
+    RigctldProtocolError = runtime["RigctldProtocolError"]
+    RigctldUnreachable = runtime["RigctldUnreachable"]
+    RadioValidationError = runtime["RadioValidationError"]
+
+    atas_fn = getattr(service, "atas_tune", None)
+    if not callable(atas_fn):
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg="atas_tune not supported by current radio service",
+            error_code="not_supported",
+        )
+        return
+
+    try:
+        result = atas_fn(band=band)
+
+        if isinstance(result, dict):
+            completed = bool(result.get("completed", False))
+            timed_out = bool(result.get("timed_out", False))
+            msg = str(result.get("msg") or result.get("message") or "atas_tune_requested")
+
+            payload_msg = msg
+            if timed_out:
+                _publish_radio_atas_tune_result(
+                    r,
+                    ok=False,
+                    target=target,
+                    band=band,
+                    msg=payload_msg,
+                    error_code="timeout",
+                )
+                return
+
+            _publish_radio_atas_tune_result(
+                r,
+                ok=completed or bool(result.get("tuner_started", False)),
+                target=target,
+                band=band,
+                msg=payload_msg,
+            )
+            return
+
+        _publish_radio_atas_tune_result(
+            r,
+            ok=True,
+            target=target,
+            band=band,
+            msg="atas_tune_requested",
+        )
+
+    except RadioValidationError as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=str(e),
+            error_code="invalid_payload",
+        )
+    except RigctldUnreachable:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg="unable to contact rigctld",
+            error_code="rigctld_unreachable",
+        )
+    except RigctldProtocolError as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=str(e),
+            error_code="rigctld_protocol_error",
+        )
+    except RigctldCommandError as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=f"rigctld rejected command: {e.code}",
+            error_code="rigctld_command_error",
+        )
+    except HamlibError as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=str(e),
+            error_code="radio_error",
+        )
+    except Exception as e:
+        _publish_radio_atas_tune_result(
+            r,
+            ok=False,
+            target=target,
+            band=band,
+            msg=f"{type(e).__name__}:{e}",
+            error_code="unexpected_error",
+        )
+
+
 def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
     band = str(params.get("band") or "").strip()
 
@@ -644,6 +835,7 @@ def main() -> None:
             "capabilities": {
                 "node_reboot": ALLOW_NODE_REBOOT,
                 "radio_tune": NODE_ID == "rt-radio",
+                "radio_atas_tune": NODE_ID == "rt-radio",
                 "radio_tune_backend": NODE_ID == "rt-radio",
                 "pota_select_band": NODE_ID == "rt-controller",
                 "pota_select_park": NODE_ID == "rt-controller",
@@ -677,6 +869,10 @@ def main() -> None:
 
         if intent == "radio.tune":
             handle_radio_tune(r, params)
+            continue
+
+        if intent == "radio.atas_tune":
+            handle_radio_atas_tune(r, params)
             continue
 
         if intent == "pota.select_park":

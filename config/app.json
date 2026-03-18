@@ -17,6 +17,9 @@
     "environment": "vehicle"
   },
   "globals": {
+    "radio": {
+      "has_tuner": false
+    },
     "time": {
       "timezone": "America/New_York",
       "gpsIsAuthoritative": true

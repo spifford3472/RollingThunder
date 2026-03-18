@@ -203,5 +203,14 @@ class HamlibClient:
         lines = self._payload_lines(response)
         return lines[0] if lines else ""
 
-    def raw_cat(self, cat_command: str, timeout_ms: int = 500) -> str:
-        return self.command(f"w {cat_command} {int(timeout_ms)}")
+    def raw_cat(self, cat_command: str, expected_bytes: int = 16) -> str:
+        """
+        Send a raw CAT command through rigctld's 'w' passthrough.
+
+        expected_bytes is the number of bytes rigctld should read back from
+        the radio before returning — NOT a timeout. Pass the exact or slightly
+        generous byte count for the response you expect.
+        """
+        with self._lock:
+            self._send(f"w {cat_command} {int(expected_bytes)}")
+            return self._recv_until_quiet()

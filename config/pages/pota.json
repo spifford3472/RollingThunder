@@ -28,7 +28,9 @@
       "alert.silence",
       "pota.select_band",
       "pota.select_park",
-      "radio.tune"
+      "radio.tune",
+      "radio.log_qso",
+      "radio.atas_tune"
     ]
   },
 

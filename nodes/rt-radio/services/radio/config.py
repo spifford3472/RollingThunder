@@ -14,6 +14,12 @@ class RadioConfig:
     default_passband_ssb_hz: int = 2400
     default_passband_digital_hz: int = 3000
     default_passband_cw_hz: int = 500
+
+    # True only when an actual tuner exists that RollingThunder should try to start.
+    # Note that the ATAS is not considered an antenna tuner in this context, so has_tuner=False since the FT891 will reject tune sequeneces when the ATAS is attached.
+    has_tuner: bool = False
+
+    # Separate safety switch: even if tuner exists, permit/deny autotune attempts.
     allow_autotune: bool = True
 
 
@@ -34,5 +40,6 @@ def load_radio_config() -> RadioConfig:
         default_passband_ssb_hz=int(os.environ.get("RT_DEFAULT_PASSBAND_SSB_HZ", "2400")),
         default_passband_digital_hz=int(os.environ.get("RT_DEFAULT_PASSBAND_DIGITAL_HZ", "3000")),
         default_passband_cw_hz=int(os.environ.get("RT_DEFAULT_PASSBAND_CW_HZ", "500")),
+        has_tuner=_env_bool("RT_RADIO_HAS_TUNER", False),
         allow_autotune=_env_bool("RT_RADIO_ALLOW_AUTOTUNE", True),
     )
