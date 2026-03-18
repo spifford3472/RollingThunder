@@ -158,6 +158,53 @@ function validateIntent(intent, params) {
     };
   }
 
+  if (name === "radio.log_qso") {
+    const call = String(p.call || "").trim().toUpperCase();
+    const freq_hz = Number(p.freq_hz);
+    const band = String(p.band || "").trim();
+
+    let mode = String(p.mode || "").trim().toUpperCase();
+    if (mode === "SSB") {
+      if (Number.isInteger(freq_hz) && freq_hz > 0) {
+        mode = freq_hz < 10_000_000 ? "LSB" : "USB";
+      } else if (["160m", "80m", "60m", "40m"].includes(String(band).toLowerCase())) {
+        mode = "LSB";
+      } else {
+        mode = "USB";
+      }
+    }
+
+    const park_ref = String(p.park_ref || "").trim();
+
+    if (!call) {
+      return { ok: false, error: "missing-call" };
+    }
+    if (!/^[A-Z0-9/]+$/.test(call)) {
+      return { ok: false, error: "invalid-call" };
+    }
+    if (!Number.isInteger(freq_hz) || freq_hz < 1000000 || freq_hz > 60000000) {
+      return { ok: false, error: "invalid-freq_hz" };
+    }
+    if (!isValidBand(band)) {
+      return { ok: false, error: "invalid-band" };
+    }
+    if (!isValidMode(mode)) {
+      return { ok: false, error: "invalid-mode" };
+    }
+
+    return {
+      ok: true,
+      intent: name,
+      params: {
+        call,
+        freq_hz,
+        band,
+        mode,
+        park_ref,
+      },
+    };
+  }
+  
   return { ok: false, error: "unknown-intent" };
 }
 

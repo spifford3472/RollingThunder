@@ -293,17 +293,30 @@ function emitIntent(slot, intent, params) {
 }
 
 function emitLogQsoForSpot(container, item) {
-  console.log("EMIT LOG QSO", item);
   const slot = container.closest(".rt-slot");
   if (!slot || !item) return false;
 
   const context = container.__rtPotaSpotsContext || {};
+  const mode = normalizeTuneMode(
+    item?.mode || "SSB",
+    item?.freq_hz,
+    context?.selected_band
+  );
+
+  console.log("EMIT LOG QSO", {
+    call: String(item?.call || "").trim(),
+    freq_hz: Number(item?.freq_hz || 0),
+    band: String(context?.selected_band || "").trim(),
+    rawMode: String(item?.mode || ""),
+    normalizedMode: mode,
+    park_ref: String(item?.park_ref || "").trim(),
+  });
 
   emitIntent(slot, "radio.log_qso", {
     call: String(item?.call || "").trim(),
     freq_hz: Number(item?.freq_hz || 0),
     band: String(context?.selected_band || "").trim(),
-    mode: normalizeTuneMode(item?.mode || "SSB", item?.freq_hz, context?.selected_band),
+    mode,
     park_ref: String(item?.park_ref || "").trim(),
   });
 
