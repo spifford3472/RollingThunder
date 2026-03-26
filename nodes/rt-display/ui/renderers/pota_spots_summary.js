@@ -317,6 +317,7 @@ function emitLogQsoForSpot(container, item) {
     freq_hz: Number(item?.freq_hz || 0),
     band: String(context?.selected_band || "").trim(),
     mode,
+    park_ref: String(item?.park_ref || "").trim(),
     their_pota_ref: String(item?.park_ref || "").trim(),
   });
 
