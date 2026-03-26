@@ -175,6 +175,7 @@ function validateIntent(intent, params) {
     }
 
     const park_ref = String(p.park_ref || "").trim();
+    const their_pota_ref = String(p.their_pota_ref || park_ref || "").trim();
 
     if (!call) {
       return { ok: false, error: "missing-call" };
@@ -201,6 +202,7 @@ function validateIntent(intent, params) {
         band,
         mode,
         park_ref,
+        their_pota_ref,
       },
     };
   }
