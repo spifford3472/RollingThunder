@@ -317,7 +317,7 @@ function emitLogQsoForSpot(container, item) {
     freq_hz: Number(item?.freq_hz || 0),
     band: String(context?.selected_band || "").trim(),
     mode,
-    park_ref: String(item?.park_ref || "").trim(),
+    their_pota_ref: String(item?.park_ref || "").trim(),
   });
 
   return true;
@@ -877,40 +877,7 @@ function openOutcomeModal(container, item) {
   m.modalCursor = 1;
   renderSpotsWindow(container, m.lastList, m, container.__rtPotaSpotsContext || {});
 
-  const onKey = (ev) => {
-    if (!getModel(container).modalOpen) return;
-
-    const k = String(ev.key || "");
-
-    if (k === "Escape") {
-      ev.preventDefault();
-      closeOutcomeModal(container);
-      returnToBrowseMode(container);
-      renderSpotsWindow(container, m.lastList, m, container.__rtPotaSpotsContext || {});
-      return;
-    }
-
-    if (k === "Enter") {
-      ev.preventDefault();
-      if (m.modalCursor === 0) {
-        applyOutcome(container, "cannot_hear");
-        return;
-      }
-      if (m.modalCursor === 1) {
-        applyOutcome(container, "success");
-        return;
-      }
-      if (m.modalCursor === 2) {
-        applyOutcome(container, "heard_not_worked");
-        return;
-      }
-    }
-  };
-
-  window.addEventListener("keydown", onKey, true);
-  m.modalCleanup = () => {
-    window.removeEventListener("keydown", onKey, true);
-  };
+  m.modalCleanup = null;
 }
 
 function attachBrowseHandlersOnce(container) {
