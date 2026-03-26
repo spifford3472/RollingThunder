@@ -310,6 +310,7 @@ function emitLogQsoForSpot(container, item) {
     rawMode: String(item?.mode || ""),
     normalizedMode: mode,
     park_ref: String(item?.park_ref || "").trim(),
+    their_pota_ref: String(item?.park_ref || "").trim(),
   });
 
   emitIntent(slot, "radio.log_qso", {

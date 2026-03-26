@@ -233,22 +233,29 @@ def normalize_qso_intent(
 
     qso = new_qso_base()
 
-    freq_hz = _normalize_freq_hz(radio_state.get("freq_hz", 0))
-    band = _derive_band(freq_hz)
+    intent_freq_hz = _normalize_freq_hz(intent_params.get("freq_hz", 0))
+    radio_freq_hz = _normalize_freq_hz(radio_state.get("freq_hz", 0))
+    freq_hz = intent_freq_hz or radio_freq_hz
 
-    qso["call"] = _normalize_callsign(intent_params.get("call", ""))
-    qso["comment"] = _normalize_comment(intent_params.get("comment", ""))
+    intent_band = _upper_trim(intent_params.get("band", ""))
+    band = intent_band or _derive_band(freq_hz)
+
+    intent_mode = _normalize_mode(intent_params.get("mode", ""))
+    intent_submode = _normalize_submode(intent_params.get("submode", ""))
+
+    radio_mode = _normalize_mode(radio_state.get("mode", ""))
+    radio_submode = _normalize_submode(radio_state.get("submode", ""))
 
     qso["freq_hz"] = freq_hz
     qso["band"] = band
-    qso["mode"] = _normalize_mode(radio_state.get("mode", ""))
-    qso["submode"] = _normalize_submode(radio_state.get("submode", ""))
+    qso["mode"] = intent_mode or radio_mode
+    qso["submode"] = intent_submode or radio_submode
 
     qso["operator_callsign"] = _normalize_callsign(operator_state.get("operator_callsign", ""))
     qso["station_callsign"] = _normalize_callsign(operator_state.get("station_callsign", ""))
     qso["my_grid"] = _normalize_my_grid(gps_pos, operator_state)
     qso["their_grid"] = _upper_trim(intent_params.get("their_grid", ""))
-    qso["my_pota_refs"] = _normalize_pota_refs(operator_state.get("my_pota_refs", []))
+    qso["my_pota_refs"] = _normalize_pota_refs(intent_params.get("my_pota_refs", operator_state.get("my_pota_refs", [])))
     qso["their_pota_ref"] = _upper_trim(intent_params.get("their_pota_ref", ""))
 
     qso["rst_sent"] = _trim(intent_params.get("rst_sent", ""))

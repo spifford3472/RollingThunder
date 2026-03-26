@@ -70,7 +70,7 @@ def normalize_adif_mode(mode: str | None, submode: str | None) -> tuple[str, str
     Returns:
         (mode, submode)
     """
-
+    logger.info("intent params snapshot=%r", params)
     m = (mode or "").strip().upper()
     sm = (submode or "").strip().upper()
 
