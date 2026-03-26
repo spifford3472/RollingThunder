@@ -250,6 +250,7 @@ def normalize_qso_intent(
     qso["band"] = band
     qso["mode"] = intent_mode or radio_mode
     qso["submode"] = intent_submode or radio_submode
+    qso["call"] = _normalize_callsign(intent_params.get("call", ""))
 
     qso["operator_callsign"] = _normalize_callsign(operator_state.get("operator_callsign", ""))
     qso["station_callsign"] = _normalize_callsign(operator_state.get("station_callsign", ""))
