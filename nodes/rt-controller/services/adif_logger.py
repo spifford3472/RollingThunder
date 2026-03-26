@@ -70,7 +70,6 @@ def normalize_adif_mode(mode: str | None, submode: str | None) -> tuple[str, str
     Returns:
         (mode, submode)
     """
-    logger.info("intent params snapshot=%r", params)
     m = (mode or "").strip().upper()
     sm = (submode or "").strip().upper()
 
@@ -328,7 +327,15 @@ def process_radio_log_qso_intent(
         raise ValueError(f"unexpected intent: {intent_name!r}")
 
     params = _extract_intent_params(message_obj)
+    logger.info("LOGGER RAW PARAMS %r", params)
     live = _read_live_state(r)
+    logger.info(
+        "LOGGER LIVE SUMMARY radio_call=%r radio_freq=%r radio_mode=%r operator_my_pota_refs=%r",
+        live["radio_state"].get("call"),
+        live["radio_state"].get("freq_hz"),
+        live["radio_state"].get("mode"),
+        live["operator_state"].get("my_pota_refs"),
+    )
     logger.info(
         "live state keys radio=%s operator=%s motion=%s gps=%s",
         RADIO_STATE_KEY, OPERATOR_STATE_KEY, MOTION_STATE_KEY, GPS_POS_KEY,
@@ -359,7 +366,17 @@ def process_radio_log_qso_intent(
         live["motion_state"],
         live["gps_pos"],
     )
-
+    logger.info("NORMALIZED_QSO %r", normalized_qso)
+    logger.info(
+        "NORMALIZED CORE call=%r freq_hz=%r band=%r mode=%r submode=%r their_pota_ref=%r my_pota_refs=%r",
+        normalized_qso.get("call"),
+        normalized_qso.get("freq_hz"),
+        normalized_qso.get("band"),
+        normalized_qso.get("mode"),
+        normalized_qso.get("submode"),
+        normalized_qso.get("their_pota_ref"),
+        normalized_qso.get("my_pota_refs"),
+    )
 
     probable_duplicates = qso_storage.find_probable_duplicates(
         normalized_qso,
@@ -370,6 +387,17 @@ def process_radio_log_qso_intent(
         normalized_qso,
         recent_qsos=probable_duplicates,
     )
+    logger.info("RULED_QSO %r", ruled_qso)
+    logger.info(
+        "RULED CORE call=%r freq_hz=%r band=%r mode=%r submode=%r their_pota_ref=%r my_pota_refs=%r",
+        ruled_qso.get("call"),
+        ruled_qso.get("freq_hz"),
+        ruled_qso.get("band"),
+        ruled_qso.get("mode"),
+        ruled_qso.get("submode"),
+        ruled_qso.get("their_pota_ref"),
+        ruled_qso.get("my_pota_refs"),
+    )
 
     qso_storage.append_canonical_qso(ruled_qso)
 
@@ -377,6 +405,7 @@ def process_radio_log_qso_intent(
     _ensure_adif_header_once(program_version)
 
     adif_records = qso_adif.canonical_qso_to_adif_records(ruled_qso)
+    logger.info("ADIF RECORDS %r", adif_records)
     qso_storage.append_adif_text(_render_adif_text(adif_records))
 
     _publish_success(
