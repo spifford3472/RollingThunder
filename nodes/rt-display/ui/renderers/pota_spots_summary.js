@@ -303,6 +303,8 @@ function emitLogQsoForSpot(container, item) {
     context?.selected_band
   );
 
+  const selectedParks = Array.isArray(context?.selected_parks) ? context.selected_parks : [];
+
   console.log("EMIT LOG QSO", {
     call: String(item?.call || "").trim(),
     freq_hz: Number(item?.freq_hz || 0),
@@ -311,6 +313,7 @@ function emitLogQsoForSpot(container, item) {
     normalizedMode: mode,
     park_ref: String(item?.park_ref || "").trim(),
     their_pota_ref: String(item?.park_ref || "").trim(),
+    my_pota_refs: selectedParks,
   });
 
   emitIntent(slot, "radio.log_qso", {
@@ -320,6 +323,7 @@ function emitLogQsoForSpot(container, item) {
     mode,
     park_ref: String(item?.park_ref || "").trim(),
     their_pota_ref: String(item?.park_ref || "").trim(),
+    my_pota_refs: selectedParks,
   });
 
   return true;
