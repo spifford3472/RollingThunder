@@ -303,7 +303,7 @@ function emitLogQsoForSpot(container, item) {
     context?.selected_band
   );
 
-  const selectedParks = Array.isArray(context?.selected_parks) ? context.selected_parks : [];
+  const selectedParks = context?.selected_parks ?? [];
 
   console.log("EMIT LOG QSO", {
     call: String(item?.call || "").trim(),
