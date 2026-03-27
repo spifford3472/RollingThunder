@@ -256,7 +256,7 @@ def normalize_qso_intent(
     qso["station_callsign"] = _normalize_callsign(operator_state.get("station_callsign", ""))
     qso["my_grid"] = _normalize_my_grid(gps_pos, operator_state)
     qso["their_grid"] = _upper_trim(intent_params.get("their_grid", ""))
-    qso["my_pota_refs"] = _normalize_pota_refs(intent_params.get("my_pota_refs", operator_state.get("my_pota_refs", [])))
+    qso["my_pota_refs"] = _normalize_pota_refs(intent_params.get("my_pota_refs", []))
     qso["their_pota_ref"] = _upper_trim(intent_params.get("their_pota_ref", ""))
 
     qso["rst_sent"] = _trim(intent_params.get("rst_sent", ""))

@@ -297,12 +297,15 @@ function emitLogQsoForSpot(container, item) {
   if (!slot || !item) return false;
 
   const context = container.__rtPotaSpotsContext || {};
+  const selectedRefs = Array.isArray(context?.selected_park_refs)
+    ? context.selected_park_refs
+    : [];
+
   const mode = normalizeTuneMode(
     item?.mode || "SSB",
     item?.freq_hz,
     context?.selected_band
   );
-
 
   console.log("EMIT LOG QSO", {
     call: String(item?.call || "").trim(),

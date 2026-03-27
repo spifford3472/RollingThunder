@@ -176,6 +176,11 @@ function validateIntent(intent, params) {
 
     const park_ref = String(p.park_ref || "").trim();
     const their_pota_ref = String(p.their_pota_ref || park_ref || "").trim();
+    const my_pota_refs = Array.isArray(p.my_pota_refs)
+      ? p.my_pota_refs
+          .map((v) => String(v || "").trim().toUpperCase())
+          .filter(Boolean)
+      : [];
 
     if (!call) {
       return { ok: false, error: "missing-call" };
@@ -203,6 +208,7 @@ function validateIntent(intent, params) {
         mode,
         park_ref,
         their_pota_ref,
+        my_pota_refs,
       },
     };
   }
