@@ -1,250 +1,231 @@
-# RollingThunder Intent Vocabulary #
+# RollingThunder Intent Vocabulary (v0.41 Aligned)
 
-## Authoritative Reference ##
+## Authoritative Reference
 
-This document defines the **canonical intent vocabulary** used throughout the
-RollingThunder platform.
+This document defines the **canonical intent vocabulary** used
+throughout the RollingThunder platform.
 
-An *intent* represents **what the user or system wants to happen**, not how it is
-implemented or which component performs it.
+An *intent* represents:
 
-All control paths—physical buttons, UI widgets, Meshtastic commands, automation,
-and future integrations—emit intents.
+**What the user or system wants to happen**, not how it is implemented.
 
-If behavior cannot be described as an intent, it does not belong in this system.
+All control paths emit intents: - physical control panels - UI
+(browser) - Meshtastic - automation - future integrations
 
-## 1. Why Intents Exist ##
+If behavior cannot be described as an intent, it does not belong in the
+system.
+
+------------------------------------------------------------------------
+
+## 1. Why Intents Exist
 
 RollingThunder deliberately separates:
-- **Input sources** (buttons, UI, Meshtastic, scripts)
-- **Intent** (requested action)
-- **Execution** (controller logic, service logic)
 
-This ensures:
-- deterministic behavior
-- uniform safety enforcement
-- auditable control flow
-- no hidden bypass paths
-There is exactly **one control vocabulary.**
+-   Input sources (buttons, UI, Meshtastic, scripts)
+-   Intent (requested action)
+-   Execution (controller + services)
 
-## 2. Intent Structure ##
+This ensures: - deterministic behavior - uniform safety enforcement -
+auditable control flow - no hidden bypass paths
 
-An intent is a small structured object:
-`
-{
-  "intent": "ui.page.next",
-  "params": { }
-}
-`
-## Required fields ##
-- intent — canonical string identifier
+There is exactly **one control vocabulary**.
 
-## Optional fields ##
-- params — small, bounded JSON object
-- source — injected by runtime (not user-defined)
-- timestamp — injected by runtime (not user-defined)
-Intents must be:
-- small
-- declarative
-- side-effect free until executed by the controller
+------------------------------------------------------------------------
 
-## 3. Intent Naming Conventions ##
+## 2. Intent Structure
 
-Intent names use **dot-separated namespaces:**
-`
-<domain>.<subdomain>.<action>
-`
+    {
+      "intent": "ui.page.next",
+      "params": {}
+    }
 
-### Rules ###
-- lowercase only
-- verbs last
-- stable over time
-- never overloaded
-Good:
-- ui.page.next
-- radio.hf.query
-- alert.ack
-Bad:
-- changePage
-- doStuff
-- hfStatus
+### Required fields
 
-## 4. Intent Domains ##
-### 4.1 UI Navigation (ui.*) ###
+-   intent --- canonical string identifier
 
-Used for page and panel navigation only.
+### Optional fields
 
-|Intent | Purpose|
-| --------------- | -------------------------- |
-| ui.page.next	| Move to next page (by order) |
-| ui.page.prev	| Move to previous page |
-| ui.page.goto	| Go to specific page ID |
-| ui.focus.next	| Advance focus to next panel |
-| ui.focus.prev	| Move focus to previous panel |
-| ui.ok	| Confirm current selection |
-| ui.cancel	| Cancel current action |
-| ui.open	| Open a logical UI target |
+-   params --- small JSON object
+-   source --- injected by runtime
+-   timestamp --- injected by runtime
 
-Example:
+### Rules
 
-```
-{
-    { "intent": "ui.page.goto", "params": { "pageId": "hf" } }
-}
-```
+-   small
+-   declarative
+-   transport-independent
+-   no side-effects until executed
 
-## 4.2 Alert Control (alert.*) ##
+------------------------------------------------------------------------
 
-Used to acknowledge, silence, or manage alerts.
+## 3. Intent Naming Conventions
 
-| Intent | Purpose |
-| --------------- | ---------------------------- |
-| alert.ack | Acknowledge alert(s) |
-| alert.silence | Temporarily silence alerts |
-| alert.clear | Clear non-persistent alerts |
+Format: `<domain>`{=html}.`<subdomain>`{=html}.`<action>`{=html}
 
-Example:
-```
-{
-{ "intent": "alert.ack", "params": { "scope": "focused" } }
-}
-```
+Rules: - lowercase - verbs last - stable - no implementation details
 
-## 4.3 Host & System (host.*) ##
+Good: - ui.page.next - ui.browse.delta - system.shutdown
 
-Read-only system introspection unless explicitly enabled.
+Bad: - ctrl_shift_r - shutdown_now
 
-| Intent | Purpose|
-| ------------- | ----------------------- |
-| host.status | Request system status |
-| host.uptime | Request uptime |
-| host.version | Request version info |
+------------------------------------------------------------------------
 
-Example:
-```
-{
-{ "intent": "host.status", "params": { "scope": "summary" } }
-}
-```
+## 4. Intent Domains
 
-## 4.4 Service Control (service.*) ##
+### 4.1 UI (ui.\*)
 
-Service lifecycle control.
-**Disabled by default for external control paths.**
+#### Page Navigation
 
-| Intent | Purpose |
-| ----------------- | -------------------- |
-| service.start | Start a service |
-| service.stop | Stop a service |
-| service.restart | Restart a service |
-| service.status | Query service state |
+-   ui.page.next
+-   ui.page.prev
+-   ui.page.goto
 
-Example:
-```
-{
-{ "intent": "service.restart", "params": { "serviceId": "gps_ingest" } }
-}
-```
-### Service Control Parameters (Authoritative) ###
+#### Focus
 
-All `service.*` intents MUST use the following parameter schema.
+-   ui.focus.next
+-   ui.focus.prev
+-   ui.focus.set
 
-#### Required params ####
-- `serviceId` (string): Logical RollingThunder service ID from the config service catalog
-  - Example: `gps_ingest`, `mqtt_bus`, `noaa_same`
-  - MUST NOT be a systemd unit name
-  - MUST be allow-listed by the controller based on `services.*` config
-  - MUST be owned by the executing node (e.g. `ownerNode: rt-controller`) unless explicitly enabled otherwise
+#### Browse
 
-#### Forbidden params ####
-- `unit`, `systemdUnit`, `command`, `args`, or any OS-level identifier
-  - The UI must never request a unit name or a shell command.
-  - Mapping `serviceId -> systemd unit` is controller-owned configuration.
+-   ui.browse.delta
+-   ui.browse.home
+-   ui.browse.end
 
-## 4.5 Radio Control (radio.*) ##
+#### Core Actions
 
-Radio intents are **read-only by default.**
+-   ui.ok
+-   ui.cancel
+-   ui.back
 
-**HF radio**
-| Intent | Purpose |
-| ---------------- | ------------------- |
-| radio.hf.query | Query HF snapshot|
-| radio.hf.status | Request HF status|
+#### Maintenance
 
-Future write-capable intents (explicitly gated):
-- radio.hf.set.freq
-- radio.hf.set.mode
-- radio.hf.ptt
+-   ui.reload
 
-These must be:
- - allow-listed
- - safety-checked
- - auditable
+#### Reserved
 
-## 4.6 Page Lifecycle (page.*) ##
+-   ui.action.primary
+-   ui.action.secondary
 
-Internal lifecycle hints (rarely emitted by inputs).
+------------------------------------------------------------------------
 
-| Intent | Purpose |
-| ------------ | --------------------- |
-| page.enter | Page became active |
-| page.exit | Page exited |
+### 4.2 System (system.\*)
 
-These intents are primarily for logging and service coordination.
+-   system.shutdown
 
-## 5. Safety & Constraint Enforcement ##
+Rules: - requires confirmation - controller executed - auditable
 
-Intents are **filtered and validated** before execution.
+------------------------------------------------------------------------
 
-Constraints may include:
- - driving mode
- - page context
- - focus context
- - sender allow-list (Meshtastic)
- - rate limits
+### 4.3 Alert (alert.\*)
 
-If an intent violates constraints:
- - it is rejected
- - rejection is logged
- - optional status is returned to sender
+-   alert.ack
+-   alert.silence
+-   alert.clear
 
-No intent may bypass safety rules.
+------------------------------------------------------------------------
 
-## 6. External Control Paths (Meshtastic) ##
+### 4.4 Host (host.\*)
 
-Meshtastic messages are translated into intents.
+-   host.status
+-   host.uptime
+-   host.version
 
-Rules:
- - Meshtastic never executes logic directly
- - Meshtastic may only emit allow-listed intents
- - Meshtastic intents flow through the same validation path
- - Meshtastic is never required for normal operation
+------------------------------------------------------------------------
 
-This prevents a secondary control plane from emerging.
+### 4.5 Service (service.\*)
 
-## 7. Forward Compatibility Rules ##
+-   service.start
+-   service.stop
+-   service.restart
+-   service.status
 
-- New intents may be added freely
-- Existing intents must not change meaning
-- Deprecated intents must be documented, not reused
-- Unknown intents must be ignored safely
+Required: - serviceId
 
-## 8. Non-Negotiable Invariants ##
-1. All control paths emit intents
-2. Intents are declarative, not imperative
-3. Intents never encode implementation details
-4. Safety rules apply uniformly
-5. Intent strings are stable identifiers
+Forbidden: - system commands
 
-If behavior cannot be described as an intent, the architecture must be revisited.
+------------------------------------------------------------------------
 
-## 9. How This Document Is Used ##
+### 4.6 Radio (radio.\*)
 
-Consult this document when:
-- adding buttons or controls
-- adding Meshtastic commands
-- adding UI actions
-- adding automation
-- reviewing safety behavior
+Read-only: - radio.hf.query - radio.hf.status
 
-If two components invent different words for the same action, the system is already drifting.
+Future (gated): - radio.hf.set.freq - radio.hf.set.mode - radio.hf.ptt
+
+------------------------------------------------------------------------
+
+### 4.7 Page Lifecycle (page.\*)
+
+-   page.enter
+-   page.exit
+
+------------------------------------------------------------------------
+
+## 5. Safety Model
+
+### Safe
+
+-   navigation
+-   browse
+-   cancel
+
+### Context
+
+-   ui.ok
+
+### Maintenance
+
+-   ui.reload
+
+### Controlled
+
+-   system.shutdown
+
+Rules: - validation required - rejection logged - no bypass
+
+------------------------------------------------------------------------
+
+## 6. External Control
+
+Meshtastic emits intents: - no direct execution - allow-listed only -
+same validation path
+
+------------------------------------------------------------------------
+
+## 7. Forward Compatibility
+
+-   add new intents freely
+-   do not change meaning
+-   deprecate safely
+-   ignore unknown intents
+
+------------------------------------------------------------------------
+
+## 8. Invariants
+
+1.  all inputs → intents
+2.  intents declarative
+3.  no implementation details
+4.  safety enforced uniformly
+5.  controller is authority
+
+------------------------------------------------------------------------
+
+## 9. What NOT To Do
+
+Do NOT: - create transport-specific intents - bypass controller - embed
+logic in panel - duplicate control vocabularies
+
+------------------------------------------------------------------------
+
+## 10. Usage
+
+Use this document when: - adding controls - adding UI features - adding
+automation - reviewing safety
+
+------------------------------------------------------------------------
+
+## Summary
+
+This document aligns RollingThunder with: - physical control panels -
+unified intent pipeline - safe system-level actions (reload, shutdown)
