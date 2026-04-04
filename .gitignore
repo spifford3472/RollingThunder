@@ -30,6 +30,7 @@ coverage/
 *.key
 *.pem
 *.p12
+secrets.h
 
 # Misc
 *.log
@@ -38,6 +39,7 @@ coverage/
 # Local overrides / secrets
 config/app.local.json
 config/*.secrets.json
+nodes/console/private/*
 
 # Runtime state (never in Git)
 var/

@@ -1,0 +1,454 @@
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <BLEClient.h>
+#include <BLERemoteCharacteristic.h>
+
+// =========================
+// Pin map
+// =========================
+static const int PIN_BACK_BTN    = 4;
+static const int PIN_PAGE_BTN    = 5;
+static const int PIN_PRIMARY_BTN = 18;
+static const int PIN_CANCEL_BTN  = 21;
+static const int PIN_MODE_BTN    = 23;
+static const int PIN_INFO_BTN    = 33;
+
+static const int PIN_ENC_CLK = 25;
+static const int PIN_ENC_DT  = 26;
+static const int PIN_ENC_SW  = 27;
+
+static const int PIN_BACK_LED    = 14; // Blue
+static const int PIN_PAGE_LED    = 15; // Blue
+static const int PIN_PRIMARY_LED = 16; // Green
+static const int PIN_CANCEL_LED  = 2;  // Red
+static const int PIN_MODE_LED    = 22; // Yellow
+static const int PIN_INFO_LED    = 19; // White
+
+// =========================
+// BLE trunk target
+// =========================
+static BLEUUID SERVICE_UUID("<UUID HERE>");
+static BLEUUID COMMAND_CHAR_UUID("<COMMAND_UUID_HERE");
+static const char* BLE_LOCAL_NAME = "RollingThunder-Console";
+static const char* SHARED_SECRET  = "<SECRET KEY HERE>";
+
+// =========================
+// Timing
+// =========================
+static const unsigned long DEBOUNCE_MS       = 20;
+static const unsigned long HOLD_MS           = 650;
+static const unsigned long HEARTBEAT_MS      = 2000;
+static const unsigned long ARM_TIMEOUT_MS    = 5000;
+static const unsigned long FLASH_INTERVAL_MS = 250;
+
+// =========================
+// Raw protocol identity
+// =========================
+static const char* PANEL_ID = "panel-v1-main";
+
+// =========================
+// Button model
+// =========================
+struct Button {
+  const char* controlId;
+  int pin;
+  int ledPin;
+  bool rawPressed;
+  bool stablePressed;
+  bool holdSent;
+  unsigned long lastRawChangeMs;
+  unsigned long pressedAtMs;
+};
+
+Button buttons[] = {
+  { "btn_back",    PIN_BACK_BTN,    PIN_BACK_LED,    false, false, false, 0, 0 },
+  { "btn_page",    PIN_PAGE_BTN,    PIN_PAGE_LED,    false, false, false, 0, 0 },
+  { "btn_primary", PIN_PRIMARY_BTN, PIN_PRIMARY_LED, false, false, false, 0, 0 },
+  { "btn_cancel",  PIN_CANCEL_BTN,  PIN_CANCEL_LED,  false, false, false, 0, 0 },
+  { "btn_mode",    PIN_MODE_BTN,    PIN_MODE_LED,    false, false, false, 0, 0 },
+  { "btn_info",    PIN_INFO_BTN,    PIN_INFO_LED,    false, false, false, 0, 0 },
+};
+
+static const size_t BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
+
+// indexes for convenience
+static const size_t IDX_BACK    = 0;
+static const size_t IDX_PAGE    = 1;
+static const size_t IDX_PRIMARY = 2;
+static const size_t IDX_CANCEL  = 3;
+static const size_t IDX_MODE    = 4;
+static const size_t IDX_INFO    = 5;
+
+// encoder state
+int lastEncClkState = HIGH;
+bool encSwRawPressed = false;
+bool encSwStablePressed = false;
+bool encSwHoldSent = false;
+unsigned long encSwLastRawChangeMs = 0;
+unsigned long encSwPressedAtMs = 0;
+
+// sequence for raw event stream
+uint32_t seqCounter = 1;
+unsigned long lastHeartbeatMs = 0;
+
+// guarded reset state
+bool resetArmed = false;
+unsigned long resetArmExpiresMs = 0;
+unsigned long lastFlashToggleMs = 0;
+bool flashOn = false;
+
+// BLE scan target
+BLEAdvertisedDevice* foundDevice = nullptr;
+
+class TargetAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
+      if (foundDevice != nullptr) {
+        delete foundDevice;
+        foundDevice = nullptr;
+      }
+      foundDevice = new BLEAdvertisedDevice(advertisedDevice);
+      BLEDevice::getScan()->stop();
+    }
+  }
+};
+
+TargetAdvertisedDeviceCallbacks advertisedCallbacks;
+
+// =========================
+// Utilities
+// =========================
+static inline bool readPressed(int pin) {
+  return digitalRead(pin) == LOW; // INPUT_PULLUP
+}
+
+void emitButtonEvent(const char* controlId, const char* eventType) {
+  uint32_t seq = seqCounter++;
+  Serial.print("{\"schema\":1,\"event_id\":\"");
+  Serial.print(seq);
+  Serial.print("\",\"panel_id\":\"");
+  Serial.print(PANEL_ID);
+  Serial.print("\",\"control_id\":\"");
+  Serial.print(controlId);
+  Serial.print("\",\"event_type\":\"");
+  Serial.print(eventType);
+  Serial.print("\",\"seq\":");
+  Serial.print(seq);
+  Serial.println("}");
+}
+
+void emitRotateEvent(int delta) {
+  uint32_t seq = seqCounter++;
+  Serial.print("{\"schema\":1,\"event_id\":\"");
+  Serial.print(seq);
+  Serial.print("\",\"panel_id\":\"");
+  Serial.print(PANEL_ID);
+  Serial.print("\",\"control_id\":\"enc_main\",\"event_type\":\"rotate\",\"value\":");
+  Serial.print(delta);
+  Serial.print(",\"seq\":");
+  Serial.print(seq);
+  Serial.println("}");
+}
+
+void emitHeartbeat() {
+  uint32_t seq = seqCounter++;
+  Serial.print("{\"schema\":1,\"type\":\"heartbeat\",\"panel_id\":\"");
+  Serial.print(PANEL_ID);
+  Serial.print("\",\"seq\":");
+  Serial.print(seq);
+  Serial.println("}");
+}
+
+void setAllLedsOff() {
+  digitalWrite(PIN_BACK_LED, LOW);
+  digitalWrite(PIN_PAGE_LED, LOW);
+  digitalWrite(PIN_PRIMARY_LED, LOW);
+  digitalWrite(PIN_CANCEL_LED, LOW);
+  digitalWrite(PIN_MODE_LED, LOW);
+  digitalWrite(PIN_INFO_LED, LOW);
+}
+
+void enterResetArmed() {
+  resetArmed = true;
+  resetArmExpiresMs = millis() + ARM_TIMEOUT_MS;
+  lastFlashToggleMs = 0;
+  flashOn = false;
+}
+
+void cancelResetArmed() {
+  resetArmed = false;
+  flashOn = false;
+  setAllLedsOff();
+}
+
+bool findTrunkServer() {
+  if (foundDevice != nullptr) {
+    delete foundDevice;
+    foundDevice = nullptr;
+  }
+
+  BLEScan* scan = BLEDevice::getScan();
+  scan->clearResults();
+  scan->setAdvertisedDeviceCallbacks(&advertisedCallbacks, false);
+  scan->setActiveScan(true);
+  scan->start(3, false);
+
+  return foundDevice != nullptr;
+}
+
+bool sendPowerCycleCommand() {
+  if (!findTrunkServer()) {
+    return false;
+  }
+
+  BLEClient* client = BLEDevice::createClient();
+  if (client == nullptr) {
+    delete foundDevice;
+    foundDevice = nullptr;
+    return false;
+  }
+
+  bool ok = client->connect(foundDevice);
+  if (!ok) {
+    delete client;
+    delete foundDevice;
+    foundDevice = nullptr;
+    return false;
+  }
+
+  BLERemoteService* service = client->getService(SERVICE_UUID);
+  if (service == nullptr) {
+    client->disconnect();
+    delete client;
+    delete foundDevice;
+    foundDevice = nullptr;
+    return false;
+  }
+
+  BLERemoteCharacteristic* commandChar = service->getCharacteristic(COMMAND_CHAR_UUID);
+  if (commandChar == nullptr) {
+    client->disconnect();
+    delete client;
+    delete foundDevice;
+    foundDevice = nullptr;
+    return false;
+  }
+
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "RTPC|CYCLE|%s", SHARED_SECRET);
+  commandChar->writeValue((uint8_t*)cmd, strlen(cmd), true);
+
+  client->disconnect();
+  delete client;
+  delete foundDevice;
+  foundDevice = nullptr;
+  return true;
+}
+
+void updateResetFlash() {
+  if (!resetArmed) {
+    return;
+  }
+
+  unsigned long now = millis();
+
+  if ((long)(now - resetArmExpiresMs) >= 0) {
+    cancelResetArmed();
+    return;
+  }
+
+  if (now - lastFlashToggleMs >= FLASH_INTERVAL_MS) {
+    lastFlashToggleMs = now;
+    flashOn = !flashOn;
+
+    setAllLedsOff();
+    digitalWrite(PIN_PRIMARY_LED, flashOn ? HIGH : LOW);
+    digitalWrite(PIN_CANCEL_LED,  flashOn ? HIGH : LOW);
+  }
+}
+
+void maybeArmFromCombo() {
+  if (!resetArmed &&
+      buttons[IDX_BACK].stablePressed &&
+      buttons[IDX_PAGE].stablePressed &&
+      buttons[IDX_MODE].stablePressed) {
+    enterResetArmed();
+  }
+}
+
+// =========================
+// Input update
+// =========================
+void handleButtonPress(Button& b) {
+  if (resetArmed) {
+    if (&b == &buttons[IDX_CANCEL]) {
+      cancelResetArmed();
+      return;
+    }
+
+    if (&b == &buttons[IDX_PRIMARY]) {
+      sendPowerCycleCommand();
+      cancelResetArmed();
+      return;
+    }
+  }
+
+  emitButtonEvent(b.controlId, "press");
+}
+
+void handleButtonHold(Button& b) {
+  if (resetArmed) {
+    return;
+  }
+
+  emitButtonEvent(b.controlId, "hold");
+}
+
+void updateButton(Button& b) {
+  bool raw = readPressed(b.pin);
+  unsigned long now = millis();
+
+  if (raw != b.rawPressed) {
+    b.rawPressed = raw;
+    b.lastRawChangeMs = now;
+  }
+
+  if (now - b.lastRawChangeMs < DEBOUNCE_MS) {
+    return;
+  }
+
+  if (b.stablePressed != b.rawPressed) {
+    b.stablePressed = b.rawPressed;
+
+    if (b.stablePressed) {
+      b.pressedAtMs = now;
+      b.holdSent = false;
+      handleButtonPress(b);
+      maybeArmFromCombo();
+    } else {
+      b.holdSent = false;
+    }
+  }
+
+  if (b.stablePressed && !b.holdSent && (now - b.pressedAtMs >= HOLD_MS)) {
+    b.holdSent = true;
+    handleButtonHold(b);
+  }
+}
+
+void updateEncoderRotate() {
+  int clkState = digitalRead(PIN_ENC_CLK);
+
+  if (clkState != lastEncClkState) {
+    if (clkState == LOW) {
+      int dtState = digitalRead(PIN_ENC_DT);
+      int delta = (dtState != clkState) ? 1 : -1;
+
+      if (!resetArmed) {
+        emitRotateEvent(delta);
+      }
+    }
+    lastEncClkState = clkState;
+  }
+}
+
+void updateEncoderButton() {
+  bool raw = readPressed(PIN_ENC_SW);
+  unsigned long now = millis();
+
+  if (raw != encSwRawPressed) {
+    encSwRawPressed = raw;
+    encSwLastRawChangeMs = now;
+  }
+
+  if (now - encSwLastRawChangeMs < DEBOUNCE_MS) {
+    return;
+  }
+
+  if (encSwStablePressed != encSwRawPressed) {
+    encSwStablePressed = encSwRawPressed;
+
+    if (encSwStablePressed) {
+      encSwPressedAtMs = now;
+      encSwHoldSent = false;
+      if (!resetArmed) {
+        emitButtonEvent("enc_main", "press");
+      }
+    } else {
+      encSwHoldSent = false;
+    }
+  }
+
+  if (encSwStablePressed && !encSwHoldSent && (now - encSwPressedAtMs >= HOLD_MS)) {
+    encSwHoldSent = true;
+    if (!resetArmed) {
+      emitButtonEvent("enc_main", "hold");
+    }
+  }
+}
+
+// =========================
+// Setup / loop
+// =========================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_BACK_BTN,    INPUT_PULLUP);
+  pinMode(PIN_PAGE_BTN,    INPUT_PULLUP);
+  pinMode(PIN_PRIMARY_BTN, INPUT_PULLUP);
+  pinMode(PIN_CANCEL_BTN,  INPUT_PULLUP);
+  pinMode(PIN_MODE_BTN,    INPUT_PULLUP);
+  pinMode(PIN_INFO_BTN,    INPUT_PULLUP);
+
+  pinMode(PIN_ENC_CLK, INPUT_PULLUP);
+  pinMode(PIN_ENC_DT,  INPUT_PULLUP);
+  pinMode(PIN_ENC_SW,  INPUT_PULLUP);
+
+  pinMode(PIN_BACK_LED,    OUTPUT);
+  pinMode(PIN_PAGE_LED,    OUTPUT);
+  pinMode(PIN_PRIMARY_LED, OUTPUT);
+  pinMode(PIN_CANCEL_LED,  OUTPUT);
+  pinMode(PIN_MODE_LED,    OUTPUT);
+  pinMode(PIN_INFO_LED,    OUTPUT);
+
+  setAllLedsOff();
+
+  for (size_t i = 0; i < BUTTON_COUNT; i++) {
+    buttons[i].rawPressed = readPressed(buttons[i].pin);
+    buttons[i].stablePressed = buttons[i].rawPressed;
+    buttons[i].holdSent = false;
+    buttons[i].lastRawChangeMs = millis();
+    buttons[i].pressedAtMs = millis();
+  }
+
+  lastEncClkState = digitalRead(PIN_ENC_CLK);
+  encSwRawPressed = readPressed(PIN_ENC_SW);
+  encSwStablePressed = encSwRawPressed;
+  encSwHoldSent = false;
+  encSwLastRawChangeMs = millis();
+  encSwPressedAtMs = millis();
+
+  BLEDevice::init(BLE_LOCAL_NAME);
+  lastHeartbeatMs = millis();
+}
+
+void loop() {
+  for (size_t i = 0; i < BUTTON_COUNT; i++) {
+    updateButton(buttons[i]);
+  }
+
+  updateEncoderRotate();
+  updateEncoderButton();
+  updateResetFlash();
+
+  unsigned long now = millis();
+  if (now - lastHeartbeatMs >= HEARTBEAT_MS) {
+    lastHeartbeatMs = now;
+    emitHeartbeat();
+  }
+
+  delay(1);
+}

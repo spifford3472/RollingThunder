@@ -1,0 +1,143 @@
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+// ---------- Relay ----------
+static const int RELAY_PIN = 14;
+// Confirmed behavior:
+// HIGH = cut power
+// LOW  = restore power
+static const int RELAY_POWER_OFF = HIGH;
+static const int RELAY_POWER_ON  = LOW;
+
+// ---------- BLE identity ----------
+static const char* DEVICE_NAME = "RollingThunder-Power";
+
+// Custom UUIDs for RollingThunder power control
+static const char* SERVICE_UUID        = "<SERVICE_UUID HERE>";
+static const char* COMMAND_CHAR_UUID   = "<COMMAND_UUID HERE>"; // WRITE
+static const char* RESPONSE_CHAR_UUID  = "<RESPONSE_UUID HERE>"; // NOTIFY
+
+// ---------- Command security ----------
+static const char* SHARED_SECRET = "<SECRET KEY HERE>";
+static const unsigned long POWER_CYCLE_MS = 5000;
+
+BLECharacteristic* pResponseChar = nullptr;
+bool deviceConnected = false;
+
+void restorePower() {
+  digitalWrite(RELAY_PIN, RELAY_POWER_ON);
+}
+
+void cutPower() {
+  digitalWrite(RELAY_PIN, RELAY_POWER_OFF);
+}
+
+void notifyResponse(const String& msg) {
+  if (pResponseChar && deviceConnected) {
+    pResponseChar->setValue(msg.c_str());
+    pResponseChar->notify();
+  }
+  Serial.print("BLE response: ");
+  Serial.println(msg);
+}
+
+bool isAuthorizedCycleCommand(const String& line) {
+  String expected = String("RTPC|CYCLE|") + SHARED_SECRET;
+  return line == expected;
+}
+
+void powerCyclePis(unsigned long offMs) {
+  Serial.println("Power cycle requested.");
+  notifyResponse("ACK|CYCLE");
+
+  cutPower();
+  delay(offMs);
+  restorePower();
+
+  notifyResponse("DONE|CYCLE");
+  Serial.println("Power restored.");
+}
+
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) override {
+    deviceConnected = true;
+    Serial.println("BLE client connected.");
+  }
+
+  void onDisconnect(BLEServer* pServer) override {
+    deviceConnected = false;
+    Serial.println("BLE client disconnected.");
+    BLEDevice::startAdvertising();
+    Serial.println("Advertising restarted.");
+  }
+};
+
+class CommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pCharacteristic) override {
+    String cmd = pCharacteristic->getValue();
+    if (cmd.length() == 0) {
+      return;
+    }
+
+    cmd.trim();
+
+    Serial.print("Received command: ");
+    Serial.println(cmd);
+
+    if (isAuthorizedCycleCommand(cmd)) {
+      powerCyclePis(POWER_CYCLE_MS);
+    } else {
+      notifyResponse("ERR|IGNORED");
+      Serial.println("Ignored unauthorized command.");
+    }
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  pinMode(RELAY_PIN, OUTPUT);
+
+  // Critical safe default: power ON
+  restorePower();
+
+  Serial.println("Starting RollingThunder BLE trunk power controller...");
+
+  BLEDevice::init(DEVICE_NAME);
+
+  BLEServer* pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+
+  BLEService* pService = pServer->createService(SERVICE_UUID);
+
+  BLECharacteristic* pCommandChar = pService->createCharacteristic(
+    COMMAND_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  pCommandChar->setCallbacks(new CommandCallbacks());
+
+  pResponseChar = pService->createCharacteristic(
+    RESPONSE_CHAR_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pResponseChar->addDescriptor(new BLE2902());
+
+  pService->start();
+
+  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  BLEDevice::startAdvertising();
+
+  Serial.println("BLE advertising started.");
+  Serial.println("Device name: RollingThunder-Power");
+}
+
+void loop() {
+  delay(20);
+}
+
