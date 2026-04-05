@@ -17,7 +17,8 @@ Environment=RT_REDIS_TIMEOUT_SEC=0.35
 EnvironmentFile=/etc/rollingthunder/redis.env
 
 # State key names (override here if your committed STATE_KEYS differ)
-Environment=RT_STATE_CURRENT_PAGE=ui:current_page
+Environment=RT_STATE_CURRENT_PAGE=rt:ui:page
+Environment=RT_STATE_FOCUSED_PANEL=rt:ui:focus
 Environment=RT_STATE_FOCUS_PANEL=ui:focus_panel
 Environment=RT_STATE_ALERTS_JSON=alerts:active_json
 Environment=RT_STATE_NODE_HEALTH_JSON=system:nodes_health_json

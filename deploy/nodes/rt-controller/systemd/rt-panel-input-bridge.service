@@ -1,0 +1,24 @@
+[Unit]
+Description=RollingThunder Panel Input Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/panel_input_bridge.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+Environment=RT_PANEL_SERIAL_PORT=/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+Environment=RT_PANEL_SERIAL_BAUD=115200
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+
+[Install]
+WantedBy=multi-user.target

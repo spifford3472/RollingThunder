@@ -20,6 +20,10 @@ Environment=RT_REDIS_HOST=127.0.0.1
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
 
+# Projector inputs
+Environment=RT_UI_INTERACTION_STATE_KEY=rt:interaction:state
+Environment=RT_UI_PAGE_CONTEXT_KEY=rt:pota:context
+
 # MQTT
 Environment=RT_MQTT_HOST=127.0.0.1
 Environment=RT_MQTT_PORT=1883

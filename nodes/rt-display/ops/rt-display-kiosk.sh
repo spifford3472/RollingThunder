@@ -8,10 +8,13 @@ CTRL_HOST="${RT_CTRL_HOST:-rt-controller}"
 CTRL_PORT="${RT_CTRL_PORT:-8625}"
 
 # Primary: controller serves UI + API
-START_URL_DEFAULT="http://${CTRL_HOST}:${CTRL_PORT}/ui/index.html?runtime=1&page=home"
-
+#START_URL_DEFAULT="http://${CTRL_HOST}:${CTRL_PORT}/ui/index.html?runtime=1&page=home"
 # Optional fallback: local display UI server (what you had before)
-FALLBACK_URL="${RT_UI_FALLBACK_URL:-http://127.0.0.1:8619/index.html?runtime=1&page=home}"
+#FALLBACK_URL="${RT_UI_FALLBACK_URL:-http://127.0.0.1:8619/index.html?runtime=1&page=home}"
+
+# Primary: controller serves UI + API
+START_URL_DEFAULT="http://${CTRL_HOST}:${CTRL_PORT}/ui/index.html?runtime=1&v=controller"
+FALLBACK_URL="${RT_UI_FALLBACK_URL:-http://192.168.8.134:8625/ui/index.html?runtime=1&v=controller}"
 
 START_URL="${RT_UI_START_URL:-$START_URL_DEFAULT}"
 

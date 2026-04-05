@@ -16,6 +16,7 @@ Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
 Environment=RT_REDIS_TIMEOUT_SEC=0.35
 EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_UI_INTERACTION_HEARTBEAT_MS=1000
 
 [Install]
 WantedBy=multi-user.target

@@ -76,6 +76,8 @@ UNITS=(
   "rt-adif-logger.service"
   "rt-ui-state-projector.service"
   "rt-ui-interaction-state.service"
+  "rt-console-led-sender.service"
+  "rt-panel-input-bridge.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

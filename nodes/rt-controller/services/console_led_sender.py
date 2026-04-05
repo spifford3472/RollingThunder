@@ -61,11 +61,12 @@ POST_SNAPSHOT_DELAY_SEC = 0.20
 RETRY_SEC = 2.0
 POLL_SEC = 0.50
 
-KEY_CURRENT_PAGE = "rt:ui:current_page"
-KEY_FOCUSED_PANEL = "rt:ui:focused_panel"
-KEY_MODAL = "rt:ui:modal"
-KEY_SYSTEM_HEALTH = "rt:system:health"
-KEY_LAST_RESULT = "rt:input:last_result"
+KEY_UI_PAGE = "rt:ui:page"
+KEY_UI_FOCUS = "rt:ui:focus"
+KEY_UI_LAYER = "rt:ui:layer"
+KEY_UI_AUTHORITY = "rt:ui:authority"
+KEY_UI_MODAL = "rt:ui:modal"
+KEY_UI_BROWSE = "rt:ui:browse"
 
 SERVICE_KEYS = (
     "rt:services:redis_state",
@@ -352,47 +353,33 @@ def has_recent_result(last_result_obj: Any) -> bool:
 
 
 def read_controller_led_inputs(r: redis.Redis) -> dict[str, Any]:
-    current_page = _string_or_none(redis_get_obj(r, KEY_CURRENT_PAGE))
-    focused_panel = _string_or_none(redis_get_obj(r, KEY_FOCUSED_PANEL))
-    modal_obj = redis_get_obj(r, KEY_MODAL)
-    system_health_obj = redis_get_obj(r, KEY_SYSTEM_HEALTH)
-    last_result_obj = redis_get_obj(r, KEY_LAST_RESULT)
+    page = _string_or_none(redis_get_obj(r, KEY_UI_PAGE))
+    focus = _string_or_none(redis_get_obj(r, KEY_UI_FOCUS))
+    layer = _string_or_none(redis_get_obj(r, KEY_UI_LAYER))
+    authority_obj = redis_get_obj(r, KEY_UI_AUTHORITY) or {}
+    modal_obj = redis_get_obj(r, KEY_UI_MODAL)
+    browse_obj = redis_get_obj(r, KEY_UI_BROWSE)
 
-    service_hashes: dict[str, dict[str, str]] = {}
-    for key in SERVICE_KEYS:
-        service_hashes[key] = redis_hgetall_safe(r, key)
+    degraded = bool(authority_obj.get("degraded"))
+    controller_authoritative = bool(authority_obj.get("controller_authoritative"))
 
-    modal_active = is_modal_active(modal_obj)
-    browse_active = is_browse_active(r, focused_panel)
-    degraded = is_system_degraded(system_health_obj, service_hashes)
-    has_result = has_recent_result(last_result_obj)
-
-    controller_authoritative = True
-    page_nav_available = bool(current_page) and not degraded
-    primary_available = controller_authoritative and not degraded
-    back_available = modal_active or browse_active
-    mode_active = browse_active
-    info_available = has_result or degraded
+    modal_active = _truthy(modal_obj)
+    browse_active = _truthy(browse_obj)
 
     log(
-        f"inputs page={current_page!r} focused_panel={focused_panel!r} "
-        f"modal_active={modal_active} browse_active={browse_active} "
-        f"degraded={degraded} has_result={has_result}"
+        f"UI inputs page={page!r} focus={focus!r} "
+        f"layer={layer!r} degraded={degraded} "
+        f"modal={modal_active} browse={browse_active}"
     )
 
     return {
-        "current_page": current_page,
-        "focused_panel": focused_panel,
+        "page": page,
+        "focus": focus,
+        "layer": layer,
+        "degraded": degraded,
+        "controller_authoritative": controller_authoritative,
         "modal_active": modal_active,
         "browse_active": browse_active,
-        "degraded": degraded,
-        "has_result": has_result,
-        "controller_authoritative": controller_authoritative,
-        "page_nav_available": page_nav_available,
-        "primary_available": primary_available,
-        "back_available": back_available,
-        "mode_active": mode_active,
-        "info_available": info_available,
     }
 
 
@@ -400,14 +387,12 @@ def read_controller_led_inputs(r: redis.Redis) -> dict[str, Any]:
 # LED derivation
 # -----------------------------------------------------------------------------
 def derive_snapshot_from_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
-    degraded = bool(inputs["degraded"])
-    modal_active = bool(inputs["modal_active"])
-    page_nav_available = bool(inputs["page_nav_available"])
-    primary_available = bool(inputs["primary_available"])
-    back_available = bool(inputs["back_available"])
-    mode_active = bool(inputs["mode_active"])
-    info_available = bool(inputs["info_available"])
-    has_result = bool(inputs["has_result"])
+    page = inputs["page"]
+    focus = inputs["focus"]
+    layer = inputs["layer"]
+    degraded = inputs["degraded"]
+    modal_active = inputs["modal_active"]
+    browse_active = inputs["browse_active"]
 
     leds: dict[str, dict[str, Any]] = {
         "back": _mode_off(),
@@ -418,30 +403,32 @@ def derive_snapshot_from_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
         "info": _mode_off(),
     }
 
+    # INFO (system state)
     if degraded:
-        leds["cancel"] = _mode_blink(400)
-        leds["info"] = _mode_pulse(900)
-        leds["primary"] = _mode_off()
-    elif modal_active:
-        leds["cancel"] = _mode_on()
-        leds["primary"] = _mode_on() if primary_available else _mode_off()
+        leds["info"] = _mode_blink(400)
     else:
-        leds["primary"] = _mode_on() if primary_available else _mode_off()
+        leds["info"] = _mode_off()
 
-    if page_nav_available:
-        leds["page"] = _mode_pulse(900)
+    # LAYER → cancel + mode
+    if layer == "modal":
+        leds["cancel"] = _mode_on()
+    elif degraded:
+        leds["cancel"] = _mode_blink(400)
 
-    if back_available:
+    if layer == "browse":
+        leds["mode"] = _mode_pulse(900)
+
+    # PAGE
+    if page:
+        leds["page"] = _mode_on()
+
+    # BACK
+    if page and page != "home":
         leds["back"] = _mode_on()
 
-    if mode_active:
-        leds["mode"] = _mode_on()
-
-    if not degraded:
-        if has_result:
-            leds["info"] = _mode_on()
-        elif info_available:
-            leds["info"] = _mode_on()
+    # PRIMARY (focus exists and not degraded)
+    if focus and not degraded:
+        leds["primary"] = _mode_on()
 
     return {
         "schema": 1,

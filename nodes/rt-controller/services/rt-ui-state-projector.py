@@ -3,45 +3,17 @@
 
 Authoritative controller-owned projector for `rt:ui:*` keys.
 
-This service consumes controller-owned upstream state and projects stable,
-renderer-facing UI truth into Redis. It is intentionally conservative:
-missing or ambiguous upstream state causes affected projection keys to be
-removed and the authority projection to degrade/fail closed.
+Primary upstream source:
+- RT_UI_INTERACTION_STATE_KEY (default: rt:interaction:state)
 
-Assumptions for the first implementation
----------------------------------------
-1. A future controller reducer may publish a consolidated JSON object to one of
-   the keys in ``UI_PROJECTOR_SNAPSHOT_KEYS``. That is the preferred upstream.
-2. Until that consolidated state exists, the projector can assemble a partial
-   view from split controller-owned keys listed in the ``UI_PROJECTOR_*_KEYS``
-   environment variables.
-3. The projector must never infer UI meaning from raw panel events. It only
-   reads controller-owned post-reducer/post-execution state surfaces.
-4. Because exact live upstream keys are not fully locked yet, this file keeps
-   candidate key lists isolated in configuration so they can be refined without
-   rewriting the projector.
-5. If page/focus/modal/browse cannot be proven, the projector deletes those
-   projection keys and publishes degraded authority instead of guessing.
+Optional page-family source:
+- RT_UI_PAGE_CONTEXT_KEY (default: rt:pota:context)
 
-Environment variables
----------------------
-RT_REDIS_URL                       Redis URL. Default redis://localhost:6379/0
-RT_REDIS_PASSWORD                  Optional password when RT_REDIS_URL is unset.
-RT_REDIS_DB                        Optional DB when RT_REDIS_URL is unset.
-UI_PROJECTOR_POLL_MS               Poll interval in ms. Default 250.
-UI_PROJECTOR_STALE_MS              Upstream stale threshold. Default 5000.
-UI_PROJECTOR_LOCK_KEY              Single-writer lock key. Default rt:ui:writer.
-UI_PROJECTOR_LOCK_TTL_MS           Lock TTL in ms. Default 10000.
-UI_PROJECTOR_SNAPSHOT_KEYS         CSV consolidated snapshot keys.
-UI_PROJECTOR_PAGE_KEYS             CSV scalar page keys.
-UI_PROJECTOR_FOCUS_KEYS            CSV scalar focus keys.
-UI_PROJECTOR_MODAL_KEYS            CSV modal JSON/hash keys.
-UI_PROJECTOR_BROWSE_KEYS           CSV browse JSON/hash keys.
-UI_PROJECTOR_AUTHORITY_KEYS        CSV authority JSON/hash keys.
-UI_PROJECTOR_RESULT_KEYS           CSV last-result JSON/hash keys (optional).
-UI_PROJECTOR_PAGE_CONTEXT_KEYS     CSV page-context JSON/hash keys (optional).
-UI_PROJECTOR_SYSTEM_HEALTH_KEYS    CSV system-health keys used for degrade hints.
-UI_PROJECTOR_LOG_LEVEL             Python logging level. Default INFO.
+Fallback behavior:
+- If the primary interaction-state key is absent, the projector may fall back to
+  older split candidate keys.
+- Missing or ambiguous state fails closed:
+  affected rt:ui:* keys are deleted and rt:ui:authority is degraded.
 """
 
 from __future__ import annotations
@@ -62,6 +34,8 @@ from redis import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+UI_INTERACTION_STATE_KEY = os.environ.get("RT_UI_INTERACTION_STATE_KEY", "rt:interaction:state")
+UI_PAGE_CONTEXT_KEY = os.environ.get("RT_UI_PAGE_CONTEXT_KEY", "rt:pota:context")
 
 DEFAULT_SNAPSHOT_KEYS = [
     "rt:controller:ui_state",
@@ -113,11 +87,10 @@ PROJECTED_KEYS = {
     "last_result": "rt:ui:last_result",
     "page_context": "rt:ui:page_context",
 }
-OPTIONAL_PREFIXES = ["rt:ui:browse:"]
 
 
 class GracefulExit(SystemExit):
-    """Raised when the service is asked to stop."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -128,6 +101,8 @@ class Config:
     lock_key: str
     lock_ttl_ms: int
     lock_value: str
+    interaction_state_key: str
+    page_context_key: str
     snapshot_keys: Sequence[str]
     page_keys: Sequence[str]
     focus_keys: Sequence[str]
@@ -216,20 +191,33 @@ class UIStateProjector:
             return True
 
         if current and current != self.config.lock_value:
-            self.log.warning(
-                "ui projection lock held by %s; projector remaining passive",
-                current,
-            )
+            self.log.warning("ui projection lock held by %s; projector remaining passive", current)
         return False
 
     def _read_upstream_state(self) -> Dict[str, Any]:
         upstream: Dict[str, Any] = {"_sources": {}}
 
-        snapshot, snapshot_key = self._read_first_object(self.config.snapshot_keys)
-        if snapshot is not None:
-            upstream.update(snapshot)
-            upstream["_sources"]["snapshot"] = snapshot_key
+        # Primary authoritative input: committed controller interaction state.
+        interaction, interaction_key = self._read_first_object([self.config.interaction_state_key])
+        if interaction is not None:
+            upstream.update(interaction)
+            upstream["_sources"]["interaction_state"] = interaction_key
 
+        # Optional page-family context source, e.g. rt:pota:context
+        page_context_from_primary, page_context_key = self._read_first_object([self.config.page_context_key])
+        if page_context_from_primary is not None:
+            upstream["page_context"] = page_context_from_primary
+            upstream["_sources"]["page_context_primary"] = page_context_key
+
+        # Legacy fallback consolidated snapshot.
+        if "page" not in upstream:
+            snapshot, snapshot_key = self._read_first_object(self.config.snapshot_keys)
+            if snapshot is not None:
+                for key, value in snapshot.items():
+                    upstream.setdefault(key, value)
+                upstream["_sources"]["snapshot"] = snapshot_key
+
+        # Page
         page = self._extract_scalar(upstream, ["page", "current_page"])
         if page is None:
             page, page_key = self._read_first_scalar(self.config.page_keys)
@@ -238,6 +226,7 @@ class UIStateProjector:
         if page is not None:
             upstream["page"] = page
 
+        # Focus
         focus = self._extract_scalar(upstream, ["focus", "focused_panel", "focus_panel"])
         if focus is None:
             focus, focus_key = self._read_first_scalar(self.config.focus_keys)
@@ -246,6 +235,7 @@ class UIStateProjector:
         if focus is not None:
             upstream["focus"] = focus
 
+        # Modal
         modal = self._extract_object(upstream, ["modal", "active_modal"])
         if modal is None:
             modal, modal_key = self._read_first_object(self.config.modal_keys)
@@ -254,6 +244,7 @@ class UIStateProjector:
         if modal is not None:
             upstream["modal"] = modal
 
+        # Browse
         browse = self._extract_object(upstream, ["browse", "browse_state"])
         if browse is None:
             browse, browse_key = self._read_first_object(self.config.browse_keys)
@@ -262,6 +253,7 @@ class UIStateProjector:
         if browse is not None:
             upstream["browse"] = browse
 
+        # Authority
         authority = self._extract_object(upstream, ["authority", "ui_authority"])
         if authority is None:
             authority, authority_key = self._read_first_object(self.config.authority_keys)
@@ -270,6 +262,7 @@ class UIStateProjector:
         if authority is not None:
             upstream["authority"] = authority
 
+        # Last result
         last_result = self._extract_object(upstream, ["last_result", "result"])
         if last_result is None:
             last_result, result_key = self._read_first_object(self.config.result_keys)
@@ -278,14 +271,15 @@ class UIStateProjector:
         if last_result is not None:
             upstream["last_result"] = last_result
 
-        page_context = self._extract_object(upstream, ["page_context", "context"])
-        if page_context is None:
+        # Page context fallback list
+        if "page_context" not in upstream:
             page_context, context_key = self._read_first_object(self.config.page_context_keys)
             if context_key:
                 upstream["_sources"]["page_context"] = context_key
-        if page_context is not None:
-            upstream["page_context"] = page_context
+            if page_context is not None:
+                upstream["page_context"] = page_context
 
+        # System health
         health, health_key = self._read_first_object(self.config.system_health_keys)
         if health is not None:
             upstream["system_health"] = health
@@ -383,11 +377,9 @@ class UIStateProjector:
             return UIStateProjector._extract_object(ui, names)
         return None
 
-    def _build_projection(
-        self,
-        upstream: Mapping[str, Any],
-    ) -> Tuple[Dict[str, str], set[str]]:
+    def _build_projection(self, upstream: Mapping[str, Any]) -> Tuple[Dict[str, str], set[str]]:
         now_ms = int(time.time() * 1000)
+
         page = self._normalize_page(upstream.get("page"))
         focus = self._normalize_focus(upstream.get("focus"), page)
         modal = self._normalize_modal(upstream.get("modal"), page, focus)
@@ -430,8 +422,8 @@ class UIStateProjector:
         if last_result is not None:
             projection[PROJECTED_KEYS["last_result"]] = self._json(last_result)
 
+        # Fail closed for ambiguous UI semantics.
         if authority["degraded"]:
-            # Fail closed for ambiguous UI semantics. Keep only what we can prove.
             if page is None:
                 projection.pop(PROJECTED_KEYS["focus"], None)
                 projection.pop(PROJECTED_KEYS["browse"], None)
@@ -463,22 +455,17 @@ class UIStateProjector:
         focus = value.strip()
         return focus or None
 
-    def _normalize_modal(
-        self,
-        value: Any,
-        page: Optional[str],
-        focus: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+    def _normalize_modal(self, value: Any, page: Optional[str], focus: Optional[str]) -> Optional[Dict[str, Any]]:
         modal = self._normalize_object(value)
         if not modal:
             return None
-        active = modal.get("active")
-        if active is False:
+        if modal.get("active") is False:
             return None
 
         modal_type = self._normalize_scalar(modal.get("type"))
         modal_id = self._normalize_scalar(modal.get("id"))
         opened_at_ms = self._coerce_int(modal.get("opened_at_ms"))
+
         if modal_id is None:
             if modal_type is None:
                 return None
@@ -486,7 +473,7 @@ class UIStateProjector:
         if modal_type is None:
             modal_type = "generic"
 
-        normalized = {
+        return {
             "id": modal_id,
             "type": modal_type,
             "title": self._normalize_scalar(modal.get("title")),
@@ -499,7 +486,6 @@ class UIStateProjector:
             },
             "opened_at_ms": opened_at_ms or int(time.time() * 1000),
         }
-        return normalized
 
     def _normalize_browse(
         self,
@@ -511,8 +497,7 @@ class UIStateProjector:
         browse = self._normalize_object(value)
         if not browse:
             return None
-        active = browse.get("active", True)
-        if not bool(active):
+        if not bool(browse.get("active", True)):
             return None
 
         effective_page = self._normalize_scalar(browse.get("page")) or page
@@ -524,7 +509,7 @@ class UIStateProjector:
         if selected_index is None:
             return None
 
-        normalized = {
+        return {
             "active": True,
             "page": effective_page,
             "panel": effective_panel,
@@ -533,7 +518,6 @@ class UIStateProjector:
             "count": self._coerce_int(browse.get("count")) or 0,
             "updated_at_ms": self._coerce_int(browse.get("updated_at_ms")) or now_ms,
         }
-        return normalized
 
     def _normalize_authority(
         self,
@@ -615,11 +599,13 @@ class UIStateProjector:
         result = self._normalize_object(value)
         if not result:
             return None
+
         result_name = self._normalize_scalar(result.get("result"))
         intent = self._normalize_scalar(result.get("intent"))
         if result_name is None or intent is None:
             return None
-        normalized = {
+
+        return {
             "result": result_name,
             "intent": intent,
             "reason": self._normalize_scalar(result.get("reason")),
@@ -628,18 +614,19 @@ class UIStateProjector:
             "focused_panel": self._normalize_scalar(result.get("focused_panel")) or focus,
             "ts_ms": self._coerce_int(result.get("ts_ms")) or now_ms,
         }
-        return normalized
 
-    def _normalize_page_context(
-        self,
-        value: Any,
-        page: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+    def _normalize_page_context(self, value: Any, page: Optional[str]) -> Optional[Dict[str, Any]]:
         context = self._normalize_object(value)
         if not context or page is None:
             return None
+
+        # First-pass scoping rule:
+        # only project POTA context while the active page is the POTA page.
+        if page != "pota":
+            return None
+
         normalized = dict(context)
-        normalized.setdefault("page", page)
+        normalized["page"] = page
         return normalized
 
     @staticmethod
@@ -699,6 +686,7 @@ class UIStateProjector:
             coerced = UIStateProjector._coerce_int(candidate)
             if coerced is not None:
                 return coerced
+
         for key in ("authority", "browse", "modal", "last_result", "page_context"):
             value = upstream.get(key)
             if isinstance(value, Mapping):
@@ -762,6 +750,8 @@ def build_config() -> Config:
         lock_key=os.environ.get("UI_PROJECTOR_LOCK_KEY", "rt:ui:writer"),
         lock_ttl_ms=int(os.environ.get("UI_PROJECTOR_LOCK_TTL_MS", "10000")),
         lock_value=f"{host}:{pid}",
+        interaction_state_key=UI_INTERACTION_STATE_KEY,
+        page_context_key=UI_PAGE_CONTEXT_KEY,
         snapshot_keys=csv_env("UI_PROJECTOR_SNAPSHOT_KEYS", DEFAULT_SNAPSHOT_KEYS),
         page_keys=csv_env("UI_PROJECTOR_PAGE_KEYS", DEFAULT_PAGE_KEYS),
         focus_keys=csv_env("UI_PROJECTOR_FOCUS_KEYS", DEFAULT_FOCUS_KEYS),
@@ -770,9 +760,7 @@ def build_config() -> Config:
         authority_keys=csv_env("UI_PROJECTOR_AUTHORITY_KEYS", DEFAULT_AUTHORITY_KEYS),
         result_keys=csv_env("UI_PROJECTOR_RESULT_KEYS", DEFAULT_RESULT_KEYS),
         page_context_keys=csv_env("UI_PROJECTOR_PAGE_CONTEXT_KEYS", DEFAULT_PAGE_CONTEXT_KEYS),
-        system_health_keys=csv_env(
-            "UI_PROJECTOR_SYSTEM_HEALTH_KEYS", DEFAULT_SYSTEM_HEALTH_KEYS
-        ),
+        system_health_keys=csv_env("UI_PROJECTOR_SYSTEM_HEALTH_KEYS", DEFAULT_SYSTEM_HEALTH_KEYS),
     )
 
 
