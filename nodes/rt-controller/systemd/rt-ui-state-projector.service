@@ -1,0 +1,34 @@
+[Unit]
+Description=RollingThunder UI State Projector
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder
+
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/rt-ui-state-projector.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+# Redis
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+
+# MQTT
+Environment=RT_MQTT_HOST=127.0.0.1
+Environment=RT_MQTT_PORT=1883
+
+Environment=RT_NODE_ID=rt-controller
+Environment=RT_NODE_ROLE=controller
+Environment=RT_MQTT_HOST=127.0.0.1
+Environment=RT_MQTT_PORT=1883
+EnvironmentFile=/etc/rollingthunder/redis.env
+
+[Install]
+WantedBy=multi-user.target
