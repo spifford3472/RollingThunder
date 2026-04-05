@@ -75,6 +75,7 @@ UNITS=(
   "rt-pota-nearby-parks.service"
   "rt-adif-logger.service"
   "rt-ui-state-projector.service"
+  "rt-ui-interaction-state.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

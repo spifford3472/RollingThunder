@@ -1,0 +1,21 @@
+[Unit]
+Description=RollingThunder UI Interaction State
+After=network.target
+
+[Service]
+Type=simple
+User=spiff
+WorkingDirectory=/opt/rollingthunder/services
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/ui_interaction_state.py
+Restart=always
+RestartSec=2
+
+# Redis
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_REDIS_TIMEOUT_SEC=0.35
+EnvironmentFile=/etc/rollingthunder/redis.env
+
+[Install]
+WantedBy=multi-user.target
