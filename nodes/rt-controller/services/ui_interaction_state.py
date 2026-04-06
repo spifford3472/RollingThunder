@@ -25,17 +25,21 @@ WRITER_LOCK_KEY = "rt:interaction:writer"
 
 NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
 
+SYSTEM_NODES_SET_KEY = "rt:system:nodes"
+NODE_KEY_PREFIX = "rt:nodes:"
+SERVICE_KEY_PREFIX = "rt:services:"
+
+CONFIG_APP_PATH = Path(os.environ.get("RT_APP_CONFIG_PATH", "/opt/rollingthunder/config/app.json"))
 POTA_CONTEXT_KEY = "rt:pota:context"
 POTA_NEARBY_KEY = "rt:pota:nearby"
 POTA_BANDS_KEY = "rt:pota:ui:ssb:bands"
 POTA_SPOTS_SELECTED_KEY = "rt:pota:ui:ssb:spots:selected"
 
-SYSTEM_NODES_SET_KEY = "rt:system:nodes"
-NODE_KEY_PREFIX = "rt:nodes:"
-SERVICE_KEY_PREFIX = "rt:services:"
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
 
 def selected_item_from_model(model: Dict[str, Any], selected_index: int) -> Dict[str, Any] | None:
     items = as_list(model.get("items"))
@@ -66,6 +70,45 @@ def publish_intent(r: redis.Redis, intent: str, params: Dict[str, Any]) -> None:
     }
     r.publish(INTENTS_CH, json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
 
+def publish_radio_tune_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
+    freq_hz = spot.get("freq_hz")
+    if freq_hz is None:
+        try:
+            freq_hz = int(float(str(spot.get("frequency") or "0")))
+        except Exception:
+            freq_hz = 0
+
+    params = {
+        "freq_hz": int(freq_hz or 0),
+        "band": str(spot.get("band") or "").strip() or None,
+        "mode": str(spot.get("mode") or "SSB").strip() or "SSB",
+        "spot_id": str(spot.get("spot_id") or spot_item_id(spot) or "").strip() or None,
+    }
+
+    publish_intent(r, "radio.tune", params)
+
+
+def build_band_tune_reminder_modal(band: str) -> Dict[str, Any]:
+    ts = now_ms()
+    return {
+        "active": True,
+        "id": f"band_tune_reminder:{band}:{ts}",
+        "type": "band_tune_reminder",
+        "title": "Tune Reminder",
+        "message": f"Tune radio for {band}",
+        "confirmable": False,
+        "cancelable": False,
+        "destructive": False,
+        "duration_ms": 3000,
+        "auto_close_at_ms": ts + 3000,
+        "opened_at_ms": ts,
+    }
+
+def update_pota_context_selected_band(r: redis.Redis, new_band: str) -> None:
+    current = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
+    current["selected_band"] = new_band
+    current["selection_ts"] = now_ms()
+    r.set(POTA_CONTEXT_KEY, json.dumps(current, separators=(",", ":"), ensure_ascii=False))
 
 def build_node_reboot_modal(node_id: str, step: str = "warn") -> Dict[str, Any]:
     node_id = str(node_id or "").strip().lower()
@@ -154,6 +197,15 @@ def load_pages() -> List[Dict[str, Any]]:
     pages.sort(key=lambda p: int(p.get("order", 9999)))
     return pages
 
+def load_app_config() -> Dict[str, Any]:
+    try:
+        return json.loads(CONFIG_APP_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def get_has_tuner(app_cfg: Dict[str, Any]) -> bool:
+    return bool((((app_cfg.get("globals") or {}).get("radio") or {}).get("has_tuner")))
 
 def build_page_index(pages):
     return {p["id"]: p for p in pages}
@@ -171,6 +223,7 @@ def default_state(pages):
         "focus": focus,
         "modal": None,
         "browse": None,
+        "pending_action": None,
         "authority": {
             "degraded": False,
             "stale": False,
@@ -357,6 +410,22 @@ def resolve_pota_parks_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     }
 
 
+def band_sort_key(item: Any) -> tuple[int, str]:
+    raw = str(band_item_id(item) or "").strip().lower()
+    if not raw:
+        return (9999, "")
+
+    # Common ham band labels like "10m", "20m", "40m"
+    if raw.endswith("m"):
+        try:
+            meters = int(raw[:-1])
+            return (meters, raw)
+        except Exception:
+            pass
+
+    return (9999, raw)
+
+
 def resolve_pota_bands_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
     bands_raw = get_json_or_value(r, POTA_BANDS_KEY)
@@ -365,10 +434,19 @@ def resolve_pota_bands_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     if isinstance(bands_raw, list):
         items = bands_raw
     elif isinstance(bands_raw, dict):
-        items = as_list(bands_raw.get("bands") or bands_raw.get("items"))
+        items = as_list(
+            bands_raw.get("bands")
+            or bands_raw.get("items")
+            or bands_raw.get("choices")
+            or bands_raw.get("rows")
+        )
 
     if not items:
         return None
+
+    # Canonical display/order: 10m, 12m, 15m, 17m, 20m, 30m, 40m, 60m, 80m, 160m
+    # i.e. ascending meter value to match the current screen behavior
+    items = sorted(items, key=band_sort_key)
 
     selected_band = str(context.get("selected_band") or context.get("band") or "").strip()
 
@@ -476,6 +554,9 @@ def main():
 
     pages = load_pages()
     page_index = build_page_index(pages)
+
+    app_cfg = load_app_config()
+    has_tuner = get_has_tuner(app_cfg)
 
     state = default_state(pages)
     if not state:
@@ -635,6 +716,45 @@ def main():
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
                                 continue
 
+                            elif state["page"] == "pota" and panel_id == "pota_bands_summary":
+                                new_band = str(
+                                    item.get("band")
+                                    or item.get("id")
+                                    or item.get("name")
+                                    or item
+                                    or ""
+                                ).strip()
+                                if not new_band:
+                                    continue
+
+                                current_ctx = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
+                                old_band = str(current_ctx.get("selected_band") or current_ctx.get("band") or "").strip()
+                                band_changed = (old_band != new_band)
+
+                                update_pota_context_selected_band(r, new_band)
+
+                                state["browse"] = None
+                                state["focus"] = "pota_spots_summary"
+                                state_changed = True
+
+                                if band_changed and not has_tuner:
+                                    state["modal"] = build_band_tune_reminder_modal(new_band)
+                                    state["pending_action"] = {
+                                        "type": "tune_first_spot_after_reminder",
+                                        "band": new_band,
+                                        "ts_ms": now_ms(),
+                                    }
+                                else:
+                                    spots_model = resolve_pota_spots_browse_model(r)
+                                    first_spot = selected_item_from_model(spots_model, 0) if spots_model else None
+                                    if first_spot:
+                                        publish_radio_tune_intent(r, first_spot)
+                                    state["pending_action"] = None
+
+                            elif state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                # Keep this simple for now until outcome modal patch lands
+                                continue
+
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):
                             delta = 0
@@ -656,7 +776,7 @@ def main():
 
                             browse = state.get("browse")
                             panel_id = state["focus"]
-
+                            
                             if not isinstance(browse, dict) or browse.get("panel") != panel_id or not browse.get("active", True):
                                 anchor_index = int(model.get("anchor_index", 0))
                                 new_index = clamp_index(anchor_index + delta, count)
@@ -666,6 +786,10 @@ def main():
                                     model,
                                     new_index,
                                 )
+                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                    item = selected_item_from_model(model, new_index)
+                                    if item:
+                                        publish_radio_tune_intent(r, item)                                
                                 state_changed = True
                             else:
                                 current_index = 0
@@ -682,9 +806,35 @@ def main():
                                         model,
                                         new_index,
                                     )
+                                    if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                        item = selected_item_from_model(model, new_index)
+                                        if item:
+                                            publish_radio_tune_intent(r, item)                                    
                                     state_changed = True
 
         now = now_ms()
+
+        modal = state.get("modal")
+        if isinstance(modal, dict):
+            modal_type = str(modal.get("type") or "").strip()
+            auto_close_at_ms = 0
+            try:
+                auto_close_at_ms = int(modal.get("auto_close_at_ms", 0))
+            except Exception:
+                auto_close_at_ms = 0
+
+            if modal_type == "band_tune_reminder" and auto_close_at_ms and now >= auto_close_at_ms:
+                state["modal"] = None
+
+                pending = as_dict(state.get("pending_action"))
+                if pending.get("type") == "tune_first_spot_after_reminder":
+                    spots_model = resolve_pota_spots_browse_model(r)
+                    first_spot = selected_item_from_model(spots_model, 0) if spots_model else None
+                    if first_spot:
+                        publish_radio_tune_intent(r, first_spot)
+                    state["pending_action"] = None
+
+                state_changed = True
 
         if state_changed or (now - last_persist_ms) >= INTERACTION_HEARTBEAT_MS:
             save_state(r, state)

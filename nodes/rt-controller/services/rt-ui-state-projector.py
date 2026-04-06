@@ -487,6 +487,8 @@ class UIStateProjector:
             "submessage": self._normalize_scalar(modal.get("submessage")),
             "node_id": self._normalize_scalar(modal.get("node_id")),
             "step": self._normalize_scalar(modal.get("step")),
+            "duration_ms": self._coerce_int(modal.get("duration_ms")),
+            "auto_close_at_ms": self._coerce_int(modal.get("auto_close_at_ms")),
             "context": {
                 "page": page,
                 "focused_panel": focus,
