@@ -1,6 +1,6 @@
 // binding_store.js
 
-async function fetchJson(url, timeoutMs = 2500) {
+async function fetchJson(url, timeoutMs = 5000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -12,7 +12,7 @@ async function fetchJson(url, timeoutMs = 2500) {
   }
 }
 
-async function postJson(url, body, timeoutMs = 2500) {
+async function postJson(url, body, timeoutMs = 5000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -79,7 +79,7 @@ export function createBindingStore(opts = {}) {
   // Controller SSE endpoint (shared connection)
   const busSubscribeUrl = opts.busSubscribeUrl || "/api/v1/ui/bus/subscribe";
 
-  // NEW: UI -> controller intent endpoint (HTTP POST)
+  // UI -> controller intent endpoint
   const uiIntentUrl = opts.uiIntentUrl || "/api/v1/ui/intent";
 
   // topic -> Set<fn>
@@ -94,13 +94,20 @@ export function createBindingStore(opts = {}) {
     const set = _handlers.get(topic);
     if (!set || set.size === 0) return;
     for (const fn of set) {
-      try { fn(msg); } catch (e) { console.error("handler error", e); }
+      try {
+        fn(msg);
+      } catch (e) {
+        console.error("handler error", e);
+      }
     }
   }
 
   function _ensureHandlerSet(topic) {
     let set = _handlers.get(topic);
-    if (!set) { set = new Set(); _handlers.set(topic, set); }
+    if (!set) {
+      set = new Set();
+      _handlers.set(topic, set);
+    }
     return set;
   }
 
@@ -135,7 +142,9 @@ export function createBindingStore(opts = {}) {
   function _closeSse() {
     _clearReconnectTimer();
     if (_es) {
-      try { _es.close(); } catch (_) {}
+      try {
+        _es.close();
+      } catch (_) {}
       _es = null;
     }
     _esConnected = false;
@@ -145,7 +154,11 @@ export function createBindingStore(opts = {}) {
     if (typeof s !== "string") return null;
     const t = s.trim();
     if (!t) return null;
-    try { return JSON.parse(t); } catch (_) { return null; }
+    try {
+      return JSON.parse(t);
+    } catch (_) {
+      return null;
+    }
   }
 
   function _extractTopic(obj) {
@@ -167,9 +180,13 @@ export function createBindingStore(opts = {}) {
     const es = new EventSource(busSubscribeUrl, { withCredentials: false });
     _es = es;
 
-    es.onopen = () => { _esConnected = true; };
+    es.onopen = () => {
+      _esConnected = true;
+    };
 
-    es.addEventListener("hello", () => { _esConnected = true; });
+    es.addEventListener("hello", () => {
+      _esConnected = true;
+    });
 
     es.addEventListener("message", (ev) => {
       const obj = _parseJson(ev?.data);
@@ -235,15 +252,25 @@ export function createBindingStore(opts = {}) {
 
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", () => {
-      try { _closeSse(); } catch (_) {}
+      try {
+        _closeSse();
+      } catch (_) {}
     });
   }
 
-  // NEW: publish an intent to the controller (bounded, auditable)
-  async function publishIntent({ intent, params = null, pageId = null, panelId = null, source = "rt-display" }, timeoutMs = 1500) {
+  async function publishIntent(
+    { intent, params = null, pageId = null, panelId = null, source = "rt-display" },
+    timeoutMs = 1500
+  ) {
     const started = Date.now();
     const it = String(intent || "").trim();
-    if (!it) return mkResult({ ok: false, err: "missing_intent", meta: { source: "intent", locator: uiIntentUrl, ms: 0 } });
+    if (!it) {
+      return mkResult({
+        ok: false,
+        err: "missing_intent",
+        meta: { source: "intent", locator: uiIntentUrl, ms: 0 },
+      });
+    }
 
     const body = {
       intent: it,
@@ -256,11 +283,18 @@ export function createBindingStore(opts = {}) {
 
     try {
       const resp = await postJson(uiIntentUrl, body, timeoutMs);
-      // Expect { ok:true } or { ok:false, err:"..." }. If controller returns something else, still treat HTTP 200 as ok.
       const ok = resp?.ok !== false;
-      return mkResult({ ok, value: resp, meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started } });
+      return mkResult({
+        ok,
+        value: resp,
+        meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started },
+      });
     } catch (e) {
-      return mkResult({ ok: false, err: e?.message || e, meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started } });
+      return mkResult({
+        ok: false,
+        err: e?.message || e,
+        meta: { source: "intent", locator: uiIntentUrl, ms: Date.now() - started },
+      });
     }
   }
 
@@ -276,66 +310,189 @@ export function createBindingStore(opts = {}) {
 
       if (src === "api") {
         const url = String(binding?.url || "");
-        if (!url) return mkResult({ ok: false, err: "missing_url", meta: { source: "api", locator: "", ms: 0 } });
+        if (!url) {
+          return mkResult({
+            ok: false,
+            err: "missing_url",
+            meta: { source: "api", locator: "", ms: 0 },
+          });
+        }
 
         try {
           const val = await fetchJson(url);
-          return mkResult({ ok: true, value: val, meta: { source: "api", locator: url, ms: Date.now() - started } });
+          return mkResult({
+            ok: true,
+            value: val,
+            meta: { source: "api", locator: url, ms: Date.now() - started },
+          });
         } catch (e) {
-          return mkResult({ ok: false, err: e?.message || e, meta: { source: "api", locator: url, ms: Date.now() - started } });
+          return mkResult({
+            ok: false,
+            err: e?.message || e,
+            meta: { source: "api", locator: url, ms: Date.now() - started },
+          });
         }
       }
 
       if (src === "state") {
-        const key = String(binding?.key || "");
-        if (!key) return mkResult({ ok: false, err: "missing_key", meta: { source: "state", locator: "", ms: 0 } });
+        const key = String(binding?.key || "").trim();
+        if (!key) {
+          return mkResult({
+            ok: false,
+            err: "missing_key",
+            meta: { source: "state", locator: "", ms: 0 },
+          });
+        }
 
         try {
           const resp = await postJson(stateBatchUrl, { keys: [key] });
           const entry = resp?.data?.values?.[key];
+
           if (entry?.ok) {
-            return mkResult({ ok: true, value: entry.value, meta: { source: "state", locator: key, ms: Date.now() - started } });
+            return mkResult({
+              ok: true,
+              value: entry.value,
+              meta: { source: "state", locator: key, ms: Date.now() - started },
+            });
           }
-          return mkResult({ ok: true, value: null, meta: { source: "state", locator: key, ms: Date.now() - started } });
+
+          return mkResult({
+            ok: false,
+            err: entry?.encoding || "state_batch_missing",
+            meta: { source: "state", locator: key, ms: Date.now() - started },
+          });
         } catch (e) {
-          return mkResult({ ok: false, err: e?.message || e, meta: { source: "state", locator: key, ms: Date.now() - started } });
+          return mkResult({
+            ok: false,
+            err: e?.message || e,
+            meta: { source: "state", locator: key, ms: Date.now() - started },
+          });
         }
       }
 
       if (src === "scan") {
-        // binding: { match: "rt:services:*", limit, cursor?, filter? }
         const match = String(binding?.match || "").trim();
         const limit = Math.max(1, Math.min(500, Number(binding?.limit || 50)));
         const cursor = binding?.cursor != null ? Number(binding.cursor) : undefined;
 
         if (!match) {
-          return mkResult({ ok: false, err: "missing_match", meta: { source: "scan", locator: "", ms: 0 } });
+          return mkResult({
+            ok: false,
+            err: "missing_match",
+            meta: { source: "scan", locator: "", ms: 0 },
+          });
         }
 
         try {
           const url = `${stateScanUrl}${qs({ match, limit, cursor })}`;
           const resp = await fetchJson(url);
           const keys = resp?.data?.keys;
-          const list = Array.isArray(keys) ? keys.map(coerceRow) : [];
+          const rows = Array.isArray(keys) ? keys.map(coerceRow) : [];
 
-          const filtered = list.filter(row => matchFilter(row, binding?.filter));
+          const filtered = rows.filter(row => matchFilter(row, binding?.filter));
           return mkResult({
             ok: true,
             value: filtered,
-            meta: { source: "scan", locator: match, ms: Date.now() - started, next_cursor: resp?.data?.next_cursor ?? null }
+            meta: {
+              source: "scan",
+              locator: match,
+              ms: Date.now() - started,
+              next_cursor: resp?.data?.next_cursor ?? null,
+            },
           });
         } catch (e) {
-          return mkResult({ ok: false, err: e?.message || e, meta: { source: "scan", locator: match, ms: Date.now() - started } });
+          return mkResult({
+            ok: false,
+            err: e?.message || e,
+            meta: { source: "scan", locator: match, ms: Date.now() - started },
+          });
         }
       }
 
       if (src === "bus") {
         const t = String(binding?.topic || "").trim();
-        if (!t) return mkResult({ ok: false, err: "missing_topic", meta: { source: "bus", locator: "", ms: 0 } });
-        return mkResult({ ok: false, err: "bus_binding_not_resolvable", meta: { source: "bus", locator: t, ms: 0 } });
+        if (!t) {
+          return mkResult({
+            ok: false,
+            err: "missing_topic",
+            meta: { source: "bus", locator: "", ms: 0 },
+          });
+        }
+        return mkResult({
+          ok: false,
+          err: "bus_binding_not_resolvable",
+          meta: { source: "bus", locator: t, ms: 0 },
+        });
       }
 
-      return mkResult({ ok: false, err: `unknown_source:${src || "?"}`, meta: { source: src || "?", locator: "", ms: 0 } });
+      return mkResult({
+        ok: false,
+        err: `unknown_source:${src || "?"}`,
+        meta: { source: src || "?", locator: "", ms: 0 },
+      });
+    },
+
+    async resolveMany(bindings) {
+      const started = Date.now();
+      const list = Array.isArray(bindings) ? bindings : [];
+      const out = {};
+
+      const stateBindings = [];
+      const nonStateBindings = [];
+
+      for (const b of list) {
+        const src = String(b?.source || "").trim().toLowerCase();
+        if (src === "state") stateBindings.push(b);
+        else nonStateBindings.push(b);
+      }
+
+      if (stateBindings.length > 0) {
+        const keys = stateBindings
+          .map(b => String(b?.key || "").trim())
+          .filter(Boolean);
+
+        try {
+          const resp = await postJson(stateBatchUrl, { keys }, 5000);
+          const values = resp?.data?.values || {};
+
+          for (const b of stateBindings) {
+            const id = String(b?.id || "");
+            const key = String(b?.key || "").trim();
+            const entry = values?.[key];
+
+            if (entry?.ok) {
+              out[id] = mkResult({
+                ok: true,
+                value: entry.value,
+                meta: { source: "state", locator: key, ms: Date.now() - started },
+              });
+            } else {
+              out[id] = mkResult({
+                ok: false,
+                err: entry?.encoding || "state_batch_missing",
+                meta: { source: "state", locator: key, ms: Date.now() - started },
+              });
+            }
+          }
+        } catch (e) {
+          for (const b of stateBindings) {
+            const id = String(b?.id || "");
+            const key = String(b?.key || "").trim();
+            out[id] = mkResult({
+              ok: false,
+              err: e?.message || e,
+              meta: { source: "state", locator: key, ms: Date.now() - started },
+            });
+          }
+        }
+      }
+
+      for (const b of nonStateBindings) {
+        const id = String(b?.id || "");
+        out[id] = await this.resolve(b);
+      }
+
+      return out;
     },
   };
 }

@@ -480,6 +480,13 @@ class UIStateProjector:
             "confirmable": bool(modal.get("confirmable", True)),
             "cancelable": bool(modal.get("cancelable", True)),
             "destructive": bool(modal.get("destructive", False)),
+            "confirm_label": self._normalize_scalar(modal.get("confirm_label")),
+            "cancel_label": self._normalize_scalar(modal.get("cancel_label")),
+            "warning": self._normalize_scalar(modal.get("warning")),
+            "message": self._normalize_scalar(modal.get("message")),
+            "submessage": self._normalize_scalar(modal.get("submessage")),
+            "node_id": self._normalize_scalar(modal.get("node_id")),
+            "step": self._normalize_scalar(modal.get("step")),
             "context": {
                 "page": page,
                 "focused_panel": focus,

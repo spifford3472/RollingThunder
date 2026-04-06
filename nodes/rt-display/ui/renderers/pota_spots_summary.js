@@ -18,6 +18,20 @@ function returnToBrowseMode(container) {
   slot.classList.add("rt-browse-mode");
 }
 
+function applyProjectedBrowseCursor(container, list, m, browse, expectedPanelId) {
+  const slot = container.closest(".rt-slot");
+  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
+  if (!browseMode) return;
+
+  if (!browse || typeof browse !== "object") return;
+  if (String(browse.panel || "") !== expectedPanelId) return;
+
+  const idx = Number(browse.selected_index);
+  if (!Number.isFinite(idx)) return;
+
+  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+}
+
 function normalizeTuneMode(rawMode, freqHz, band) {
   const mode = String(rawMode || "").trim().toUpperCase();
   const freq = Number(freqHz || 0);
@@ -984,6 +998,27 @@ function attachBrowseModeObserverOnce(container) {
   slot.__rtPotaSpotsBrowseObserver = obs;
 }
 
+function applyProjectedBrowseCursorToSpots(data, spots, m) {
+  const browse = data?.ui_browse || data?.__ui?.browse || null;
+  if (!browse || typeof browse !== "object") return;
+
+  if (String(browse.panel || "") !== "pota_spots_summary") return;
+
+  const idx = Number(browse.selected_index);
+  if (!Number.isFinite(idx)) return;
+
+  if (!Array.isArray(spots) || spots.length <= 0) {
+    m.cursor = 0;
+    m.offset = 0;
+    m.selectedSpotId = null;
+    return;
+  }
+
+  m.cursor = clamp(idx, 0, Math.max(0, spots.length - 1));
+  m.selectedSpotId = getSpotId(spots[m.cursor]);
+  ensureCursorInWindow(m, spots.length);
+}
+
 export function renderPotaSpotsSummary(container, panel, data) {
   attachBrowseHandlersOnce(container);
   attachBrowseModeObserverOnce(container);
@@ -1016,6 +1051,7 @@ export function renderPotaSpotsSummary(container, panel, data) {
 
   m.lastList = spots;
   syncSelectedSpotId(m, spots);
+  applyProjectedBrowseCursorToSpots(data, spots, m);
 
   renderSpotsWindow(container, spots, m, context);
 
@@ -1032,9 +1068,5 @@ export function renderPotaSpotsSummary(container, panel, data) {
     emitTunerActionForBand(container, String(context?.selected_band || "").trim());
     emitTuneForSpot(container, cur, { force: true });
     return;
-  }
-
-  if (!m.lastTunedSpotId && !cur.__disabled) {
-    emitTuneForSpot(container, cur, { force: true });
   }
 }

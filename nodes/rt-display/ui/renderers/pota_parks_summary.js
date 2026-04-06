@@ -15,6 +15,20 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function applyProjectedBrowseCursor(container, list, m, browse, expectedPanelId) {
+  const slot = container.closest(".rt-slot");
+  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
+  if (!browseMode) return;
+
+  if (!browse || typeof browse !== "object") return;
+  if (String(browse.panel || "") !== expectedPanelId) return;
+
+  const idx = Number(browse.selected_index);
+  if (!Number.isFinite(idx)) return;
+
+  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+}
+
 function getModel(container) {
   if (!container.__rtPotaParksModel) {
     container.__rtPotaParksModel = {
@@ -216,6 +230,8 @@ export function renderPotaParksSummary(container, panel, data) {
   }
 
   m.lastList = choices;
+  const browse = data?.ui_browse || null;
+  applyProjectedBrowseCursor(container, choices, m, browse, "pota_parks_summary");
 
   if (choices.length <= 0) {
     m.cursor = 0;

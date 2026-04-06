@@ -25,10 +25,104 @@ WRITER_LOCK_KEY = "rt:interaction:writer"
 
 NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
 
+POTA_CONTEXT_KEY = "rt:pota:context"
+POTA_NEARBY_KEY = "rt:pota:nearby"
+POTA_BANDS_KEY = "rt:pota:ui:ssb:bands"
+POTA_SPOTS_SELECTED_KEY = "rt:pota:ui:ssb:spots:selected"
+
+SYSTEM_NODES_SET_KEY = "rt:system:nodes"
+NODE_KEY_PREFIX = "rt:nodes:"
+SERVICE_KEY_PREFIX = "rt:services:"
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+def selected_item_from_model(model: Dict[str, Any], selected_index: int) -> Dict[str, Any] | None:
+    items = as_list(model.get("items"))
+    count = len(items)
+    if count <= 0:
+        return None
+
+    idx = clamp_index(selected_index, count)
+    item = items[idx]
+    return as_dict(item) if isinstance(item, dict) else None
+
+def extract_node_id(item: Dict[str, Any]) -> str:
+    for key in ("id", "node_id", "hostname", "name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+def publish_intent(r: redis.Redis, intent: str, params: Dict[str, Any]) -> None:
+    payload = {
+        "intent": intent,
+        "params": params or {},
+        "source": {
+            "type": "ui_interaction_state",
+            "node": NODE_ID,
+        },
+        "timestamp": now_ms(),
+    }
+    r.publish(INTENTS_CH, json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+
+
+def build_node_reboot_modal(node_id: str, step: str = "warn") -> Dict[str, Any]:
+    node_id = str(node_id or "").strip().lower()
+
+    if node_id == "rt-controller":
+        if step == "armed":
+            return {
+                "active": True,
+                "id": f"node_reboot:{node_id}:armed",
+                "type": "node_reboot_confirm",
+                "title": "Confirm",
+                "node_id": node_id,
+                "step": "armed",
+                "warning": "PRESS OK TO REBOOT",
+                "message": "",
+                "confirm_label": "OK",
+                "cancel_label": "Cancel",
+                "confirmable": True,
+                "cancelable": True,
+                "destructive": True,
+                "opened_at_ms": now_ms(),
+            }
+
+        return {
+            "active": True,
+            "id": f"node_reboot:{node_id}:warn",
+            "type": "node_reboot_confirm",
+            "title": "Confirm",
+            "node_id": node_id,
+            "step": "warn",
+            "warning": "WARNING",
+            "message": "System will go down during reboot",
+            "submessage": "Selecting OK begins the process",
+            "confirm_label": "OK",
+            "cancel_label": "Exit",
+            "confirmable": True,
+            "cancelable": True,
+            "destructive": True,
+            "opened_at_ms": now_ms(),
+        }
+
+    return {
+        "active": True,
+        "id": f"node_reboot:{node_id}:warn",
+        "type": "node_reboot_confirm",
+        "title": "Confirm",
+        "node_id": node_id,
+        "step": "warn",
+        "warning": "WARNING",
+        "message": "Selecting OK will reboot this node",
+        "confirm_label": "OK",
+        "cancel_label": "Exit",
+        "confirmable": True,
+        "cancelable": True,
+        "destructive": True,
+        "opened_at_ms": now_ms(),
+    }
 
 def redis_client() -> redis.Redis:
     r = redis.Redis(
@@ -41,6 +135,12 @@ def redis_client() -> redis.Redis:
     r.ping()
     return r
 
+def service_item_id(item: Dict[str, Any]) -> str | None:
+    for key in ("id", "service_id", "name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return None
 
 def load_pages() -> List[Dict[str, Any]]:
     pages = []
@@ -94,6 +194,268 @@ def save_state(r: redis.Redis, state: Dict[str, Any]):
     state["updated_at_ms"] = now_ms()
     r.set(INTERACTION_KEY, json.dumps(state, separators=(",", ":")))
 
+def is_browse_active(state: Dict[str, Any]) -> bool:
+    browse = state.get("browse")
+    return isinstance(browse, dict) and bool(browse.get("active", True))
+
+def get_json_or_value(r: redis.Redis, key: str):
+    try:
+        key_type = r.type(key)
+    except Exception:
+        return None
+
+    try:
+        if key_type == "string":
+            raw = r.get(key)
+            if not raw:
+                return None
+            raw = raw.strip()
+            if not raw:
+                return None
+            if raw.startswith("{") or raw.startswith("["):
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return raw
+            return raw
+
+        if key_type == "hash":
+            return r.hgetall(key)
+
+        return None
+    except Exception:
+        return None
+
+
+def as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def as_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+def clamp_index(index: int, count: int) -> int:
+    if count <= 0:
+        return 0
+    if index < 0:
+        return 0
+    if index >= count:
+        return count - 1
+    return index
+
+def node_item_id(item: Dict[str, Any]) -> str | None:
+    for key in ("id", "node_id", "hostname", "name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+def park_item_id(item: Dict[str, Any]) -> str | None:
+    for key in ("reference", "park_ref", "id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+def band_item_id(item: Any) -> str | None:
+    if isinstance(item, str):
+        s = item.strip()
+        return s or None
+    if isinstance(item, dict):
+        for key in ("band", "id", "name"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+    return None
+
+def spot_item_id(item: Dict[str, Any]) -> str | None:
+    for key in ("spot_id", "id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+
+    call = str(item.get("callsign") or item.get("call") or "").strip()
+    park = str(item.get("park_ref") or item.get("reference") or "").strip()
+    freq = str(item.get("freq_hz") or item.get("frequency") or "").strip()
+    if call or park or freq:
+        return "|".join([call, park, freq]).strip("|") or None
+
+    return None
+
+def resolve_home_nodes_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    items: List[Dict[str, Any]] = []
+
+    try:
+        for key in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
+            ks = str(key)
+            if not ks.startswith(NODE_KEY_PREFIX):
+                continue
+
+            if r.type(ks) != "hash":
+                continue
+
+            item = r.hgetall(ks) or {}
+            if not item:
+                continue
+
+            node_id = ks[len(NODE_KEY_PREFIX):].strip()
+            if node_id and not item.get("id"):
+                item["id"] = node_id
+
+            items.append(item)
+    except Exception:
+        items = []
+
+    if not items:
+        return None
+
+    items.sort(key=lambda n: str(n.get("id") or n.get("node_id") or "").lower())
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": 0,
+        "get_id": node_item_id,
+    }
+
+def resolve_pota_parks_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
+    nearby = get_json_or_value(r, POTA_NEARBY_KEY)
+
+    items = []
+    if isinstance(nearby, dict):
+        items = as_list(nearby.get("parks") or nearby.get("items") or nearby.get("nearby"))
+    elif isinstance(nearby, list):
+        items = nearby
+
+    if not items:
+        return None
+
+    selected_ref = str(
+        context.get("selected_park_ref")
+        or context.get("park_ref")
+        or context.get("reference")
+        or ""
+    ).strip()
+
+    anchor_index = 0
+    if selected_ref:
+        for i, item in enumerate(items):
+            if park_item_id(as_dict(item)) == selected_ref:
+                anchor_index = i
+                break
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": anchor_index,
+        "get_id": park_item_id,
+    }
+
+
+def resolve_pota_bands_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
+    bands_raw = get_json_or_value(r, POTA_BANDS_KEY)
+
+    items = []
+    if isinstance(bands_raw, list):
+        items = bands_raw
+    elif isinstance(bands_raw, dict):
+        items = as_list(bands_raw.get("bands") or bands_raw.get("items"))
+
+    if not items:
+        return None
+
+    selected_band = str(context.get("selected_band") or context.get("band") or "").strip()
+
+    anchor_index = 0
+    if selected_band:
+        for i, item in enumerate(items):
+            if (band_item_id(item) or "") == selected_band:
+                anchor_index = i
+                break
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": anchor_index,
+        "get_id": band_item_id,
+    }
+
+
+def resolve_pota_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    spots_raw = get_json_or_value(r, POTA_SPOTS_SELECTED_KEY)
+
+    items = []
+    if isinstance(spots_raw, list):
+        items = spots_raw
+    elif isinstance(spots_raw, dict):
+        items = as_list(spots_raw.get("spots") or spots_raw.get("items"))
+
+    if not items:
+        return None
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": 0,
+        "get_id": spot_item_id,
+    }
+
+
+def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[str, Any] | None:
+    if page_id == "home":
+        if panel_id == "node_health_summary":
+            return resolve_home_nodes_browse_model(r)
+
+        if panel_id == "controller_services_summary":
+            return resolve_home_services_browse_model(r)
+
+    if page_id == "pota":
+        if panel_id == "pota_parks_summary":
+            return resolve_pota_parks_browse_model(r)
+
+        if panel_id == "pota_bands_summary":
+            return resolve_pota_bands_browse_model(r)
+
+        if panel_id == "pota_spots_summary":
+            return resolve_pota_spots_browse_model(r)
+
+    return None
+
+def build_browse_state(
+    page_id: str,
+    panel_id: str,
+    model: Dict[str, Any],
+    selected_index: int,
+) -> Dict[str, Any]:
+    count = int(model.get("count", 0))
+    items = as_list(model.get("items"))
+    get_id = model.get("get_id")
+
+    selected_index = clamp_index(selected_index, count)
+
+    selected_id = None
+    if 0 <= selected_index < len(items) and callable(get_id):
+        item = items[selected_index]
+        if isinstance(item, dict):
+            selected_id = get_id(as_dict(item))
+        else:
+            selected_id = get_id(item)
+
+    return {
+        "active": True,
+        "page": page_id,
+        "panel": panel_id,
+        "selected_index": selected_index,
+        "selected_id": selected_id,
+        "count": count,
+        "updated_at_ms": now_ms(),
+    }
 
 def rotate(lst, current, direction):
     if current not in lst:
@@ -173,6 +535,9 @@ def main():
                             state_changed = True
 
                     elif intent == "ui.focus.next":
+                        if is_browse_active(state):
+                            continue
+
                         rotation = current_page.get("focusPolicy", {}).get("rotation", [])
                         new_focus = rotate(rotation, state["focus"], "next")
                         if new_focus != state["focus"]:
@@ -180,6 +545,9 @@ def main():
                             state_changed = True
 
                     elif intent == "ui.focus.prev":
+                        if is_browse_active(state):
+                            continue
+
                         rotation = current_page.get("focusPolicy", {}).get("rotation", [])
                         new_focus = rotate(rotation, state["focus"], "prev")
                         if new_focus != state["focus"]:
@@ -187,6 +555,9 @@ def main():
                             state_changed = True
 
                     elif intent == "ui.focus.set":
+                        if is_browse_active(state):
+                            continue
+
                         panel = params.get("panel")
                         if panel in current_page.get("focusPolicy", {}).get("rotation", []):
                             if panel != state["focus"]:
@@ -194,22 +565,107 @@ def main():
                                 state["browse"] = None
                                 state_changed = True
 
+                    elif intent == "ui.cancel":
+                        if state.get("modal") is not None:
+                            state["modal"] = None
+                            state_changed = True
+                        elif is_browse_active(state):
+                            state["browse"] = None
+                            state_changed = True
+
+                    elif intent == "ui.back":
+                        if state.get("modal") is not None:
+                            state["modal"] = None
+                            state_changed = True
+                        elif is_browse_active(state):
+                            state["browse"] = None
+                            state_changed = True
+                        else:
+                            ids = [p["id"] for p in pages]
+                            prev_page = rotate(ids, state["page"], "prev")
+                            page = page_index[prev_page]
+                            state["page"] = prev_page
+                            state["focus"] = page.get("focusPolicy", {}).get("defaultPanel")
+                            state["browse"] = None
+                            state["modal"] = None
+                            state_changed = True
+
+                    elif intent == "ui.ok":
+                        modal = state.get("modal")
+                        if isinstance(modal, dict):
+                            modal_type = str(modal.get("type") or "").strip()
+
+                            if modal_type == "node_reboot_confirm":
+                                node_id = str(modal.get("node_id") or "").strip().lower()
+                                step = str(modal.get("step") or "warn").strip().lower()
+
+                                if node_id == "rt-controller" and step == "warn":
+                                    state["modal"] = build_node_reboot_modal(node_id, "armed")
+                                    state_changed = True
+                                else:
+                                    if node_id:
+                                        publish_intent(r, "node.reboot", {"nodeId": node_id, "confirm": True})
+                                    state["modal"] = None
+                                    state_changed = True
+
+                        elif is_browse_active(state):
+                            browse = as_dict(state.get("browse"))
+                            panel_id = str(browse.get("panel") or "").strip()
+
+                            model = resolve_browse_model(r, state["page"], panel_id)
+                            if not model:
+                                continue
+
+                            selected_index = 0
+                            try:
+                                selected_index = int(browse.get("selected_index", 0))
+                            except Exception:
+                                selected_index = 0
+
+                            item = selected_item_from_model(model, selected_index)
+                            if not item:
+                                continue
+
+                            if state["page"] == "home" and panel_id == "node_health_summary":
+                                node_id = extract_node_id(item)
+                                if node_id:
+                                    state["modal"] = build_node_reboot_modal(node_id, "warn")
+                                    state_changed = True
+
+                            elif state["page"] == "home" and panel_id == "controller_services_summary":
+                                continue
+
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):
-                            browse = state.get("browse")
                             delta = 0
                             try:
                                 delta = int(params.get("delta", 0))
                             except Exception:
                                 delta = 0
 
-                            if not isinstance(browse, dict) or browse.get("panel") != state["focus"]:
-                                state["browse"] = {
-                                    "active": True,
-                                    "page": state["page"],
-                                    "panel": state["focus"],
-                                    "selected_index": max(0, delta),
-                                }
+                            if delta == 0:
+                                continue
+
+                            model = resolve_browse_model(r, state["page"], state["focus"])
+                            if not model:
+                                continue
+
+                            count = int(model.get("count", 0))
+                            if count <= 0:
+                                continue
+
+                            browse = state.get("browse")
+                            panel_id = state["focus"]
+
+                            if not isinstance(browse, dict) or browse.get("panel") != panel_id or not browse.get("active", True):
+                                anchor_index = int(model.get("anchor_index", 0))
+                                new_index = clamp_index(anchor_index + delta, count)
+                                state["browse"] = build_browse_state(
+                                    state["page"],
+                                    panel_id,
+                                    model,
+                                    new_index,
+                                )
                                 state_changed = True
                             else:
                                 current_index = 0
@@ -218,13 +674,14 @@ def main():
                                 except Exception:
                                     current_index = 0
 
-                                new_index = max(0, current_index + delta)
+                                new_index = clamp_index(current_index + delta, count)
                                 if new_index != current_index:
-                                    browse["selected_index"] = new_index
-                                    browse["active"] = True
-                                    browse["page"] = state["page"]
-                                    browse["panel"] = state["focus"]
-                                    state["browse"] = browse
+                                    state["browse"] = build_browse_state(
+                                        state["page"],
+                                        panel_id,
+                                        model,
+                                        new_index,
+                                    )
                                     state_changed = True
 
         now = now_ms()

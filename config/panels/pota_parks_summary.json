@@ -5,7 +5,8 @@
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
   "bindings": [
     { "id": "context", "source": "state", "key": "rt:pota:context" },
-    { "id": "nearby", "source": "state", "key": "rt:pota:nearby" }
+    { "id": "nearby", "source": "state", "key": "rt:pota:nearby" },
+    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:pota_parks_summary" }
   ],
   "actions": [],
   "meta": {
@@ -13,7 +14,7 @@
     "title": "Nearby Parks",
     "contract": {
       "requiredBindings": ["context"],
-      "allowNull": ["nearby"]
+      "allowNull": ["nearby", "ui_browse"]
     }
   }
 }

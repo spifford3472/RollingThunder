@@ -13,7 +13,14 @@
   "requires": [ ],
   "optional": ["wpsd_integration"],
   "controls": {
-    "allowedIntents": ["ui.page.next","ui.page.prev","ui.focus.next","ui.focus.prev"]
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.back",
+      "ui.ok",
+      "ui.cancel"]
   },
   "focusPolicy": {
     "defaultPanel": "wpsd_rf_summary",

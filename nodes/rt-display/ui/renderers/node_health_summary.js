@@ -1,31 +1,10 @@
 // node_health_summary.js
 //
-// v3 (browse-capable + new modal copy / timing rules):
+// v4 (controller-owned browse visual sync):
 // - Adds browse cursor + windowed rendering
-// - Listens for slot events:
-//     * rt-browse-delta  {delta:+1/-1}
-//     * rt-browse-ok     (Enter) -> opens reboot confirm modal(s) for selected node
-// - Modal behavior (per your spec):
-//     * non-rt-controller:
-//         - red bold "WARNING"
-//         - white: "Selecting OK will reboot this node"
-//         - auto-cancel to "Exit" after 10s
-//     * rt-controller:
-//         - step 1: blinking red bold "WARNING"
-//                   red: "System will go down during reboot"
-//                   white: "Selecting OK begins the process"
-//         - if user presses OK -> step 2:
-//                   blinking red bold: "PRESS OK TO REBOOT"
-//                   buttons: OK / Cancel
-//                   auto-cancel after 5s
-//
-// IMPORTANT: this file assumes your runtime modal supports these optional fields on rt-open-modal detail:
-//   - bodyHtml (preferred) or body (fallback)
-//   - autoCancelMs + autoCancelLabel
-//   - nextOnConfirm (object) for controller 2-step confirm
-//
-// If your runtime only supports the older twoStep/armLabel/timeoutMs semantics, this file still works
-// for non-controller, but controller 2-step requires nextOnConfirm support.
+// - Supports local browse event fallback
+// - Visual cursor now follows controller-projected browse state
+// - Modal behavior unchanged from prior version
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -39,7 +18,7 @@ const esc = (s) =>
 let _cache = { ts: 0, nodes: null, err: null };
 let _inflight = false;
 
-const WINDOW = 8; // tune for your panel height
+const WINDOW = 8;
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
@@ -138,10 +117,7 @@ function ensureCursorInWindow(m, total) {
   m.offset = clamp(m.offset, 0, maxOff);
 }
 
-// ----- MODAL: reboot confirm rules -----
-
 function buildNonControllerModal(nodeId) {
-  // non-controller: WARNING (red, bold), message in white, auto Exit after 10s
   return {
     kind: "confirm",
     title: "",
@@ -149,7 +125,6 @@ function buildNonControllerModal(nodeId) {
       <div class="rt-modal-warning-title rt-modal-warning-red"><strong>WARNING</strong></div>
       <div class="rt-modal-bodyline">Selecting OK will reboot this node</div>
     `,
-    // fallback for runtimes that only support "body"
     body: `WARNING\nSelecting OK will reboot this node`,
     confirmLabel: "OK",
     cancelLabel: "Exit",
@@ -162,26 +137,7 @@ function buildNonControllerModal(nodeId) {
   };
 }
 
-function buildControllerStep1(nodeId) {
-  // controller: blinking WARNING, extra red line, then white line
-  return {
-    kind: "confirm",
-    title: "",
-    bodyHtml: `
-      <div class="rt-modal-warning-title rt-modal-warning-red rt-blink-warn"><strong>WARNING</strong><P></div>
-      <div class="rt-modal-warning-sub rt-modal-warning-red">System will go down during reboot<P></div>
-      <div class="rt-modal-bodyline">Selecting OK begins the process</div>
-    `,
-    body: `WARNING\nSystem will go down during reboot\nSelecting OK begins the process`,
-    confirmLabel: "OK",
-    cancelLabel: "Exit",
-    // Step 1 should NOT auto-cancel (per your spec). If you want it, add autoCancelMs.
-    nextOnConfirm: buildControllerStep2(nodeId),
-  };
-}
-
 function buildControllerStep2(nodeId) {
-  // controller: second confirm, auto-cancel after 5s
   return {
     kind: "confirm",
     title: "",
@@ -207,30 +163,20 @@ function openNodeConfirm(slot, nodeId) {
   const isController = (id === "rt-controller");
 
   if (!isController) {
-    // Non-controller:
-    // - WARNING (red, bold)
-    // - white: "Selecting OK will reboot this node"
-    // - auto-select Exit after 10s
     slot.dispatchEvent(new CustomEvent("rt-open-modal", {
       bubbles: true,
       detail: {
         kind: "confirm",
         title: "Confirm",
-        body: `Selected node: ${id}`, // plain text (runtime shows this reliably)
-
+        body: `Selected node: ${id}`,
         warningHtml: `
           <div class="rt-modal-warning-title rt-modal-warning-red"><strong>WARNING</strong></div>
           <div style="color:#fff; margin-top:6px;">Selecting OK will reboot this node</div>
         `,
-
         confirmLabel: "OK",
         cancelLabel: "Exit",
-
-        // runtime-supported timer (auto chooses cancel)
         timeoutMs: 10000,
-
         danger: true,
-
         action: {
           intent: "node.reboot",
           params: { nodeId: id, confirm: true }
@@ -240,37 +186,23 @@ function openNodeConfirm(slot, nodeId) {
     return;
   }
 
-  // rt-controller:
-  // - blinking WARNING
-  // - red: "System will go down during reboot"
-  // - white: "Selecting OK begins the process"
-  // - if OK -> 2nd confirm with flashing "PRESS OK TO REBOOT"
-  // - auto-cancel after 5s
   slot.dispatchEvent(new CustomEvent("rt-open-modal", {
     bubbles: true,
     detail: {
       kind: "confirm",
       title: "Confirm",
       body: `Selected node: ${id}`,
-
       warningHtml: `
         <div class="rt-warn-blink" style="margin-bottom:6px;">WARNING</div>
         <div class="rt-modal-warning-red" style="margin-bottom:6px;">System will go down during reboot</div>
         <div style="color:#fff;">Selecting OK begins the process</div>
       `,
-
       confirmLabel: "OK",
       cancelLabel: "Exit",
-
-      // Use built-in 2-step confirm (this is your “prompt again”)
       twoStep: true,
       armLabel: "PRESS OK TO REBOOT",
-
-      // Auto-cancel the *armed* step after 5 seconds
       timeoutMs: 5000,
-
       danger: true,
-
       action: {
         intent: "node.reboot",
         params: { nodeId: id, confirm: true }
@@ -278,8 +210,6 @@ function openNodeConfirm(slot, nodeId) {
     }
   }));
 }
-
-// ----- RENDER -----
 
 function renderTableWindow(container, list, m) {
   const total = list.length;
@@ -352,8 +282,8 @@ function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
   if (!slot) return;
 
-  if (slot.__rtNhBrowseV3Attached) return;
-  slot.__rtNhBrowseV3Attached = true;
+  if (slot.__rtNhBrowseV5Attached) return;
+  slot.__rtNhBrowseV5Attached = true;
 
   const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
@@ -372,24 +302,8 @@ function attachBrowseHandlersOnce(container) {
     renderTableWindow(container, list, m);
   };
 
-  const onOk = () => {
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
-    const cur = list[m.cursor];
-    const nodeId = String(cur?.id || cur?.node_id || "").trim();
-    if (!nodeId) return;
-
-    openNodeConfirm(slot, nodeId);
-  };
-
   slot.addEventListener("rt-browse-delta", onDelta);
-  slot.addEventListener("rt-browse-ok", onOk);
-
-  slot.__rtNhBrowseV3Handlers = { onDelta, onOk };
+  slot.__rtNhBrowseV5Handlers = { onDelta };
 }
 
 async function fetchNodesOnce(url) {
@@ -408,10 +322,83 @@ async function fetchNodesOnce(url) {
   }
 }
 
+function applyProjectedBrowseCursorToNodes(data, list, m) {
+  const browse = data?.ui_browse || data?.__ui?.browse || null;
+  if (!browse || typeof browse !== "object") return;
+
+  if (String(browse.panel || "") !== "node_health_summary") return;
+
+  const idx = Number(browse.selected_index);
+  if (!Number.isFinite(idx)) return;
+
+  if (!Array.isArray(list) || list.length <= 0) {
+    m.cursor = 0;
+    m.offset = 0;
+    m.selectedId = null;
+    return;
+  }
+
+  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+  const cur = list[m.cursor];
+  m.selectedId = cur ? String(cur?.id || cur?.node_id || "") : null;
+  ensureCursorInWindow(m, list.length);
+}
+
+function renderControllerOwnedNodeModal(container, data) {
+  const modal = data?.__ui?.modal || null;
+  const slot = container.closest(".rt-slot");
+  if (!slot) return;
+
+  if (!modal || typeof modal !== "object") {
+    container.__rtLastNodeModalId = null;
+    return;
+  }
+
+  if (String(modal.type || "") !== "node_reboot_confirm") return;
+
+  const modalId = String(modal.id || "");
+  if (!modalId) return;
+
+  if (container.__rtLastNodeModalId === modalId) return;
+
+  const hadPriorModal = !!container.__rtLastNodeModalId;
+  container.__rtLastNodeModalId = modalId;
+
+  const warning = String(modal.warning || "");
+  const message = String(modal.message || "");
+  const submessage = String(modal.submessage || "");
+  const confirmLabel = String(modal.confirm_label || "OK");
+  const cancelLabel = String(modal.cancel_label || "Cancel");
+
+  if (hadPriorModal) {
+    slot.dispatchEvent(new CustomEvent("rt-close-modal", {
+      bubbles: true,
+      detail: { reason: "replace", id: modalId }
+    }));
+  }
+
+  slot.dispatchEvent(new CustomEvent("rt-open-modal", {
+    bubbles: true,
+    detail: {
+      id: modalId,
+      kind: "confirm",
+      title: String(modal.title || "Confirm"),
+      body: [message, submessage].filter(Boolean).join("\n"),
+      warningHtml: `
+        ${warning ? `<div class="rt-modal-warning-title rt-modal-warning-red"><strong>${esc(warning)}</strong></div>` : ""}
+        ${message ? `<div style="color:#fff; margin-top:6px;">${esc(message)}</div>` : ""}
+        ${submessage ? `<div style="color:#fff; margin-top:6px;">${esc(submessage)}</div>` : ""}
+      `,
+      confirmLabel,
+      cancelLabel,
+      danger: !!modal.destructive,
+    }
+  }));
+}
+
 export function renderNodeHealthSummary(container, panel, data) {
   attachBrowseHandlersOnce(container);
 
-  // Prefer runtime-provided data
   const fromRuntime = data?.nodes ?? data?.data?.nodes;
   let nodesList = Array.isArray(fromRuntime) ? fromRuntime : null;
 
@@ -432,14 +419,12 @@ export function renderNodeHealthSummary(container, panel, data) {
     return;
   }
 
-  // Deterministic sort
   const list = nodesList.filter(Boolean).slice().sort((a, b) =>
     String(a.id || a.node_id || "").localeCompare(String(b.id || b.node_id || ""))
   );
 
   const m = getModel(container);
 
-  // Reset/retain selection based on stable key
   const key = computeStableKey(list);
   if (m.lastKey !== key) {
     m.lastKey = key;
@@ -460,6 +445,10 @@ export function renderNodeHealthSummary(container, panel, data) {
 
   m.lastList = list;
 
+  // Key Phase B fix:
+  // force local visual cursor to follow controller-owned browse state
+  applyProjectedBrowseCursorToNodes(data, list, m);
+
   if (list.length <= 0) {
     m.cursor = 0;
     m.offset = 0;
@@ -470,4 +459,5 @@ export function renderNodeHealthSummary(container, panel, data) {
   }
 
   renderTableWindow(container, list, m);
+  renderControllerOwnedNodeModal(container, data);
 }

@@ -102,7 +102,7 @@ def map_event_to_intent(event: dict[str, Any]) -> dict[str, Any] | None:
         return {"intent": "ui.page.next", "params": {}}
 
     if control == "btn_back" and etype == "press":
-        return {"intent": "ui.page.prev", "params": {}}
+        return {"intent": "ui.back", "params": {}}
 
     if control == "btn_primary" and etype == "press":
         return {"intent": "ui.ok", "params": {}}

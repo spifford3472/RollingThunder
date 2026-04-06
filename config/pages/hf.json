@@ -22,6 +22,7 @@
       "ui.focus.prev",
       "ui.ok",
       "ui.cancel",
+      "ui.back",
       "alert.ack",
       "radio.hf.query"
     ]

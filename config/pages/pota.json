@@ -23,6 +23,7 @@
       "ui.focus.prev",
       "ui.ok",
       "ui.cancel",
+      "ui.back",
       "ui.browse.delta",
       "alert.ack",
       "alert.silence",

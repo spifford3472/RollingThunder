@@ -1,10 +1,10 @@
 // controller_services_summary.js
 //
-// v4 (view-only):
+// v5 (controller-owned browse visual sync):
 // - Windowed list: show at most 11 rows at a time
 // - Browse mode:
-//     ArrowUp/ArrowDown moves a *cursor highlight* through the full list
-//     (offset auto-adjusts to keep cursor inside the window)
+//     * renderer still supports local rt-browse-delta fallback
+//     * BUT visual cursor now follows controller-projected browse state
 // - NO restart modal, NO intents (view-only)
 // - Adaptive unknown filtering
 // - Stable sort by id/key
@@ -59,7 +59,9 @@ function fmtAge(ageSec) {
 
 function startAgeTicker(container) {
   if (container.__rtAgeTimer) {
-    try { clearInterval(container.__rtAgeTimer); } catch (_) {}
+    try {
+      clearInterval(container.__rtAgeTimer);
+    } catch (_) {}
     container.__rtAgeTimer = null;
   }
 
@@ -195,13 +197,8 @@ function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
   if (!slot) return;
 
-  // bump attachment version so old v3 handlers won't be re-added by this file
-  if (slot.__rtCssBrowseV4Attached) return;
-  slot.__rtCssBrowseV4Attached = true;
-
-  // If v3 already attached an OK handler, we can't remove it without a reference.
-  // But we ALSO won't attach any rt-browse-ok handler here, so new loads are clean.
-  // (If you want to actively remove old handlers, we can do that with a small runtime-side cleanup.)
+  if (slot.__rtCssBrowseV5Attached) return;
+  slot.__rtCssBrowseV5Attached = true;
 
   const onDelta = (ev) => {
     const delta = Number(ev?.detail?.delta ?? 0);
@@ -222,7 +219,29 @@ function attachBrowseHandlersOnce(container) {
   };
 
   slot.addEventListener("rt-browse-delta", onDelta);
-  slot.__rtCssBrowseV4Handlers = { onDelta };
+  slot.__rtCssBrowseV5Handlers = { onDelta };
+}
+
+function applyProjectedBrowseCursorToServices(data, list, m) {
+  const browse = data?.ui_browse || data?.__ui?.browse || null;
+  if (!browse || typeof browse !== "object") return;
+
+  if (String(browse.panel || "") !== "controller_services_summary") return;
+
+  const idx = Number(browse.selected_index);
+  if (!Number.isFinite(idx)) return;
+
+  if (!Array.isArray(list) || list.length <= 0) {
+    m.cursor = 0;
+    m.offset = 0;
+    m.selectedId = null;
+    return;
+  }
+
+  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+  const cur = list[m.cursor];
+  m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
+  ensureCursorInWindow(m, list.length);
 }
 
 export function renderControllerServicesSummary(container, panel, data) {
@@ -262,6 +281,10 @@ export function renderControllerServicesSummary(container, panel, data) {
   }
 
   m.lastServices = services;
+
+  // This is the key Phase B fix:
+  // force local visual cursor to follow controller-owned browse state
+  applyProjectedBrowseCursorToServices(data, services, m);
 
   if (services.length <= 0) {
     m.cursor = 0;

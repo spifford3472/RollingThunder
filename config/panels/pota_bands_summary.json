@@ -5,14 +5,16 @@
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
   "bindings": [
     { "id": "bands", "source": "state", "key": "rt:pota:ui:ssb:bands" },
-    { "id": "context", "source": "state", "key": "rt:pota:context" }
+    { "id": "context", "source": "state", "key": "rt:pota:context" },
+    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:pota_bands_summary" }
   ],
   "actions": [],
   "meta": {
     "purpose": "Browse available POTA SSB bands and select active band.",
     "title": "SSB Bands",
     "contract": {
-      "requiredBindings": ["bands", "context"]
+      "requiredBindings": ["bands", "context"],
+      "allowNull": ["nearby", "ui_browse"]
     }
   }
 }

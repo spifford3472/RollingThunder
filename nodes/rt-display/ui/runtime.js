@@ -41,6 +41,12 @@ function isValidBand(band) {
   ]).has(String(band || "").trim());
 }
 
+function modalIdsDiffer(a, b) {
+  const aid = String(a?.id || "").trim();
+  const bid = String(b?.id || "").trim();
+  return aid !== bid;
+}
+
 function isValidMode(mode) {
   return new Set([
     "AM", "FM", "CW", "USB", "LSB", "DIGU", "DIGL", "DATA", "FT8", "FT4"
@@ -500,6 +506,8 @@ function tryParseJSON(v) {
   let browsePanelId = null;
   let activeModalSignature = null;
   let _activeModal = null;
+  let panelLastData = new Map();
+  let panelRerender = new Map();
 
   function stopAllRefresh() {
     for (const handle of refreshHandles) {
@@ -521,6 +529,45 @@ function tryParseJSON(v) {
     return m;
   }
 
+  function buildInjectedUiStateForPanel(panelId, uiState) {
+  const browse =
+    uiState?.browse &&
+    typeof uiState.browse === "object" &&
+    String(uiState.browse.panel || "") === String(panelId || "")
+      ? uiState.browse
+      : null;
+
+  return {
+    page: uiState?.page || null,
+    focus: uiState?.focus || null,
+    layer: uiState?.layer || null,
+    browse,
+    modal: uiState?.modal || null,
+    authority: uiState?.authority || null,
+  };
+}
+
+  function buildRenderDataForPanel(panelId, uiState) {
+    const base = panelLastData.get(panelId) || {};
+    const injectedUi = buildInjectedUiStateForPanel(panelId, uiState);
+
+    return {
+      ...base,
+      ui_browse: injectedUi.browse,   // lets existing panel patches use data.ui_browse
+      __ui: injectedUi,               // future-proof richer UI projection access
+    };
+  }
+
+  function rerenderPanelsFromUiState() {
+    for (const [panelId, rerender] of panelRerender.entries()) {
+      try {
+        rerender(buildRenderDataForPanel(panelId, currentUiState));
+      } catch (e) {
+        console.warn("[rt] rerenderPanelsFromUiState failed", panelId, e);
+      }
+    }
+  }
+
   function closeLocalModal() {
     const mroot = ensureModalRoot();
     mroot.innerHTML = "";
@@ -539,16 +586,26 @@ function tryParseJSON(v) {
     const cancelable = Boolean(modalObj?.cancelable !== false);
     const destructive = Boolean(modalObj?.destructive);
 
+    const warning = String(modalObj?.warning || "").trim();
+    const message = String(modalObj?.message || "").trim();
+    const submessage = String(modalObj?.submessage || "").trim();
+
+    const confirmLabel = String(modalObj?.confirm_label || "OK").trim() || "OK";
+    const cancelLabel = String(modalObj?.cancel_label || "Cancel").trim() || "Cancel";
+
     mroot.innerHTML = `
       <div class="rt-modal-backdrop"></div>
       <div class="rt-modal" role="dialog" aria-modal="true">
         <div class="rt-modal-title">${title}</div>
         <div class="rt-modal-body">
-          <div class="rt-muted">Controller-owned modal</div>
+          ${warning ? `<div class="rt-modal-warning-title rt-modal-warning-red"><strong>${warning}</strong></div>` : ``}
+          ${message ? `<div style="color:#fff; margin-top:6px;">${message}</div>` : ``}
+          ${submessage ? `<div style="color:#fff; margin-top:6px;">${submessage}</div>` : ``}
+          ${!warning && !message && !submessage ? `<div class="rt-muted">Controller-owned modal</div>` : ``}
         </div>
         <div class="rt-modal-actions">
-          ${cancelable ? `<button class="rt-btn rt-btn-cancel">Cancel</button>` : ``}
-          ${confirmable ? `<button class="rt-btn rt-btn-ok ${destructive ? "rt-btn-danger" : ""}">OK</button>` : ``}
+          ${cancelable ? `<button class="rt-btn rt-btn-cancel">${cancelLabel}</button>` : ``}
+          ${confirmable ? `<button class="rt-btn rt-btn-ok ${destructive ? "rt-btn-danger" : ""}">${confirmLabel}</button>` : ``}
         </div>
       </div>
     `;
@@ -561,6 +618,7 @@ function tryParseJSON(v) {
         await emitIntent("ui.ok", {});
       }
     }
+
     async function cancel() {
       if (typeof emitIntent === "function") {
         await emitIntent("ui.cancel", {});
@@ -673,6 +731,8 @@ function tryParseJSON(v) {
     const page = bundle.pagesById[pageId];
     if (!page) {
       stopAllRefresh();
+      panelLastData = new Map();
+      panelRerender = new Map();
       buildRuntimeShell(root);
       renderPanelError(root, { title: "Unknown page", detail: `No page '${pageId}'` });
       return;
@@ -734,17 +794,26 @@ function tryParseJSON(v) {
         return;
       }
 
+      const doRender = (renderData) => {
+        renderer(bodyEl, panel, renderData);
+
+        if (navMode === "PANEL_BROWSE" && browsePanelId === panelId) {
+          queueMicrotask(() =>
+            syncBrowseIndicator({ rootEl: root, browsePanelId, slotByPanelId })
+          );
+        }
+      };
+
+      panelRerender.set(panelId, doRender);
+
       const handle = startPanelRefresh({
         slot,
         panel,
         bindings: coerceBindings(panel),
         store,
         render: (data) => {
-          renderer(bodyEl, panel, data);
-
-          if (navMode === "PANEL_BROWSE" && browsePanelId === panelId) {
-            queueMicrotask(() => syncBrowseIndicator({ rootEl: root, browsePanelId, slotByPanelId }));
-          }
+          panelLastData.set(panelId, data || {});
+          doRender(buildRenderDataForPanel(panelId, currentUiState));
         },
       });
 
@@ -768,6 +837,7 @@ function tryParseJSON(v) {
     }
 
     updateLocalUiModeFromProjection(uiState);
+    rerenderPanelsFromUiState();
   }
 
   async function pollUiState() {

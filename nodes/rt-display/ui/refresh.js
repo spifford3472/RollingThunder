@@ -22,7 +22,6 @@ function renderHdr(slot, panel, life) {
     state === "config" ? pillHtml("bad", "CONFIG") :
     pillHtml("bad", "ERROR");
 
-  // driving-safe: show only one short reason
   const reason = Array.isArray(life?.issues) && life.issues.length ? life.issues[0] : "";
 
   hdr.innerHTML = `
@@ -41,18 +40,22 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   const pollIntervalMs = Math.max(250, Number(panel?.refresh?.intervalMs || 1000));
   const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
-  // Push config
   const topic = String(panel?.refresh?.topic || "").trim();
 
   const pushReady =
-    mode !== "push" ? true :
-    (!!topic && typeof store?.subscribe === "function" && typeof store?.on === "function" && typeof store?.unsubscribe === "function");
+    mode !== "push"
+      ? true
+      : (
+          !!topic &&
+          typeof store?.subscribe === "function" &&
+          typeof store?.on === "function" &&
+          typeof store?.unsubscribe === "function"
+        );
 
   let stopped = false;
   let inflight = false;
   let needsRerun = false;
 
-  // Build the set of state keys this panel depends on (for cheap filtering)
   const panelStateKeys = new Set(
     list
       .filter(b => String(b?.source || "").toLowerCase() === "state")
@@ -70,18 +73,46 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       slow_bindings: [],
     };
 
+    let results = null;
+
+    try {
+      if (typeof store?.resolveMany === "function") {
+        results = await store.resolveMany(list);
+      }
+    } catch (_) {
+      results = null;
+    }
+
     for (const b of list) {
       const id = String(b.id);
-      const res = await store.resolve(b);
+      const res = results ? results[id] : await store.resolve(b);
       rt.bindings[id] = res;
 
-      if (res?.ok === false) rt.panel.has_error = true;
-      if (res?.ok === true && res.value == null) rt.panel.has_missing = true;
+      const prev = slot.__rtData?.[id];
+
+      // Only treat as an error if this binding failed AND we have no last-good value.
+      if (res?.ok === false && prev == null) {
+        rt.panel.has_error = true;
+      }
+
+      // Only treat as missing if the binding succeeded with null AND we have no last-good value.
+      if (res?.ok === true && res.value == null && prev == null) {
+        rt.panel.has_missing = true;
+      }
 
       const ms = Number(res?.meta?.ms ?? NaN);
-      if (Number.isFinite(ms) && ms > 1000) rt.panel.slow_bindings.push(id);
+      if (Number.isFinite(ms) && ms > 2000) {
+        rt.panel.slow_bindings.push(id);
+      }
 
-      data[id] = res?.ok ? res.value : null;
+      if (res?.ok) {
+        data[id] = res.value;
+      } else if (prev !== undefined) {
+        // Preserve last good value
+        data[id] = prev;
+      } else {
+        data[id] = null;
+      }
 
       if (res?.ok === false) {
         data.__errors = data.__errors || {};
@@ -94,10 +125,8 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   }
 
   async function tick() {
-
     if (stopped) return;
 
-    // Prevent overlapping runs (push can arrive while poll is running).
     if (inflight) {
       needsRerun = true;
       return;
@@ -117,13 +146,11 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       inflight = false;
       if (!stopped && needsRerun) {
         needsRerun = false;
-        // Run one more time to catch any missed updates while we were inflight.
         tick();
       }
     }
   }
 
-  // Initial render
   tick();
 
   let unsub = null;
@@ -132,23 +159,16 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     store.subscribe(topic);
 
     unsub = store.on(topic, (msg) => {
-
       try {
-        // Build scan match prefixes for cheap push filtering.
-        // We only support simple "prefix*" matches here (safe + fast).
-      const scanPrefixes = list
-        .filter(b => String(b?.source || "").toLowerCase() === "scan")
-        .map(b => String(b?.match || "").trim())
-        .filter(m => m.endsWith("*"))
-        .map(m => m.slice(0, -1))
-        .filter(Boolean);
+        const scanPrefixes = list
+          .filter(b => String(b?.source || "").toLowerCase() === "scan")
+          .map(b => String(b?.match || "").trim())
+          .filter(m => m.endsWith("*"))
+          .map(m => m.slice(0, -1))
+          .filter(Boolean);
 
-        // Expect publish payload shape:
-        // { topic:"state.changed", payload:{ keys:["rt:...","rt:..."] }, ts_ms?, source? }
-        // But be tolerant:
         const keys = msg?.payload?.keys ?? msg?.data?.payload?.keys;
 
-        // If any changed key matches a scan prefix, refresh.
         for (const k of (Array.isArray(keys) ? keys : [])) {
           if (typeof k !== "string") continue;
 
@@ -160,13 +180,11 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
           }
         }
 
-        // If no keys provided, treat as a general nudge.
         if (!Array.isArray(keys) || keys.length === 0) {
           tick();
           return;
         }
 
-        // Only refresh if this push event touches a key we care about.
         for (const k of keys) {
           const ks = (typeof k === "string") ? k.trim() : String(k || "");
           if (ks && panelStateKeys.has(ks)) {
@@ -175,14 +193,11 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
           }
         }
       } catch (_) {
-        // Fail-safe: ignore (poll fallback still runs)
+        // Poll fallback still runs
       }
     });
   }
 
-  // Poll fallback:
-  // - poll mode: intervalMs
-  // - push mode: fallbackPollMs (default 5000ms)
   const fallbackMs =
     mode === "push"
       ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
@@ -197,7 +212,9 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     if (typeof unsub === "function") unsub();
 
     if (mode === "push" && pushReady) {
-      try { store.unsubscribe(topic); } catch (_) {}
+      try {
+        store.unsubscribe(topic);
+      } catch (_) {}
     }
   };
 }
