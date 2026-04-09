@@ -33,3 +33,19 @@ ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/some_worker.p
 Restart=always
 ========================================
 
+To use virtual panel during development:
+   Open app.json in /config
+   look for:
+     "virtualPanel": {
+    "enabled": false,
+    "bind": "0.0.0.0",
+    "port": 8630,
+    "pollMs": 200
+  },
+  SET virtualPanel = true
+
+  To access: 
+  http://rt-controller:8630/
+  ============================================
+  to access main screen:
+  http://rt-controller:8625/ui/index.html?runtime=1&v=controller

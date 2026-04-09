@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RollingThunder Virtual Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #111318;
+      --panel: #1a1f27;
+      --panel-2: #232a35;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --border: #39414f;
+      --btn: #2b3442;
+      --btn-hover: #364154;
+      --shadow: rgba(0, 0, 0, 0.35);
+      --led-off: #1a1a1a;
+      --led-on: #7ef58b;
+      --led-warn: #ffd24d;
+      --led-danger: #ff5d5d;
+      --led-pulse: #7ac8ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      margin-bottom: 18px;
+    }
+
+    .title {
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0 0 6px 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 8px 24px var(--shadow);
+    }
+
+    .section-title {
+      margin: 0 0 14px 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      gap: 14px;
+    }
+
+    .control-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--btn);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 14px 12px;
+      min-height: 110px;
+      cursor: pointer;
+      transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      user-select: none;
+    }
+
+    .control-btn:hover {
+      background: var(--btn-hover);
+    }
+
+    .control-btn:active {
+      transform: scale(0.98);
+    }
+
+    .control-label {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    .led {
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      border: 1px solid #555;
+      background: var(--led-off);
+      box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.7);
+    }
+
+    .led.on {
+      background: var(--led-on);
+      box-shadow:
+        0 0 12px rgba(126, 245, 139, 0.65),
+        0 0 24px rgba(126, 245, 139, 0.35);
+    }
+
+    .led.pulse {
+      background: var(--led-pulse);
+      box-shadow:
+        0 0 12px rgba(122, 200, 255, 0.65),
+        0 0 24px rgba(122, 200, 255, 0.35);
+      animation: pulseGlow 1s ease-in-out infinite;
+    }
+
+    .led.blink-slow {
+      background: var(--led-warn);
+      box-shadow:
+        0 0 12px rgba(255, 210, 77, 0.65),
+        0 0 24px rgba(255, 210, 77, 0.35);
+      animation: blinkSlow 0.9s steps(1, end) infinite;
+    }
+
+    .led.blink-fast {
+      background: var(--led-danger);
+      box-shadow:
+        0 0 12px rgba(255, 93, 93, 0.65),
+        0 0 24px rgba(255, 93, 93, 0.35);
+      animation: blinkFast 0.4s steps(1, end) infinite;
+    }
+
+    @keyframes blinkSlow {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0.16; }
+    }
+
+    @keyframes blinkFast {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0.16; }
+    }
+
+    @keyframes pulseGlow {
+      0% { transform: scale(0.92); opacity: 0.50; }
+      50% { transform: scale(1.10); opacity: 1; }
+      100% { transform: scale(0.92); opacity: 0.50; }
+    }
+
+    .encoder-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .encoder-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .small-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--btn);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 14px 12px;
+      min-height: 64px;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 700;
+      transition: transform 0.08s ease, background 0.12s ease;
+    }
+
+    .small-btn:hover {
+      background: var(--btn-hover);
+    }
+
+    .small-btn:active {
+      transform: scale(0.98);
+    }
+
+    .status-list {
+      display: grid;
+      gap: 10px;
+      font-size: 14px;
+    }
+
+    .status-line {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .status-key {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .status-val {
+      word-break: break-word;
+    }
+
+    .hint {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .ok {
+      color: #8fffa2;
+    }
+
+    .bad {
+      color: #ff9191;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    @media (max-width: 860px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .button-grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+    }
+
+    @media (max-width: 520px) {
+      .button-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .encoder-row {
+        grid-template-columns: 1fr;
+      }
+
+      .status-line {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <h1 class="title">RollingThunder Virtual Panel</h1>
+      <p class="subtitle">Controller-faithful virtual control panel using controller-owned LED snapshot and the normal intent path.</p>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2 class="section-title">Panel Buttons</h2>
+        <div class="button-grid">
+          <button class="control-btn" data-button="page" data-intent="ui.page.next">
+            <div class="led" id="led-page"></div>
+            <div class="control-label">Page</div>
+          </button>
+
+          <button class="control-btn" data-button="back" data-intent="ui.back">
+            <div class="led" id="led-back"></div>
+            <div class="control-label">Back</div>
+          </button>
+
+          <button class="control-btn" data-button="primary" data-intent="ui.ok">
+            <div class="led" id="led-primary"></div>
+            <div class="control-label">OK</div>
+          </button>
+
+          <button class="control-btn" data-button="cancel" data-intent="ui.cancel">
+            <div class="led" id="led-cancel"></div>
+            <div class="control-label">Cancel</div>
+          </button>
+
+          <button class="control-btn" data-button="mode" data-intent="ui.focus.next">
+            <div class="led" id="led-mode"></div>
+            <div class="control-label">Mode</div>
+          </button>
+
+          <button class="control-btn" data-button="info" data-intent="ui.focus.prev">
+            <div class="led" id="led-info"></div>
+            <div class="control-label">Info</div>
+          </button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title">Encoder</h2>
+        <div class="encoder-grid">
+          <div class="encoder-row">
+            <button class="small-btn" id="enc-left">Rotate Left</button>
+            <button class="small-btn" id="enc-press">Press</button>
+            <button class="small-btn" id="enc-right">Rotate Right</button>
+          </div>
+        </div>
+
+        <div class="hint">
+          Encoder rotation emits <span class="mono">ui.browse.delta</span> with delta
+          <span class="mono">-1</span> or <span class="mono">+1</span>.
+          Encoder press emits <span class="mono">ui.ok</span>.
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title">Live Status</h2>
+        <div class="status-list">
+          <div class="status-line">
+            <div class="status-key">Server</div>
+            <div class="status-val" id="server-status">Starting…</div>
+          </div>
+          <div class="status-line">
+            <div class="status-key">Last LED ts</div>
+            <div class="status-val mono" id="led-ts">—</div>
+          </div>
+          <div class="status-line">
+            <div class="status-key">Show Push</div>
+            <div class="status-val mono" id="show-push">null</div>
+          </div>
+          <div class="status-line">
+            <div class="status-key">Last Intent</div>
+            <div class="status-val mono" id="last-intent">—</div>
+          </div>
+          <div class="status-line">
+            <div class="status-key">Snapshot</div>
+            <div class="status-val mono" id="snapshot-type">—</div>
+          </div>
+        </div>
+
+        <div class="hint">
+          This page does not compute control meaning locally. It only renders
+          <span class="mono">/api/leds</span> and publishes intents to
+          <span class="mono">/api/intent</span>.
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const LED_NAMES = ["page", "back", "primary", "cancel", "mode", "info"];
+    const DEFAULT_POLL_MS = 200;
+
+    let pollMs = DEFAULT_POLL_MS;
+    let pollTimer = null;
+    let lastIntentLabel = "—";
+    let showPushTimers = new Map();
+
+    function setServerStatus(text, ok = true) {
+      const el = document.getElementById("server-status");
+      el.textContent = text;
+      el.className = ok ? "status-val ok" : "status-val bad";
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function ledClassForMode(mode) {
+      switch ((mode || "off")) {
+        case "on":
+          return "on";
+        case "pulse":
+          return "pulse";
+        case "blink_slow":
+          return "blink-slow";
+        case "blink_fast":
+          return "blink-fast";
+        default:
+          return "";
+      }
+    }
+
+    function renderLed(name, entry) {
+      const el = document.getElementById(`led-${name}`);
+      if (!el) return;
+
+      const mode = entry && typeof entry === "object" ? entry.mode || "off" : "off";
+      el.className = "led " + ledClassForMode(mode);
+      el.dataset.mode = mode;
+    }
+
+    function renderSnapshot(snapshot) {
+      const leds = snapshot && typeof snapshot === "object" && snapshot.leds && typeof snapshot.leds === "object"
+        ? snapshot.leds
+        : {};
+
+      LED_NAMES.forEach((name) => {
+        renderLed(name, leds[name]);
+      });
+
+      setText("led-ts", snapshot && snapshot.ts_ms ? String(snapshot.ts_ms) : "—");
+      setText("snapshot-type", snapshot && snapshot.type ? String(snapshot.type) : "—");
+      setText("show-push", JSON.stringify(snapshot && snapshot.show_push ? snapshot.show_push : null));
+    }
+
+    function flashShowPush(button) {
+      if (!button) return;
+      const el = document.getElementById(`led-${button}`);
+      if (!el) return;
+
+      const oldClass = el.className;
+
+      if (showPushTimers.has(button)) {
+        clearTimeout(showPushTimers.get(button));
+        showPushTimers.delete(button);
+      }
+
+      el.className = "led";
+      const t1 = setTimeout(() => {
+        el.className = "led on";
+      }, 250);
+
+      const t2 = setTimeout(() => {
+        el.className = "led";
+      }, 500);
+
+      const t3 = setTimeout(() => {
+        el.className = oldClass;
+        showPushTimers.delete(button);
+      }, 750);
+
+      showPushTimers.set(button, t3);
+
+      // keep lints quiet for intermediate timers
+      void t1;
+      void t2;
+    }
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch("/api/config", { cache: "no-store" });
+        if (!res.ok) throw new Error(`config http ${res.status}`);
+        const cfg = await res.json();
+        if (cfg && Number.isFinite(Number(cfg.pollMs)) && Number(cfg.pollMs) > 0) {
+          pollMs = Number(cfg.pollMs);
+        }
+      } catch (err) {
+        // keep default poll if config fetch fails
+      }
+    }
+
+    async function fetchLeds() {
+      const res = await fetch("/api/leds", { cache: "no-store" });
+      if (!res.ok) {
+        throw new Error(`led http ${res.status}`);
+      }
+      return res.json();
+    }
+
+    async function sendIntent(intent, params = {}) {
+      const payload = { intent, params };
+      const res = await fetch("/api/intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`intent http ${res.status}: ${text}`);
+      }
+
+      lastIntentLabel = JSON.stringify(payload);
+      setText("last-intent", lastIntentLabel);
+    }
+
+    async function pollOnce() {
+      try {
+        const snapshot = await fetchLeds();
+        renderSnapshot(snapshot);
+        setServerStatus("Connected", true);
+
+        if (snapshot && snapshot.show_push && snapshot.show_push.button) {
+          flashShowPush(snapshot.show_push.button);
+        }
+      } catch (err) {
+        setServerStatus(`LED API error: ${err.message}`, false);
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+      }
+      pollTimer = setInterval(pollOnce, pollMs);
+    }
+
+    function attachButtonHandlers() {
+      document.querySelectorAll("[data-intent]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const intent = btn.getAttribute("data-intent");
+          if (!intent) return;
+          try {
+            await sendIntent(intent, {});
+          } catch (err) {
+            setServerStatus(`Intent error: ${err.message}`, false);
+          }
+        });
+      });
+
+      document.getElementById("enc-left").addEventListener("click", async () => {
+        try {
+          await sendIntent("ui.browse.delta", { delta: -1 });
+        } catch (err) {
+          setServerStatus(`Intent error: ${err.message}`, false);
+        }
+      });
+
+      document.getElementById("enc-right").addEventListener("click", async () => {
+        try {
+          await sendIntent("ui.browse.delta", { delta: 1 });
+        } catch (err) {
+          setServerStatus(`Intent error: ${err.message}`, false);
+        }
+      });
+
+      document.getElementById("enc-press").addEventListener("click", async () => {
+        try {
+          await sendIntent("ui.ok", {});
+        } catch (err) {
+          setServerStatus(`Intent error: ${err.message}`, false);
+        }
+      });
+    }
+
+    async function init() {
+      attachButtonHandlers();
+      await fetchConfig();
+      startPolling();
+      await pollOnce();
+    }
+
+    init();
+  </script>
+</body>
+</html>

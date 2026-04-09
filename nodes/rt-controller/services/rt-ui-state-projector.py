@@ -27,6 +27,7 @@ import sys
 import time
 from dataclasses import dataclass
 from hashlib import sha1
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import redis
@@ -87,7 +88,17 @@ PROJECTED_KEYS = {
     "authority": "rt:ui:authority",
     "last_result": "rt:ui:last_result",
     "page_context": "rt:ui:page_context",
+    "led_snapshot": "rt:ui:led_snapshot",
 }
+
+CONTROL_NAMES = ("back", "page", "primary", "cancel", "mode", "info")
+
+BLINK_SLOW_MS = 900
+BLINK_FAST_MS = 400
+PULSE_MS = 900
+
+CONFIG_PAGES_DIR = Path(os.environ.get("RT_PAGES_PATH", "/opt/rollingthunder/config/pages"))
+CONFIG_PANELS_DIR = Path(os.environ.get("RT_PANELS_PATH", "/opt/rollingthunder/config/panels"))
 
 
 class GracefulExit(SystemExit):
@@ -123,6 +134,9 @@ class UIStateProjector:
         self.running = True
         self.last_projection: Dict[str, str] = {}
         self.last_optional_keys: set[str] = set()
+        self._page_ids = self._load_page_ids()
+        self._browsable_panel_ids = self._load_browsable_panel_ids()
+        self._breadcrumb_state: dict[str, Any] = {"last_page": None, "return_button": None}
 
     def _connect(self) -> Redis:
         client = redis.Redis.from_url(
@@ -170,7 +184,7 @@ class UIStateProjector:
             "day_utc": self._normalize_scalar(obj.get("day_utc")),
             "spots": normalized_spots,
         }
-    
+
     def reconnect(self) -> None:
         while self.running:
             try:
@@ -233,19 +247,16 @@ class UIStateProjector:
     def _read_upstream_state(self) -> Dict[str, Any]:
         upstream: Dict[str, Any] = {"_sources": {}}
 
-        # Primary authoritative input: committed controller interaction state.
         interaction, interaction_key = self._read_first_object([self.config.interaction_state_key])
         if interaction is not None:
             upstream.update(interaction)
             upstream["_sources"]["interaction_state"] = interaction_key
 
-        # Optional page-family context source, e.g. rt:pota:context
         page_context_from_primary, page_context_key = self._read_first_object([self.config.page_context_key])
         if page_context_from_primary is not None:
             upstream["page_context"] = page_context_from_primary
             upstream["_sources"]["page_context_primary"] = page_context_key
 
-        # Legacy fallback consolidated snapshot.
         if "page" not in upstream:
             snapshot, snapshot_key = self._read_first_object(self.config.snapshot_keys)
             if snapshot is not None:
@@ -253,7 +264,6 @@ class UIStateProjector:
                     upstream.setdefault(key, value)
                 upstream["_sources"]["snapshot"] = snapshot_key
 
-        # Page
         page = self._extract_scalar(upstream, ["page", "current_page"])
         if page is None:
             page, page_key = self._read_first_scalar(self.config.page_keys)
@@ -262,7 +272,6 @@ class UIStateProjector:
         if page is not None:
             upstream["page"] = page
 
-        # Focus
         focus = self._extract_scalar(upstream, ["focus", "focused_panel", "focus_panel"])
         if focus is None:
             focus, focus_key = self._read_first_scalar(self.config.focus_keys)
@@ -271,7 +280,6 @@ class UIStateProjector:
         if focus is not None:
             upstream["focus"] = focus
 
-        # Modal
         modal = self._extract_object(upstream, ["modal", "active_modal"])
         if modal is None:
             modal, modal_key = self._read_first_object(self.config.modal_keys)
@@ -280,7 +288,6 @@ class UIStateProjector:
         if modal is not None:
             upstream["modal"] = modal
 
-        # Browse
         browse = self._extract_object(upstream, ["browse", "browse_state"])
         if browse is None:
             browse, browse_key = self._read_first_object(self.config.browse_keys)
@@ -289,7 +296,6 @@ class UIStateProjector:
         if browse is not None:
             upstream["browse"] = browse
 
-        # Authority
         authority = self._extract_object(upstream, ["authority", "ui_authority"])
         if authority is None:
             authority, authority_key = self._read_first_object(self.config.authority_keys)
@@ -298,7 +304,6 @@ class UIStateProjector:
         if authority is not None:
             upstream["authority"] = authority
 
-        # Last result
         last_result = self._extract_object(upstream, ["last_result", "result"])
         if last_result is None:
             last_result, result_key = self._read_first_object(self.config.result_keys)
@@ -307,7 +312,6 @@ class UIStateProjector:
         if last_result is not None:
             upstream["last_result"] = last_result
 
-        # Page context fallback list
         if "page_context" not in upstream:
             page_context, context_key = self._read_first_object(self.config.page_context_keys)
             if context_key:
@@ -315,7 +319,6 @@ class UIStateProjector:
             if page_context is not None:
                 upstream["page_context"] = page_context
 
-        # System health
         health, health_key = self._read_first_object(self.config.system_health_keys)
         if health is not None:
             upstream["system_health"] = health
@@ -435,9 +438,27 @@ class UIStateProjector:
         )
         layer = self._compute_layer(modal=modal, browse=browse, authority=authority)
 
+        self._breadcrumb_state = self._update_breadcrumb_state(
+            self._breadcrumb_state,
+            self._page_ids,
+            page,
+        )
+
+        led_snapshot = self._build_led_snapshot(
+            page=page,
+            focus=focus,
+            layer=layer,
+            modal=modal,
+            browse=browse,
+            authority=authority,
+            last_result=last_result,
+            breadcrumb=self._breadcrumb_state,
+        )
+
         projection: Dict[str, str] = {
             PROJECTED_KEYS["layer"]: layer,
             PROJECTED_KEYS["authority"]: self._json(authority),
+            PROJECTED_KEYS["led_snapshot"]: self._json_any(led_snapshot),
         }
         optional_keys: set[str] = set()
 
@@ -458,7 +479,6 @@ class UIStateProjector:
         if last_result is not None:
             projection[PROJECTED_KEYS["last_result"]] = self._json(last_result)
 
-        # Fail closed for ambiguous UI semantics.
         if authority["degraded"]:
             if page is None:
                 projection.pop(PROJECTED_KEYS["focus"], None)
@@ -784,6 +804,409 @@ class UIStateProjector:
     @staticmethod
     def _json(value: Mapping[str, Any]) -> str:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _json_any(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if value is True:
+            return True
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {
+                "1", "true", "yes", "y", "on", "open", "active", "enabled"
+            }
+        if isinstance(value, dict):
+            if not value:
+                return False
+            for key in ("active", "open", "visible", "present", "ok", "value"):
+                if key in value and UIStateProjector._truthy(value[key]):
+                    return True
+            return True
+        return bool(value)
+
+    @staticmethod
+    def _string_or_none(value: Any) -> str | None:
+        if value is None:
+            return None
+        s = str(value).strip()
+        return s or None
+
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _coerce_int_default(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _load_page_ids(self) -> list[str]:
+        pages: list[tuple[int, str]] = []
+        try:
+            if not CONFIG_PAGES_DIR.exists():
+                return []
+            for f in CONFIG_PAGES_DIR.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text())
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                page_id = self._string_or_none(data.get("id"))
+                if not page_id:
+                    continue
+                order = self._coerce_int_default(data.get("order"), 9999)
+                pages.append((order, page_id))
+        except Exception:
+            return []
+
+        pages.sort(key=lambda item: (item[0], item[1]))
+        seen: set[str] = set()
+        ids: list[str] = []
+        for _order, page_id in pages:
+            if page_id in seen:
+                continue
+            seen.add(page_id)
+            ids.append(page_id)
+        return ids
+
+    def _load_browsable_panel_ids(self) -> set[str]:
+        browsable: set[str] = set()
+        try:
+            if not CONFIG_PANELS_DIR.exists():
+                return browsable
+
+            for f in CONFIG_PANELS_DIR.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text())
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+
+                panel_id = self._string_or_none(data.get("id"))
+                if not panel_id:
+                    continue
+
+                interaction = self._as_dict(data.get("interaction"))
+                if bool(interaction.get("browsable", False)):
+                    browsable.add(panel_id)
+        except Exception:
+            return set()
+
+        return browsable
+
+    def _return_button_for_transition(
+        self,
+        page_ids: list[str],
+        previous_page: str | None,
+        current_page: str | None,
+    ) -> str | None:
+        if not previous_page or not current_page:
+            return None
+        if previous_page == current_page:
+            return None
+        if previous_page not in page_ids or current_page not in page_ids:
+            return None
+
+        count = len(page_ids)
+        if count <= 1:
+            return None
+
+        prev_idx = page_ids.index(previous_page)
+        if page_ids[(prev_idx + 1) % count] == current_page:
+            return "back"
+        if page_ids[(prev_idx - 1) % count] == current_page:
+            return "page"
+        return None
+
+    def _update_breadcrumb_state(
+        self,
+        breadcrumb: dict[str, Any],
+        page_ids: list[str],
+        current_page: str | None,
+    ) -> dict[str, Any]:
+        if not isinstance(breadcrumb, dict):
+            breadcrumb = {}
+
+        last_page = self._string_or_none(breadcrumb.get("last_page"))
+        return_button = self._string_or_none(breadcrumb.get("return_button"))
+
+        if current_page != last_page:
+            return_button = self._return_button_for_transition(page_ids, last_page, current_page)
+            breadcrumb = {
+                "last_page": current_page,
+                "return_button": return_button,
+            }
+        else:
+            breadcrumb = {
+                "last_page": last_page,
+                "return_button": return_button,
+            }
+
+        return breadcrumb
+
+    @staticmethod
+    def _page_navigation_available(page: str | None) -> bool:
+        return bool(page)
+
+    @staticmethod
+    def _back_available(page: str | None, modal_active: bool, browse_active: bool) -> bool:
+        if modal_active or browse_active:
+            return True
+        return bool(page and page != "home")
+
+    @staticmethod
+    def _focus_navigation_available(focus: str | None, modal_active: bool) -> bool:
+        if modal_active:
+            return False
+        return bool(focus)
+
+    def _browse_capable_focus(self, page: str | None, focus: str | None) -> bool:
+        _ = self._string_or_none(page)
+        focus = self._string_or_none(focus)
+        if not focus:
+            return False
+        return focus in self._browsable_panel_ids
+
+    @staticmethod
+    def _has_browse_selection(browse_obj: dict[str, Any]) -> bool:
+        return UIStateProjector._coerce_int_default(browse_obj.get("count"), 0) > 0
+
+    @staticmethod
+    def _is_destructive_modal(modal_obj: dict[str, Any]) -> bool:
+        return bool(modal_obj.get("destructive", False))
+
+    @staticmethod
+    def _modal_confirmable(modal_obj: dict[str, Any]) -> bool:
+        return bool(modal_obj.get("confirmable", False))
+
+    @staticmethod
+    def _modal_cancelable(modal_obj: dict[str, Any]) -> bool:
+        return bool(modal_obj.get("cancelable", False))
+
+    @staticmethod
+    def _destructive_modal_armed(modal_obj: dict[str, Any]) -> bool:
+        step = str(modal_obj.get("step") or "").strip().lower()
+        return step == "armed"
+
+    @staticmethod
+    def _has_recent_result(last_result_obj: Any) -> bool:
+        if last_result_obj is None:
+            return False
+        if isinstance(last_result_obj, str):
+            return bool(last_result_obj.strip())
+        if isinstance(last_result_obj, dict):
+            return bool(last_result_obj)
+        return True
+
+    @staticmethod
+    def _semantic_to_snapshot(mode: str) -> dict[str, Any]:
+        if mode == "off":
+            return {"mode": "off"}
+        if mode == "on":
+            return {"mode": "on"}
+        if mode == "blink_slow":
+            return {"mode": "blink_slow", "period_ms": BLINK_SLOW_MS}
+        if mode == "blink_fast":
+            return {"mode": "blink_fast", "period_ms": BLINK_FAST_MS}
+        if mode == "pulse":
+            return {"mode": "pulse", "period_ms": PULSE_MS}
+        return {"mode": "off"}
+
+    @staticmethod
+    def _last_result_token(last_result_obj: dict[str, Any]) -> str | None:
+        if not isinstance(last_result_obj, dict) or not last_result_obj:
+            return None
+
+        execution_id = UIStateProjector._string_or_none(last_result_obj.get("execution_id"))
+        if execution_id:
+            return execution_id
+
+        ts_ms = UIStateProjector._string_or_none(last_result_obj.get("ts_ms"))
+        intent = UIStateProjector._string_or_none(last_result_obj.get("intent"))
+        result = UIStateProjector._string_or_none(last_result_obj.get("result"))
+        if ts_ms and intent and result:
+            return f"{ts_ms}:{intent}:{result}"
+        return None
+
+    @staticmethod
+    def _result_is_positive(last_result_obj: dict[str, Any]) -> bool:
+        result = str(last_result_obj.get("result") or "").strip().lower()
+        if not result:
+            return False
+
+        negative = {
+            "rejected", "error", "failed", "denied", "ignored",
+            "invalid", "timeout", "unavailable", "blocked",
+        }
+        return result not in negative
+
+    @staticmethod
+    def _show_push_button_for_result(last_result_obj: dict[str, Any]) -> str | None:
+        if not UIStateProjector._result_is_positive(last_result_obj):
+            return None
+
+        intent = str(last_result_obj.get("intent") or "").strip().lower()
+        return {
+            "ui.ok": "primary",
+            "ui.cancel": "cancel",
+            "ui.back": "back",
+            "ui.page.next": "page",
+            "ui.focus.next": "mode",
+            "ui.focus.prev": "info",
+        }.get(intent)
+
+    def _derive_semantic_leds(
+        self,
+        page: str | None,
+        focus: str | None,
+        layer: str,
+        modal_obj: dict[str, Any],
+        browse_obj: dict[str, Any],
+        authority_obj: dict[str, Any],
+        last_result_obj: dict[str, Any],
+        breadcrumb: dict[str, Any],
+    ) -> dict[str, str]:
+        degraded = bool(authority_obj.get("degraded"))
+        stale = bool(authority_obj.get("stale"))
+        controller_authoritative = bool(authority_obj.get("controller_authoritative"))
+        modal_active = self._truthy(modal_obj)
+        browse_active = self._truthy(browse_obj)
+        recent_result = self._has_recent_result(last_result_obj)
+
+        leds: dict[str, str] = {name: "off" for name in CONTROL_NAMES}
+        return_button = self._string_or_none(self._as_dict(breadcrumb).get("return_button"))
+
+        if self._page_navigation_available(page):
+            leds["page"] = "on"
+
+        if self._back_available(page, modal_active, browse_active):
+            leds["back"] = "on"
+
+        if self._focus_navigation_available(focus, modal_active) and self._browse_capable_focus(page, focus):
+            leds["mode"] = "pulse"
+
+        leds["primary"] = "off"
+
+        if recent_result and not (degraded or stale):
+            leds["info"] = "pulse"
+
+        if not modal_active and not browse_active and not (degraded or stale or not controller_authoritative):
+            if return_button == "back" and leds["back"] != "off":
+                leds["back"] = "pulse"
+            elif return_button == "page" and leds["page"] != "off":
+                leds["page"] = "pulse"
+
+        if browse_active or layer == "browse":
+            leds["mode"] = "on"
+            leds["back"] = "on"
+            leds["cancel"] = "on"
+            if self._has_browse_selection(browse_obj):
+                leds["primary"] = "on"
+            else:
+                leds["primary"] = "off"
+
+        if modal_active or layer == "modal":
+            leds["mode"] = "off"
+            leds["back"] = "on"
+
+            if self._modal_cancelable(modal_obj):
+                leds["cancel"] = "on"
+            else:
+                leds["cancel"] = "off"
+
+            if self._modal_confirmable(modal_obj):
+                if self._is_destructive_modal(modal_obj):
+                    if self._destructive_modal_armed(modal_obj):
+                        leds["primary"] = "blink_fast"
+                        if self._modal_cancelable(modal_obj):
+                            leds["cancel"] = "blink_slow"
+                    else:
+                        leds["primary"] = "blink_slow"
+                        if self._modal_cancelable(modal_obj):
+                            leds["cancel"] = "on"
+                else:
+                    leds["primary"] = "blink_slow"
+            else:
+                leds["primary"] = "off"
+
+        if degraded or stale or not controller_authoritative or layer == "degraded":
+            leds["info"] = "blink_slow"
+            leds["primary"] = "off"
+            leds["mode"] = "off"
+
+            if modal_active and self._modal_confirmable(modal_obj):
+                if self._is_destructive_modal(modal_obj):
+                    leds["primary"] = "blink_fast" if self._destructive_modal_armed(modal_obj) else "blink_slow"
+                else:
+                    leds["primary"] = "blink_slow"
+
+            if self._page_navigation_available(page):
+                leds["page"] = "pulse"
+
+            if self._back_available(page, modal_active, browse_active):
+                leds["back"] = "pulse"
+
+            if self._modal_cancelable(modal_obj) or browse_active or (page and page != "home"):
+                leds["cancel"] = "pulse" if not modal_active else leds["cancel"]
+
+        return leds
+
+    def _build_led_snapshot(
+        self,
+        page: str | None,
+        focus: str | None,
+        layer: str,
+        modal: Optional[Mapping[str, Any]],
+        browse: Optional[Mapping[str, Any]],
+        authority: Mapping[str, Any],
+        last_result: Optional[Mapping[str, Any]],
+        breadcrumb: dict[str, Any],
+    ) -> dict[str, Any]:
+        modal_obj = dict(modal) if isinstance(modal, Mapping) else {}
+        browse_obj = dict(browse) if isinstance(browse, Mapping) else {}
+        authority_obj = dict(authority) if isinstance(authority, Mapping) else {}
+        last_result_obj = dict(last_result) if isinstance(last_result, Mapping) else {}
+
+        semantic_leds = self._derive_semantic_leds(
+            page=page,
+            focus=focus,
+            layer=layer,
+            modal_obj=modal_obj,
+            browse_obj=browse_obj,
+            authority_obj=authority_obj,
+            last_result_obj=last_result_obj,
+            breadcrumb=breadcrumb,
+        )
+
+        leds = {
+            name: self._semantic_to_snapshot(mode)
+            for name, mode in semantic_leds.items()
+        }
+
+        show_push = None
+        token = self._last_result_token(last_result_obj)
+        button = self._show_push_button_for_result(last_result_obj)
+        if token and button:
+            show_push = {
+                "button": button,
+                "token": token,
+            }
+
+        return {
+            "schema": 1,
+            "type": "led_snapshot",
+            "ts_ms": int(time.time() * 1000),
+            "leds": leds,
+            "show_push": show_push,
+        }
 
 
 def csv_env(name: str, default: Sequence[str]) -> Sequence[str]:

@@ -1,0 +1,20 @@
+[Unit]
+Description=RollingThunder Virtual Panel Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+WorkingDirectory=/opt/rollingthunder/services
+EnvironmentFile=-/etc/rollingthunder/redis.env
+Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
+Environment=RT_VIRTUAL_PANEL_UI_DIR=/opt/rollingthunder/ui/virtual-panel
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/virtual_panel_server.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
