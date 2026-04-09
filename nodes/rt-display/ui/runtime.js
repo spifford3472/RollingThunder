@@ -47,6 +47,58 @@ function modalIdsDiffer(a, b) {
   return aid !== bid;
 }
 
+function buildProjectedModalBodyHtml(modalObj) {
+  const modalType = String(modalObj?.type || "").trim();
+
+  if (modalType === "pota_spot_outcome") {
+    const options = Array.isArray(modalObj?.options) ? modalObj.options : [];
+    const selectedIndex = Number.isInteger(modalObj?.selected_option_index)
+      ? modalObj.selected_option_index
+      : Number.parseInt(modalObj?.selected_option_index ?? "0", 10) || 0;
+
+    const callsign = String(modalObj?.callsign || "").trim();
+    const parkRef = String(modalObj?.park_ref || "").trim();
+    const band = String(modalObj?.band || "").trim();
+
+    const meta = [callsign, parkRef, band].filter(Boolean).join(" • ");
+
+    const optionsHtml = options.length
+      ? options.map((opt, idx) => {
+          const label = String(opt?.label || opt?.key || "").trim() || `Option ${idx + 1}`;
+          const selected = idx === selectedIndex;
+          return `
+            <div class="rt-modal-option ${selected ? "is-selected" : ""}" data-option-index="${idx}">
+              <span class="rt-modal-option-marker">${selected ? "▶" : " "}</span>
+              <span class="rt-modal-option-label">${label}</span>
+            </div>
+          `;
+        }).join("")
+      : `<div class="rt-muted">No options available</div>`;
+
+    return `
+      <div class="rt-modal-body">
+        ${meta ? `<div style="color:#fff; margin-bottom:8px;">${meta}</div>` : ``}
+        <div class="rt-modal-options">
+          ${optionsHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  const warning = String(modalObj?.warning || "").trim();
+  const message = String(modalObj?.message || "").trim();
+  const submessage = String(modalObj?.submessage || "").trim();
+
+  return `
+    <div class="rt-modal-body">
+      ${warning ? `<div class="rt-modal-warning-title rt-modal-warning-red"><strong>${warning}</strong></div>` : ``}
+      ${message ? `<div style="color:#fff; margin-top:6px;">${message}</div>` : ``}
+      ${submessage ? `<div style="color:#fff; margin-top:6px;">${submessage}</div>` : ``}
+      ${!warning && !message && !submessage ? `<div class="rt-muted">Controller-owned modal</div>` : ``}
+    </div>
+  `;
+}
+
 function isValidMode(mode) {
   return new Set([
     "AM", "FM", "CW", "USB", "LSB", "DIGU", "DIGL", "DATA", "FT8", "FT4"
@@ -431,6 +483,7 @@ async function fetchUiProjectionState() {
         "rt:ui:browse",
         "rt:ui:modal",
         "rt:ui:authority",
+        "rt:ui:page_context",
       ],
     }),
   });
@@ -455,6 +508,7 @@ async function fetchUiProjectionState() {
     browse: tryParseJSON(getValue("rt:ui:browse")),
     modal: tryParseJSON(getValue("rt:ui:modal")),
     authority: tryParseJSON(getValue("rt:ui:authority")),
+    page_context: tryParseJSON(getValue("rt:ui:page_context")),
   };
 }
 
@@ -529,7 +583,7 @@ function tryParseJSON(v) {
     return m;
   }
 
-  function buildInjectedUiStateForPanel(panelId, uiState) {
+function buildInjectedUiStateForPanel(panelId, uiState) {
   const browse =
     uiState?.browse &&
     typeof uiState.browse === "object" &&
@@ -544,6 +598,7 @@ function tryParseJSON(v) {
     browse,
     modal: uiState?.modal || null,
     authority: uiState?.authority || null,
+    page_context: uiState?.page_context || null,
   };
 }
 
@@ -553,8 +608,9 @@ function tryParseJSON(v) {
 
     return {
       ...base,
-      ui_browse: injectedUi.browse,   // lets existing panel patches use data.ui_browse
-      __ui: injectedUi,               // future-proof richer UI projection access
+      ui_browse: injectedUi.browse,
+      ui_page_context: injectedUi.page_context,
+      __ui: injectedUi,
     };
   }
 
@@ -586,9 +642,7 @@ function tryParseJSON(v) {
     const cancelable = Boolean(modalObj?.cancelable !== false);
     const destructive = Boolean(modalObj?.destructive);
 
-    const warning = String(modalObj?.warning || "").trim();
-    const message = String(modalObj?.message || "").trim();
-    const submessage = String(modalObj?.submessage || "").trim();
+    const bodyHtml = buildProjectedModalBodyHtml(modalObj);
 
     const confirmLabel = String(modalObj?.confirm_label || "OK").trim() || "OK";
     const cancelLabel = String(modalObj?.cancel_label || "Cancel").trim() || "Cancel";
@@ -597,12 +651,7 @@ function tryParseJSON(v) {
       <div class="rt-modal-backdrop"></div>
       <div class="rt-modal" role="dialog" aria-modal="true">
         <div class="rt-modal-title">${title}</div>
-        <div class="rt-modal-body">
-          ${warning ? `<div class="rt-modal-warning-title rt-modal-warning-red"><strong>${warning}</strong></div>` : ``}
-          ${message ? `<div style="color:#fff; margin-top:6px;">${message}</div>` : ``}
-          ${submessage ? `<div style="color:#fff; margin-top:6px;">${submessage}</div>` : ``}
-          ${!warning && !message && !submessage ? `<div class="rt-muted">Controller-owned modal</div>` : ``}
-        </div>
+        ${bodyHtml}
         <div class="rt-modal-actions">
           ${cancelable ? `<button class="rt-btn rt-btn-cancel">${cancelLabel}</button>` : ``}
           ${confirmable ? `<button class="rt-btn rt-btn-ok ${destructive ? "rt-btn-danger" : ""}">${confirmLabel}</button>` : ``}

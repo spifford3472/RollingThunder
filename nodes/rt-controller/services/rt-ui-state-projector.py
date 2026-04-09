@@ -34,6 +34,7 @@ from redis import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+POTA_SPOT_STATUS_KEY_PREFIX = "rt:pota:spot_status:"
 UI_INTERACTION_STATE_KEY = os.environ.get("RT_UI_INTERACTION_STATE_KEY", "rt:interaction:state")
 UI_PAGE_CONTEXT_KEY = os.environ.get("RT_UI_PAGE_CONTEXT_KEY", "rt:pota:context")
 
@@ -135,6 +136,41 @@ class UIStateProjector:
         client.ping()
         return client
 
+    def _read_pota_spot_statuses_for_band(self, band: Optional[str]) -> Dict[str, Any]:
+        band_text = self._normalize_scalar(band)
+        if not band_text:
+            return {"day_utc": None, "spots": {}}
+
+        key = f"{POTA_SPOT_STATUS_KEY_PREFIX}{band_text.lower()}"
+        raw = self._read_key_any(key)
+        obj = self._normalize_object(raw) or {}
+
+        spots = obj.get("spots")
+        if not isinstance(spots, Mapping):
+            spots = {}
+
+        normalized_spots: Dict[str, Any] = {}
+        for spot_id, entry in spots.items():
+            sid = self._normalize_scalar(spot_id)
+            if not sid:
+                continue
+
+            if isinstance(entry, Mapping):
+                normalized_spots[sid] = {
+                    "status": self._normalize_scalar(entry.get("status")),
+                    "updated_at_ms": self._coerce_int(entry.get("updated_at_ms")),
+                }
+            else:
+                normalized_spots[sid] = {
+                    "status": self._normalize_scalar(entry),
+                    "updated_at_ms": None,
+                }
+
+        return {
+            "day_utc": self._normalize_scalar(obj.get("day_utc")),
+            "spots": normalized_spots,
+        }
+    
     def reconnect(self) -> None:
         while self.running:
             try:
@@ -489,6 +525,20 @@ class UIStateProjector:
             "step": self._normalize_scalar(modal.get("step")),
             "duration_ms": self._coerce_int(modal.get("duration_ms")),
             "auto_close_at_ms": self._coerce_int(modal.get("auto_close_at_ms")),
+            "spot_id": self._normalize_scalar(modal.get("spot_id")),
+            "callsign": self._normalize_scalar(modal.get("callsign")),
+            "park_ref": self._normalize_scalar(modal.get("park_ref")),
+            "band": self._normalize_scalar(modal.get("band")),
+            "freq_hz": self._coerce_int(modal.get("freq_hz")),
+            "selected_option_index": self._coerce_int(modal.get("selected_option_index")) or 0,
+            "options": [
+                {
+                    "key": self._normalize_scalar(item.get("key")),
+                    "label": self._normalize_scalar(item.get("label")),
+                }
+                for item in modal.get("options", [])
+                if isinstance(item, Mapping)
+            ],
             "context": {
                 "page": page,
                 "focused_panel": focus,
@@ -629,13 +679,20 @@ class UIStateProjector:
         if not context or page is None:
             return None
 
-        # First-pass scoping rule:
-        # only project POTA context while the active page is the POTA page.
         if page != "pota":
             return None
 
         normalized = dict(context)
         normalized["page"] = page
+
+        selected_band = self._normalize_scalar(
+            normalized.get("selected_band") or normalized.get("band")
+        )
+        status_state = self._read_pota_spot_statuses_for_band(selected_band)
+
+        normalized["spot_status_day_utc"] = status_state.get("day_utc")
+        normalized["spot_statuses"] = status_state.get("spots") or {}
+
         return normalized
 
     @staticmethod

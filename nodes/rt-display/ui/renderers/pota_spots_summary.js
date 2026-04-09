@@ -14,42 +14,41 @@ const esc = (s) =>
 function returnToBrowseMode(container) {
   const slot = container.closest(".rt-slot");
   if (!slot) return;
-
   slot.classList.add("rt-browse-mode");
 }
 
-function applyProjectedBrowseCursor(container, list, m, browse, expectedPanelId) {
-  const slot = container.closest(".rt-slot");
-  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
-  if (!browseMode) return;
+function dedupeSpots(items) {
+  const seen = new Set();
+  const out = [];
 
-  if (!browse || typeof browse !== "object") return;
-  if (String(browse.panel || "") !== expectedPanelId) return;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item) continue;
+    const id = getSpotId(item);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(item);
+  }
 
-  const idx = Number(browse.selected_index);
-  if (!Number.isFinite(idx)) return;
-
-  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+  return out;
 }
 
-function normalizeTuneMode(rawMode, freqHz, band) {
-  const mode = String(rawMode || "").trim().toUpperCase();
-  const freq = Number(freqHz || 0);
-  const b = String(band || "").trim().toLowerCase();
+function normalizeProjectedPageContext(raw) {
+  if (!raw) return {};
 
-  if (mode === "SSB") {
-    if (Number.isFinite(freq) && freq > 0) {
-      return freq < 10_000_000 ? "LSB" : "USB";
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
     }
-    if (["160m", "80m", "60m", "40m"].includes(b)) return "LSB";
-    return "USB";
   }
 
-  if (mode === "LSB" || mode === "USB" || mode === "CW" || mode === "AM" || mode === "FM" || mode === "DIGI") {
-    return mode;
+  if (typeof raw === "object") {
+    return raw;
   }
 
-  return mode || "USB";
+  return {};
 }
 
 function clamp(n, lo, hi) {
@@ -100,15 +99,9 @@ function pileupCrowdingScore(neighborCount) {
 }
 
 function pressureLabel(score) {
-  if (score >= 75) {
-    return { icon: "↑", label: "Very High", cls: "rt-pressure-very-high" };
-  }
-  if (score >= 50) {
-    return { icon: "↗", label: "High", cls: "rt-pressure-high" };
-  }
-  if (score >= 25) {
-    return { icon: "→", label: "Medium", cls: "rt-pressure-medium" };
-  }
+  if (score >= 75) return { icon: "↑", label: "Very High", cls: "rt-pressure-very-high" };
+  if (score >= 50) return { icon: "↗", label: "High", cls: "rt-pressure-high" };
+  if (score >= 25) return { icon: "→", label: "Medium", cls: "rt-pressure-medium" };
   return { icon: "↓", label: "Low", cls: "rt-pressure-low" };
 }
 
@@ -133,11 +126,7 @@ function annotatePileupPressure(list) {
         if (other === item) continue;
         const otherFreq = Number(other?.freq_hz || 0);
         if (!Number.isFinite(otherFreq) || otherFreq <= 0) continue;
-
-        // 3 kHz neighborhood works well enough as an SSB crowding proxy.
-        if (Math.abs(otherFreq - freq) <= 3000) {
-          neighbors += 1;
-        }
+        if (Math.abs(otherFreq - freq) <= 3000) neighbors += 1;
       }
     }
 
@@ -159,63 +148,63 @@ function annotatePileupPressure(list) {
 }
 
 function getSpotId(item) {
-  const id = item?.member || item?.spot_id;
-  if (id !== undefined && id !== null && String(id).trim()) return String(id).trim();
+  const explicitId = item?.spot_id ?? item?.id;
+  if (explicitId !== undefined && explicitId !== null && String(explicitId).trim()) {
+    return String(explicitId).trim();
+  }
 
-  const call = String(item?.call || "").trim();
-  const freq = String(item?.freq_hz || "").trim();
-  const park = String(item?.park_ref || "").trim();
-  const ts = String(item?.spot_ts_epoch || "").trim();
+  const call = String(item?.callsign || item?.call || "").trim();
+  const park = String(item?.park_ref || item?.reference || "").trim();
+  const freq = String(item?.freq_hz ?? item?.frequency ?? "").trim();
 
-  return `${call}|${freq}|${park}|${ts}`;
+  if (call || park || freq) {
+    return `${call}|${park}|${freq}`.replace(/^\|+|\|+$/g, "");
+  }
+
+  return "";
 }
 
 function getBandKey(context) {
-  return String(context?.selected_band || "").trim().toLowerCase() || "";
+  return String(context?.selected_band || context?.band || "").trim().toLowerCase() || "";
 }
 
-function makeEmptyBandSession() {
-  return {
-    disabledSpotIds: Object.create(null),
-    workedSpotIds: Object.create(null),
-  };
+function getSpotFreqHz(item) {
+  const raw = item?.freq_hz ?? item?.frequency ?? 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function getBandSession(model, bandKey) {
-  if (!model.bandSessions[bandKey]) {
-    model.bandSessions[bandKey] = makeEmptyBandSession();
+function sortSpotsByFrequency(items) {
+  return [...items].sort((a, b) => {
+    const fa = getSpotFreqHz(a);
+    const fb = getSpotFreqHz(b);
+    if (fa !== fb) return fa - fb;
+
+    const ca = String(a?.call || a?.callsign || "").trim();
+    const cb = String(b?.call || b?.callsign || "").trim();
+    const callCmp = ca.localeCompare(cb);
+    if (callCmp !== 0) return callCmp;
+
+    const pa = String(a?.park_ref || a?.reference || "").trim();
+    const pb = String(b?.park_ref || b?.reference || "").trim();
+    return pa.localeCompare(pb);
+  });
+}
+
+function getProjectedSpotStatus(context, item) {
+  const statuses = context?.spot_statuses;
+  if (!statuses || typeof statuses !== "object") return null;
+
+  const id = getSpotId(item);
+  const entry = statuses[id];
+
+  if (typeof entry === "string") return entry || null;
+  if (entry && typeof entry === "object") {
+    const status = String(entry.status || "").trim();
+    return status || null;
   }
-  return model.bandSessions[bandKey];
-}
 
-function isSpotDisabled(model, bandKey, item) {
-  if (!bandKey) return false;
-  const session = getBandSession(model, bandKey);
-  return !!session.disabledSpotIds[getSpotId(item)];
-}
-
-function isSpotWorked(model, bandKey, item) {
-  if (!bandKey) return false;
-  const session = getBandSession(model, bandKey);
-  return !!session.workedSpotIds[getSpotId(item)];
-}
-
-function markSpotDisabled(model, bandKey, item) {
-  if (!bandKey) return;
-  const session = getBandSession(model, bandKey);
-  session.disabledSpotIds[getSpotId(item)] = true;
-}
-
-function markSpotWorked(model, bandKey, item) {
-  if (!bandKey) return;
-  const session = getBandSession(model, bandKey);
-  session.workedSpotIds[getSpotId(item)] = true;
-}
-
-function clearDisabledForBand(model, bandKey) {
-  if (!bandKey) return;
-  const session = getBandSession(model, bandKey);
-  session.disabledSpotIds = Object.create(null);
+  return null;
 }
 
 function computeStableKey(list) {
@@ -231,11 +220,6 @@ function getModel(container) {
       lastKey: "",
       lastRawList: [],
       lastList: [],
-      modalOpen: false,
-      modalSpotId: null,
-      modalCursor: 1,
-      modalCleanup: null,
-      bandSessions: Object.create(null),
       lastBandKey: "",
       lastTunedSpotId: "",
       lastTuneFingerprint: "",
@@ -273,76 +257,52 @@ function radioHasTuner() {
       window?.__RT_APP_CONFIG ||
       window?.RollingThunderConfig ||
       {};
-
     return cfg?.globals?.radio?.has_tuner ?? false;
   } catch {
     return false;
   }
 }
 
-function getRenderableSpots(rawSpots, model, context) {
-  const bandKey = getBandKey(context);
+function normalizeTuneMode(rawMode, freqHz, band) {
+  const mode = String(rawMode || "").trim().toUpperCase();
+  const freq = Number(freqHz || 0);
+  const b = String(band || "").trim().toLowerCase();
+
+  if (mode === "SSB") {
+    if (Number.isFinite(freq) && freq > 0) {
+      return freq < 10_000_000 ? "LSB" : "USB";
+    }
+    if (["160m", "80m", "60m", "40m"].includes(b)) return "LSB";
+    return "USB";
+  }
+
+  if (mode === "LSB" || mode === "USB" || mode === "CW" || mode === "AM" || mode === "FM" || mode === "DIGI") {
+    return mode;
+  }
+
+  return mode || "USB";
+}
+
+function getRenderableSpots(rawSpots, context) {
   const inList = Array.isArray(rawSpots) ? rawSpots.filter(Boolean) : [];
+  const deduped = dedupeSpots(inList);
+  const sorted = sortSpotsByFrequency(deduped);
 
-  const filtered = inList
-    .filter((item) => !isSpotWorked(model, bandKey, item))
-    .map((item) => ({
-      ...item,
-      __spotId: getSpotId(item),
-      __disabled: isSpotDisabled(model, bandKey, item),
-    }));
+  const withStatus = sorted.map((item) => ({
+    ...item,
+    __spotId: getSpotId(item),
+    __status: getProjectedSpotStatus(context, item),
+  }));
 
-  return annotatePileupPressure(filtered);
+  return annotatePileupPressure(withStatus);
 }
 
 function emitIntent(slot, intent, params) {
   if (!slot) return;
   slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
     bubbles: true,
-    detail: {
-      intent,
-      params: params || {},
-    },
+    detail: { intent, params: params || {} },
   }));
-}
-
-function emitLogQsoForSpot(container, item) {
-  const slot = container.closest(".rt-slot");
-  if (!slot || !item) return false;
-
-  const context = container.__rtPotaSpotsContext || {};
-  const selectedRefs = Array.isArray(context?.selected_park_refs)
-    ? context.selected_park_refs
-    : [];
-
-  const mode = normalizeTuneMode(
-    item?.mode || "SSB",
-    item?.freq_hz,
-    context?.selected_band
-  );
-
-  console.log("EMIT LOG QSO", {
-    call: String(item?.call || "").trim(),
-    freq_hz: Number(item?.freq_hz || 0),
-    band: String(context?.selected_band || "").trim(),
-    rawMode: String(item?.mode || ""),
-    normalizedMode: mode,
-    park_ref: String(item?.park_ref || "").trim(),
-    their_pota_ref: String(item?.park_ref || "").trim(),
-    my_pota_refs: selectedRefs,
-  });
-
-  emitIntent(slot, "radio.log_qso", {
-    call: String(item?.call || "").trim(),
-    freq_hz: Number(item?.freq_hz || 0),
-    band: String(context?.selected_band || "").trim(),
-    mode,
-    park_ref: String(item?.park_ref || "").trim(),
-    their_pota_ref: String(item?.park_ref || "").trim(),
-    my_pota_refs: selectedRefs,
-  });
-
-  return true;
 }
 
 function emitTuneForSpot(container, item, { force = false } = {}) {
@@ -357,15 +317,12 @@ function emitTuneForSpot(container, item, { force = false } = {}) {
   if (!Number.isFinite(freq_hz) || freq_hz <= 0) return false;
   if (!band) return false;
   if (!mode) return false;
-  if (item.__disabled) return false;
 
   const m = getModel(container);
   const spotId = getSpotId(item);
   const fingerprint = `${spotId}|${freq_hz}|${band}|${mode}`;
 
-  if (!force && m.lastTuneFingerprint === fingerprint) {
-    return false;
-  }
+  if (!force && m.lastTuneFingerprint === fingerprint) return false;
 
   m.lastTunedSpotId = spotId;
   m.lastTuneFingerprint = fingerprint;
@@ -401,7 +358,7 @@ function findNextSelectableIndex(list, startIndex, direction) {
   for (let step = 0; step < total; step++) {
     i = (i + dir + total) % total;
     const item = list[i];
-    if (item && !item.__disabled) return i;
+    if (item) return i;
   }
 
   return -1;
@@ -410,7 +367,7 @@ function findNextSelectableIndex(list, startIndex, direction) {
 function findFirstSelectableIndex(list) {
   const total = Array.isArray(list) ? list.length : 0;
   for (let i = 0; i < total; i++) {
-    if (list[i] && !list[i].__disabled) return i;
+    if (list[i]) return i;
   }
   return -1;
 }
@@ -461,7 +418,6 @@ function moveCursor(model, list, direction) {
 
 function clearBandReminder(container) {
   const m = getModel(container);
-
   m.bandReminderOpen = false;
   m.bandReminderText = "";
 
@@ -505,8 +461,8 @@ function renderSpotsWindow(container, list, m, context) {
   const total = Array.isArray(list) ? list.length : 0;
   const selectedBand = String(context?.selected_band || "").trim();
   const noSpotsText = selectedBand
-    ? `No selectable spots for ${esc(selectedBand)}.`
-    : "No selectable spots.";
+    ? `No spots for ${esc(selectedBand)}.`
+    : "No spots.";
 
   if (total === 0) {
     const reminderOnlyHtml = m.bandReminderOpen ? `
@@ -547,12 +503,11 @@ function renderSpotsWindow(container, list, m, context) {
             <div class="rt-pota-band-reminder-body">${esc(m.bandReminderText || "Tune the antenna now.")}</div>
           </div>
         </div>
+        <div class="rt-muted" style="font-size:0.75rem; margin-top:4px;">${esc(debugStatusSummary)}</div>
       </div>
     ` : "";
-
-    container.innerHTML = reminderOnlyHtml || `
-      <div class="muted">${noSpotsText}</div>
-    `;
+    const debugStatusSummary = view.map((x) => `${getSpotId(x)} => ${x.__status || "-"}`).join(" | ");
+    container.innerHTML = reminderOnlyHtml || `<div class="muted">${noSpotsText}</div>`;
     return;
   }
 
@@ -574,17 +529,26 @@ function renderSpotsWindow(container, list, m, context) {
     const pressureLabelText = String(item?.__pressureLabel || "Unknown");
     const pressureClass = String(item?.__pressureClass || "");
     const isCursor = absoluteIndex === m.cursor;
-    const disabled = !!item?.__disabled;
+    const status = String(item?.__status || "").trim();
+    const isCannotHear = status === "cannot_hear";
+    const isWorked = status === "worked";
+    const isHeardNotWorked = status === "heard_not_worked";
 
     const trClass = [
       "sev-ok",
       browseMode && isCursor ? "rt-selected" : "",
-      disabled ? "rt-disabled" : "",
+      isCannotHear ? "rt-status-cannot-hear" : "",
+      isWorked ? "rt-status-worked" : "",
+      isHeardNotWorked ? "rt-status-heard-not-worked" : "",
     ].filter(Boolean).join(" ");
 
-    const callMarkup = disabled
-      ? `<span class="rt-disabled-text">${esc(call)}</span>`
-      : `<strong>${esc(call)}</strong>`;
+    const callMarkup = isCannotHear
+      ? `<strong class="rt-status-cannot-hear-text">${esc(call)}</strong>`
+      : isWorked
+        ? `<strong class="rt-status-worked-text">${esc(call)}</strong>`
+        : isHeardNotWorked
+          ? `<strong class="rt-status-heard-not-worked-text">${esc(call)}</strong>`
+          : `<strong>${esc(call)}</strong>`;
 
     return `
       <tr class="${trClass}" data-spot-id="${esc(getSpotId(item))}">
@@ -607,29 +571,6 @@ function renderSpotsWindow(container, list, m, context) {
 
   const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
 
-  const modalOptions = [
-    { key: "cannot_hear", label: "Cannot Hear Station" },
-    { key: "success", label: "Successful QSO" },
-    { key: "heard_not_worked", label: "Heard but Could Not Work" },
-  ];
-
-  const modalHtml = m.modalOpen ? `
-    <div class="rt-pota-modal-backdrop">
-      <div class="rt-pota-modal" role="dialog" aria-modal="true" aria-labelledby="rt-pota-modal-title">
-        <div class="rt-pota-modal-title" id="rt-pota-modal-title">Station Outcome</div>
-        <div class="rt-pota-modal-body">
-          ${modalOptions.map((opt, idx) => `
-            <div class="rt-pota-modal-option ${m.modalCursor === idx ? "rt-pota-modal-option-selected" : ""}">
-              <span class="rt-pota-modal-key">${idx + 1}</span>
-              <span>${esc(opt.label)}</span>
-            </div>
-          `).join("")}
-          <div class="rt-pota-modal-hint">Browse to choose • ENTER accept • ESC cancel</div>
-        </div>
-      </div>
-    </div>
-  ` : "";
-
   const bandReminderHtml = m.bandReminderOpen ? `
     <div class="rt-pota-band-reminder-backdrop">
       <div class="rt-pota-band-reminder" role="alert" aria-live="assertive">
@@ -641,12 +582,6 @@ function renderSpotsWindow(container, list, m, context) {
 
   container.innerHTML = `
     <style>
-      .rt-disabled {
-        opacity: 0.45;
-      }
-      .rt-disabled .rt-disabled-text {
-        text-decoration: line-through;
-      }
       .rt-pressure-pill {
         display: inline-flex;
         align-items: center;
@@ -674,52 +609,6 @@ function renderSpotsWindow(container, list, m, context) {
         background: rgba(239,68,68,0.18);
         color: #fca5a5;
         box-shadow: 0 0 6px rgba(239,68,68,0.5);
-      }
-      .rt-pota-modal-backdrop {
-        position: absolute;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.55);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 20;
-      }
-      .rt-pota-modal {
-        min-width: 320px;
-        max-width: 92%;
-        background: #111;
-        color: #eee;
-        border: 1px solid rgba(255,255,255,0.20);
-        border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.40);
-        padding: 12px 14px;
-      }
-      .rt-pota-modal-title {
-        font-weight: 700;
-        margin-bottom: 8px;
-      }
-      .rt-pota-modal-option {
-        padding: 8px 8px;
-        margin: 4px 0;
-        border-radius: 6px;
-        border: 2px solid transparent;
-      }
-      .rt-pota-modal-option-selected {
-        background: #dff6ff;
-        color: #000;
-        border: 2px solid #38bdf8;
-        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
-        font-weight: 700;
-      }
-      .rt-pota-modal-key {
-        display: inline-block;
-        min-width: 20px;
-        font-weight: 700;
-      }
-      .rt-pota-modal-hint {
-        margin-top: 10px;
-        opacity: 0.85;
-        font-size: 0.92em;
       }
       .rt-pota-band-reminder-backdrop {
         position: absolute;
@@ -760,146 +649,8 @@ function renderSpotsWindow(container, list, m, context) {
         <span class="rt-muted">${footerLeft}</span>${hint}
       </div>
       ${bandReminderHtml}
-      ${modalHtml}
     </div>
   `;
-}
-
-function closeOutcomeModal(container) {
-  const m = getModel(container);
-  m.modalOpen = false;
-  m.modalSpotId = null;
-  m.modalCursor = 1;
-
-  if (typeof m.modalCleanup === "function") {
-    try {
-      m.modalCleanup();
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-  m.modalCleanup = null;
-}
-
-function rerenderFromModel(container) {
-  const m = getModel(container);
-  const context = container.__rtPotaSpotsContext || {};
-  const list = getRenderableSpots(m.lastRawList, m, context);
-
-  m.lastList = list;
-  syncSelectedSpotId(m, list);
-  renderSpotsWindow(container, list, m, context);
-}
-
-function advanceAfterAction(container) {
-  const m = getModel(container);
-  const list = Array.isArray(m.lastList) ? m.lastList : [];
-  const total = list.length;
-
-  if (total <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-    m.selectedSpotId = null;
-    renderSpotsWindow(container, [], m, container.__rtPotaSpotsContext || {});
-    return;
-  }
-
-  const current = clamp(m.cursor ?? 0, 0, total - 1);
-  let next = -1;
-
-  for (let i = current; i < total; i++) {
-    const item = list[i];
-    if (item && !item.__disabled) {
-      next = i;
-      break;
-    }
-  }
-
-  if (next < 0) {
-    for (let i = 0; i < current; i++) {
-      const item = list[i];
-      if (item && !item.__disabled) {
-        next = i;
-        break;
-      }
-    }
-  }
-
-  if (next < 0) {
-    m.selectedSpotId = null;
-    m.cursor = 0;
-    m.offset = 0;
-    renderSpotsWindow(container, list, m, container.__rtPotaSpotsContext || {});
-    return;
-  }
-
-  m.cursor = next;
-  m.selectedSpotId = getSpotId(list[next]);
-  ensureCursorInWindow(m, list.length);
-  renderSpotsWindow(container, list, m, container.__rtPotaSpotsContext || {});
-  emitTuneForSpot(container, list[next], { force: true });
-}
-
-function applyOutcome(container, outcome) {
-  const m = getModel(container);
-  const context = container.__rtPotaSpotsContext || {};
-  const bandKey = getBandKey(context);
-  const spotId = String(m.modalSpotId || "").trim();
-
-  const currentList = Array.isArray(m.lastList) ? m.lastList : [];
-  const current = currentList.find((x) => x && getSpotId(x) === spotId);
-
-  if (!current || !bandKey) {
-    closeOutcomeModal(container);
-    returnToBrowseMode(container);
-    rerenderFromModel(container);
-    return;
-  }
-
-  if (outcome === "cannot_hear") {
-    markSpotDisabled(m, bandKey, current);
-    closeOutcomeModal(container);
-    returnToBrowseMode(container);
-    rerenderFromModel(container);
-    advanceAfterAction(container);
-    return;
-  }
-
-  if (outcome === "success") {
-    console.log("SUCCESS OUTCOME", current);
-    emitLogQsoForSpot(container, current);
-    markSpotWorked(m, bandKey, current);
-    closeOutcomeModal(container);
-    returnToBrowseMode(container);
-    rerenderFromModel(container);
-    advanceAfterAction(container);
-    return;
-  }
-
-  if (outcome === "heard_not_worked") {
-    closeOutcomeModal(container);
-    returnToBrowseMode(container);
-    rerenderFromModel(container);
-    return;
-  }
-
-  closeOutcomeModal(container);
-  returnToBrowseMode(container);
-  rerenderFromModel(container);
-}
-
-function openOutcomeModal(container, item) {
-  const m = getModel(container);
-  if (!item || item.__disabled) return;
-
-  closeOutcomeModal(container);
-
-  m.modalOpen = true;
-  m.modalSpotId = getSpotId(item);
-  m.modalCursor = 1;
-  renderSpotsWindow(container, m.lastList, m, container.__rtPotaSpotsContext || {});
-
-  m.modalCleanup = null;
 }
 
 function attachBrowseHandlersOnce(container) {
@@ -913,15 +664,6 @@ function attachBrowseHandlersOnce(container) {
     if (!Number.isFinite(delta) || delta === 0) return;
 
     const m = getModel(container);
-
-    if (m.modalOpen) {
-      const dir = delta > 0 ? 1 : -1;
-      const optionCount = 3;
-      m.modalCursor = (m.modalCursor + dir + optionCount) % optionCount;
-      renderSpotsWindow(container, m.lastList, m, container.__rtPotaSpotsContext || {});
-      return;
-    }
-
     const list = Array.isArray(m.lastList) ? m.lastList : [];
     const total = list.length;
     if (total <= 0) return;
@@ -930,52 +672,12 @@ function attachBrowseHandlersOnce(container) {
     renderSpotsWindow(container, list, m, container.__rtPotaSpotsContext || {});
 
     const cur = list[m.cursor];
-    if (cur && !cur.__disabled) {
+    if (cur) {
       emitTuneForSpot(container, cur, { force: moved });
     }
   };
 
-  const onOk = () => {
-    const m = getModel(container);
-
-    if (m.modalOpen) {
-      if (m.modalCursor === 0) {
-        applyOutcome(container, "cannot_hear");
-        return;
-      }
-      if (m.modalCursor === 1) {
-        applyOutcome(container, "success");
-        return;
-      }
-      if (m.modalCursor === 2) {
-        applyOutcome(container, "heard_not_worked");
-        return;
-      }
-      return;
-    }
-
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
-    const cur = list[m.cursor];
-    if (!cur || cur.__disabled) return;
-
-    openOutcomeModal(container, cur);
-  };
-
-  const onCancel = () => {
-    const m = getModel(container);
-    if (!m.modalOpen) return;
-    closeOutcomeModal(container);
-    returnToBrowseMode(container);
-    renderSpotsWindow(container, m.lastList, m, container.__rtPotaSpotsContext || {});
-  };
-
   slot.addEventListener("rt-browse-delta", onDelta);
-  slot.addEventListener("rt-browse-ok", onOk);
-  slot.addEventListener("rt-browse-cancel", onCancel);
 }
 
 function attachBrowseModeObserverOnce(container) {
@@ -1001,7 +703,6 @@ function attachBrowseModeObserverOnce(container) {
 function applyProjectedBrowseCursorToSpots(data, spots, m) {
   const browse = data?.ui_browse || data?.__ui?.browse || null;
   if (!browse || typeof browse !== "object") return;
-
   if (String(browse.panel || "") !== "pota_spots_summary") return;
 
   const idx = Number(browse.selected_index);
@@ -1024,7 +725,27 @@ export function renderPotaSpotsSummary(container, panel, data) {
   attachBrowseModeObserverOnce(container);
 
   const spotsRaw = data?.spots;
-  const context = data?.context || {};
+  const bindings = data?.__rt?.bindings || {};
+
+  const projectedPageContext = normalizeProjectedPageContext(
+    data?.ui_page_context ??
+    data?.page_context ??
+    data?.__ui?.page_context ??
+    data?.__ui?.pageContext ??
+    data?.__rt?.page_context ??
+    data?.__rt?.pageContext ??
+    data?.__rt?.ui_page_context ??
+    bindings["rt:ui:page_context"] ??
+    bindings.page_context ??
+    null
+  );
+
+  const baseContext = data?.context || {};
+  const context = {
+    ...baseContext,
+    ...projectedPageContext,
+  };
+
   const m = getModel(container);
 
   const oldBandKey = String(m.lastBandKey || "");
@@ -1033,15 +754,13 @@ export function renderPotaSpotsSummary(container, panel, data) {
   container.__rtPotaSpotsContext = context;
 
   if (oldBandKey && newBandKey && oldBandKey !== newBandKey) {
-    clearDisabledForBand(m, oldBandKey);
     m.pendingBandTune = true;
-    closeOutcomeModal(container);
   }
 
   m.lastBandKey = newBandKey;
   m.lastRawList = Array.isArray(spotsRaw) ? spotsRaw.filter(Boolean).slice() : [];
 
-  const spots = getRenderableSpots(m.lastRawList, m, context);
+  const spots = getRenderableSpots(m.lastRawList, context);
   const key = computeStableKey(spots);
 
   if (m.lastKey !== key) {
@@ -1067,6 +786,5 @@ export function renderPotaSpotsSummary(container, panel, data) {
     m.pendingBandTune = false;
     emitTunerActionForBand(container, String(context?.selected_band || "").trim());
     emitTuneForSpot(container, cur, { force: true });
-    return;
   }
 }

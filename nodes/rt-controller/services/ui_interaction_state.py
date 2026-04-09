@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+from datetime import datetime, timezone
 
 import redis
 
@@ -34,12 +35,182 @@ POTA_CONTEXT_KEY = "rt:pota:context"
 POTA_NEARBY_KEY = "rt:pota:nearby"
 POTA_BANDS_KEY = "rt:pota:ui:ssb:bands"
 POTA_SPOTS_SELECTED_KEY = "rt:pota:ui:ssb:spots:selected"
+POTA_SPOT_STATUS_KEY_PREFIX ="rt:pota:spot_status:"
 
+def utc_day_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def publish_radio_log_qso_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
+    context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
+
+    selected_refs = context.get("selected_park_refs")
+    if not isinstance(selected_refs, list):
+        selected_refs = []
+
+    freq_hz = spot.get("freq_hz")
+    if freq_hz is None:
+        try:
+            freq_hz = int(float(str(spot.get("frequency") or "0")))
+        except Exception:
+            freq_hz = 0
+
+    band = str(
+        spot.get("band")
+        or context.get("selected_band")
+        or context.get("band")
+        or ""
+    ).strip()
+
+    mode = str(spot.get("mode") or "SSB").strip() or "SSB"
+
+    params = {
+        "call": str(spot.get("callsign") or spot.get("call") or "").strip(),
+        "freq_hz": int(freq_hz or 0),
+        "band": band,
+        "mode": mode,
+        "park_ref": str(spot.get("park_ref") or spot.get("reference") or "").strip(),
+        "their_pota_ref": str(spot.get("park_ref") or spot.get("reference") or "").strip(),
+        "my_pota_refs": selected_refs,
+    }
+
+    publish_intent(r, "radio.log_qso", params)
+
+def get_pota_spot_status_for_item(r: redis.Redis, item: Dict[str, Any]) -> str | None:
+    band = str(item.get("band") or "").strip()
+    spot_id = str(item.get("spot_id") or spot_item_id(item) or "").strip()
+    if not band or not spot_id:
+        return None
+
+    state = load_pota_spot_status_state(r, band)
+    spots = as_dict(state.get("spots"))
+    entry = as_dict(spots.get(spot_id))
+    status = str(entry.get("status") or "").strip()
+    return status or None
+
+
+def is_browse_skippable_pota_spot(r: redis.Redis, item: Dict[str, Any]) -> bool:
+    status = get_pota_spot_status_for_item(r, item)
+    return status == "worked"
+
+
+def find_next_browse_index_for_pota_spots(
+    r: redis.Redis,
+    model: Dict[str, Any],
+    current_index: int,
+    delta: int,
+) -> int:
+    items = as_list(model.get("items"))
+    count = len(items)
+    if count <= 0:
+        return current_index
+
+    direction = 1 if delta > 0 else -1
+    start = clamp_index(current_index, count)
+
+    for step in range(1, count + 1):
+        idx = (start + (step * direction)) % count
+        item = as_dict(items[idx])
+        if not item:
+            continue
+        if not is_browse_skippable_pota_spot(r, item):
+            return idx
+
+    return start
+
+def pota_spot_status_key(band: str) -> str:
+    return f"{POTA_SPOT_STATUS_KEY_PREFIX}{str(band or '').strip().lower()}"
+
+
+def load_pota_spot_status_state(r: redis.Redis, band: str) -> Dict[str, Any]:
+    today = utc_day_str()
+    if not band:
+        return {"day_utc": today, "spots": {}}
+
+    raw = get_json_or_value(r, pota_spot_status_key(band))
+    state = as_dict(raw)
+
+    day_utc = str(state.get("day_utc") or "").strip()
+    spots = as_dict(state.get("spots"))
+
+    if day_utc != today:
+        return {"day_utc": today, "spots": {}}
+
+    return {
+        "day_utc": today,
+        "spots": spots,
+    }
+
+
+def save_pota_spot_status_state(r: redis.Redis, band: str, state: Dict[str, Any]) -> None:
+    if not band:
+        return
+    payload = {
+        "day_utc": str(state.get("day_utc") or utc_day_str()),
+        "spots": as_dict(state.get("spots")),
+        "updated_at_ms": now_ms(),
+    }
+    r.set(
+        pota_spot_status_key(band),
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+    )
+
+
+def apply_pota_spot_outcome_state(r: redis.Redis, spot: Dict[str, Any], outcome: str) -> None:
+    band = str(spot.get("band") or "").strip()
+    spot_id = str(spot.get("spot_id") or spot_item_id(spot) or "").strip()
+    outcome = str(outcome or "").strip()
+
+    if not band or not spot_id or outcome not in {"cannot_hear", "worked", "heard_not_worked"}:
+        return
+
+    state = load_pota_spot_status_state(r, band)
+    spots = as_dict(state.get("spots"))
+
+    spots[spot_id] = {
+        "status": outcome,
+        "updated_at_ms": now_ms(),
+    }
+
+    state["spots"] = spots
+    save_pota_spot_status_state(r, band, state)
+
+
+def spot_freq_hz(item: Dict[str, Any]) -> int:
+    value = item.get("freq_hz")
+    if value is None:
+        value = item.get("frequency")
+
+    try:
+        return int(float(str(value or "0")))
+    except Exception:
+        return 0
+
+
+def spot_sort_key(item: Dict[str, Any]) -> tuple[int, str, str]:
+    freq = spot_freq_hz(item)
+    call = str(item.get("callsign") or item.get("call") or "").strip().upper()
+    park = str(item.get("park_ref") or item.get("reference") or "").strip().upper()
+    return (freq, call, park)
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+def spot_freq_hz(item: Dict[str, Any]) -> int:
+    value = item.get("freq_hz")
+    if value is None:
+        value = item.get("frequency")
 
+    try:
+        return int(float(str(value or "0")))
+    except Exception:
+        return 0
+
+
+def spot_sort_key(item: Dict[str, Any]) -> tuple[int, str, str]:
+    freq = spot_freq_hz(item)
+    call = str(item.get("callsign") or item.get("call") or "").strip().upper()
+    park = str(item.get("park_ref") or item.get("reference") or "").strip().upper()
+    return (freq, call, park)
 
 def selected_item_from_model(model: Dict[str, Any], selected_index: int) -> Dict[str, Any] | None:
     items = as_list(model.get("items"))
@@ -87,6 +258,26 @@ def publish_radio_tune_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
 
     publish_intent(r, "radio.tune", params)
 
+def publish_pota_spot_outcome_intent(r: redis.Redis, spot: Dict[str, Any], outcome: str) -> None:
+    params = {
+        "outcome": str(outcome or "").strip(),
+        "spot_id": str(spot.get("spot_id") or spot_item_id(spot) or "").strip() or None,
+        "callsign": str(spot.get("callsign") or spot.get("call") or "").strip() or None,
+        "park_ref": str(spot.get("park_ref") or spot.get("reference") or "").strip() or None,
+        "band": str(spot.get("band") or "").strip() or None,
+        "mode": str(spot.get("mode") or "SSB").strip() or "SSB",
+    }
+
+    freq_hz = spot.get("freq_hz")
+    if freq_hz is None:
+        try:
+            freq_hz = int(float(str(spot.get("frequency") or "0")))
+        except Exception:
+            freq_hz = 0
+
+    params["freq_hz"] = int(freq_hz or 0)
+
+    publish_intent(r, "pota.spot.outcome", params)
 
 def build_band_tune_reminder_modal(band: str) -> Dict[str, Any]:
     ts = now_ms()
@@ -101,6 +292,51 @@ def build_band_tune_reminder_modal(band: str) -> Dict[str, Any]:
         "destructive": False,
         "duration_ms": 3000,
         "auto_close_at_ms": ts + 3000,
+        "opened_at_ms": ts,
+    }
+
+SPOT_OUTCOME_OPTIONS = [
+    {"key": "cannot_hear", "label": "Can't hear"},
+    {"key": "worked", "label": "Worked"},
+    {"key": "heard_not_worked", "label": "Heard not worked"},
+]
+
+
+def build_pota_spot_outcome_modal(spot: Dict[str, Any]) -> Dict[str, Any]:
+    ts = now_ms()
+
+    spot_id = str(spot.get("spot_id") or spot_item_id(spot) or "").strip()
+    callsign = str(spot.get("callsign") or spot.get("call") or "").strip()
+    park_ref = str(spot.get("park_ref") or spot.get("reference") or "").strip()
+    band = str(spot.get("band") or "").strip()
+    freq_hz = spot.get("freq_hz")
+
+    if freq_hz is None:
+        try:
+            freq_hz = int(float(str(spot.get("frequency") or "0")))
+        except Exception:
+            freq_hz = 0
+
+    title_parts = [part for part in [callsign, park_ref] if part]
+    title = " / ".join(title_parts) if title_parts else "Spot Outcome"
+
+    return {
+        "active": True,
+        "id": f"pota_spot_outcome:{spot_id or 'unknown'}:{ts}",
+        "type": "pota_spot_outcome",
+        "title": title,
+        "spot_id": spot_id or None,
+        "callsign": callsign or None,
+        "park_ref": park_ref or None,
+        "band": band or None,
+        "freq_hz": int(freq_hz or 0),
+        "selected_option_index": 1,
+        "options": list(SPOT_OUTCOME_OPTIONS),
+        "confirmable": True,
+        "cancelable": True,
+        "destructive": False,
+        "confirm_label": "OK",
+        "cancel_label": "Cancel",
         "opened_at_ms": ts,
     }
 
@@ -477,9 +713,15 @@ def resolve_pota_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     if not items:
         return None
 
+    normalized_items = [as_dict(item) for item in items if isinstance(item, dict)]
+    if not normalized_items:
+        return None
+
+    normalized_items.sort(key=spot_sort_key)
+
     return {
-        "items": items,
-        "count": len(items),
+        "items": normalized_items,
+        "count": len(normalized_items),
         "anchor_index": 0,
         "get_id": spot_item_id,
     }
@@ -647,7 +889,13 @@ def main():
                                 state_changed = True
 
                     elif intent == "ui.cancel":
-                        if state.get("modal") is not None:
+                        modal = as_dict(state.get("modal"))
+                        modal_type = str(modal.get("type") or "").strip()
+
+                        if modal_type == "pota_spot_outcome":
+                            state["modal"] = None
+                            state_changed = True
+                        elif state.get("modal") is not None:
                             state["modal"] = None
                             state_changed = True
                         elif is_browse_active(state):
@@ -688,6 +936,55 @@ def main():
                                         publish_intent(r, "node.reboot", {"nodeId": node_id, "confirm": True})
                                     state["modal"] = None
                                     state_changed = True
+                            elif modal_type == "pota_spot_outcome":
+                                spot_id = str(modal.get("spot_id") or "").strip()
+                                options = as_list(modal.get("options"))
+
+                                selected_option_index = 0
+                                try:
+                                    selected_option_index = int(modal.get("selected_option_index", 0))
+                                except Exception:
+                                    selected_option_index = 0
+
+                                selected_option_index = clamp_index(selected_option_index, len(options))
+                                selected_option = as_dict(options[selected_option_index]) if options else {}
+                                outcome_key = str(selected_option.get("key") or "").strip()
+
+                                if not outcome_key:
+                                    continue
+
+                                spots_model = resolve_pota_spots_browse_model(r)
+                                if not spots_model:
+                                    state["modal"] = None
+                                    state_changed = True
+                                    continue
+
+                                target_spot = None
+                                for candidate in as_list(spots_model.get("items")):
+                                    candidate_dict = as_dict(candidate)
+                                    candidate_spot_id = str(
+                                        candidate_dict.get("spot_id") or spot_item_id(candidate_dict) or ""
+                                    ).strip()
+                                    if candidate_spot_id and candidate_spot_id == spot_id:
+                                        target_spot = candidate_dict
+                                        break
+
+                                if target_spot is None:
+                                    browse = as_dict(state.get("browse"))
+                                    selected_index = 0
+                                    try:
+                                        selected_index = int(browse.get("selected_index", 0))
+                                    except Exception:
+                                        selected_index = 0
+                                    target_spot = selected_item_from_model(spots_model, selected_index)
+
+                                if target_spot:
+                                    publish_pota_spot_outcome_intent(r, target_spot, outcome_key)
+                                    apply_pota_spot_outcome_state(r, target_spot, outcome_key)
+                                    if outcome_key == "worked":
+                                        publish_radio_log_qso_intent(r, target_spot)
+                                state["modal"] = None
+                                state_changed = True                                    
 
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
@@ -752,8 +1049,8 @@ def main():
                                     state["pending_action"] = None
 
                             elif state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                # Keep this simple for now until outcome modal patch lands
-                                continue
+                                state["modal"] = build_pota_spot_outcome_modal(item)
+                                state_changed = True
 
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):
@@ -764,6 +1061,28 @@ def main():
                                 delta = 0
 
                             if delta == 0:
+                                continue
+
+                            modal = as_dict(state.get("modal"))
+                            modal_type = str(modal.get("type") or "").strip()
+
+                            if modal_type == "pota_spot_outcome":
+                                options = as_list(modal.get("options"))
+                                option_count = len(options)
+                                if option_count <= 0:
+                                    continue
+
+                                current_option_index = 0
+                                try:
+                                    current_option_index = int(modal.get("selected_option_index", 0))
+                                except Exception:
+                                    current_option_index = 0
+
+                                new_option_index = clamp_index(current_option_index + delta, option_count)
+                                if new_option_index != current_option_index:
+                                    modal["selected_option_index"] = new_option_index
+                                    state["modal"] = modal
+                                    state_changed = True
                                 continue
 
                             model = resolve_browse_model(r, state["page"], state["focus"])
@@ -779,7 +1098,10 @@ def main():
                             
                             if not isinstance(browse, dict) or browse.get("panel") != panel_id or not browse.get("active", True):
                                 anchor_index = int(model.get("anchor_index", 0))
-                                new_index = clamp_index(anchor_index + delta, count)
+                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                    new_index = find_next_browse_index_for_pota_spots(r, model, anchor_index, delta)
+                                else:
+                                    new_index = clamp_index(anchor_index + delta, count)
                                 state["browse"] = build_browse_state(
                                     state["page"],
                                     panel_id,
@@ -797,8 +1119,10 @@ def main():
                                     current_index = int(browse.get("selected_index", 0))
                                 except Exception:
                                     current_index = 0
-
-                                new_index = clamp_index(current_index + delta, count)
+                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                    new_index = find_next_browse_index_for_pota_spots(r, model, current_index, delta)
+                                else:
+                                    new_index = clamp_index(current_index + delta, count)
                                 if new_index != current_index:
                                     state["browse"] = build_browse_state(
                                         state["page"],

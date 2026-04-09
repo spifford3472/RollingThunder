@@ -252,3 +252,27 @@
   color: #4db8ff;
   font-weight: 700;
 }
+
+/* === POTA Spot Status Colors (Colorblind Friendly) === */
+
+.rt-status-cannot-hear {
+  background: rgba(255, 0, 0, 0.08);
+}
+.rt-status-cannot-hear-text {
+  color: #ff8a8a;
+}
+
+.rt-status-worked {
+  background: rgba(0, 120, 255, 0.08);
+  opacity: 0.75;
+}
+.rt-status-worked-text {
+  color: #7fc8ff;
+}
+
+.rt-status-heard-not-worked {
+  background: rgba(255, 200, 0, 0.10);
+}
+.rt-status-heard-not-worked-text {
+  color: #ffd966;
+}
