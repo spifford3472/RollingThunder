@@ -1,6 +1,9 @@
 {
   "id": "topbar_core",
   "type": "topbar_core",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": false,
   "refresh": { "mode": "poll", "intervalMs": 1000 },
   "bindings": [

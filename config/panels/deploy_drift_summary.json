@@ -1,6 +1,9 @@
 {
   "id": "deploy_drift_summary",
   "type": "deploy_drift_summary",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": false,
 
   "refresh": { "mode": "poll", "intervalMs": 2000 },

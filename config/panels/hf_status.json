@@ -1,6 +1,9 @@
 {
   "id": "hf_status",
   "type": "radio_status",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": true,
 
   "refresh": { "mode": "poll", "intervalMs": 500 },

@@ -24,11 +24,11 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 
 ## 2) Hardware / Physical Controls (Beta-plus)
 - [ ] Build physical control panel (buttons + rotary encoder)
-- [ ] RGB feedback rules (focus, severity, alert state)
+- [X] RGB feedback rules (focus, severity, alert state)
 - [ ] Enclosure + mounting
 
 ## 3) Thermal / Power (Beta-plus)
-- [ ] Add temp sensors + fan controller (Pi cooling)
+- [X] Add temp sensors + fan controller (Pi cooling)
 - [ ] Define thermal policy (thresholds, hysteresis, fail-safe)
 - [ ] Power down Raspberry Pis that overheat
 - [ ] Potentially add computer controlled fans
@@ -40,6 +40,12 @@ read-only, honors refresh/bindings/layout, and kiosk remains stable.
 - [ ] “safe mode” boot page
 - [ ] Add a internet "Keep-Alive function" so hotspot does not go to sleep
 - [ ] Create admin screen and add recompute pota park tile data (used when a new file is loaded)
+- [ ] Move LED capability hints into a projection, this makes the sender even thinner
+                    rt:ui:controls
+                    {
+                    "primary": { "available": true },
+                    "mode": { "browsable": true }
+                    }
 
 ## 5) Stretch Ideas / R&D
 - [ ] If rt-radio is offline then the HF Panel should not be available to select

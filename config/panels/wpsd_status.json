@@ -1,6 +1,9 @@
 {
   "id": "wpsd_status",
   "type": "wpsd_status",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": true,
 
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 1500 },

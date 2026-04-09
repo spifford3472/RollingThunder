@@ -1,6 +1,9 @@
 {
   "id": "node_health_summary",
   "type": "node_health_summary",
+  "interaction": {
+    "browsable": true
+  },
   "focusable": true,
 
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },

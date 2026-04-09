@@ -229,6 +229,20 @@ def extract_node_id(item: Dict[str, Any]) -> str:
             return value
     return ""
 
+def publish_ui_result(r: redis.Redis, intent: str, result: str = "accepted") -> None:
+    try:
+        payload = {
+            "intent": intent,
+            "result": result,
+            "ts_ms": now_ms(),
+        }
+        r.set(
+            "rt:ui:last_result",
+            json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+        )
+    except Exception:
+        pass
+
 def publish_intent(r: redis.Redis, intent: str, params: Dict[str, Any]) -> None:
     payload = {
         "intent": intent,
@@ -836,6 +850,7 @@ def main():
                         state["browse"] = None
                         state["modal"] = None
                         state_changed = True
+                        publish_ui_result(r, intent)
 
                     elif intent == "ui.page.prev":
                         ids = [p["id"] for p in pages]
@@ -846,6 +861,7 @@ def main():
                         state["browse"] = None
                         state["modal"] = None
                         state_changed = True
+                        publish_ui_result(r, intent)
 
                     elif intent == "ui.page.goto":
                         target = params.get("page")
@@ -856,6 +872,7 @@ def main():
                             state["browse"] = None
                             state["modal"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
 
                     elif intent == "ui.focus.next":
                         if is_browse_active(state):
@@ -866,6 +883,7 @@ def main():
                         if new_focus != state["focus"]:
                             state["focus"] = new_focus
                             state_changed = True
+                            publish_ui_result(r, intent)
 
                     elif intent == "ui.focus.prev":
                         if is_browse_active(state):
@@ -876,6 +894,7 @@ def main():
                         if new_focus != state["focus"]:
                             state["focus"] = new_focus
                             state_changed = True
+                            publish_ui_result(r, intent)
 
                     elif intent == "ui.focus.set":
                         if is_browse_active(state):
@@ -887,6 +906,7 @@ def main():
                                 state["focus"] = panel
                                 state["browse"] = None
                                 state_changed = True
+                                publish_ui_result(r, intent)
 
                     elif intent == "ui.cancel":
                         modal = as_dict(state.get("modal"))
@@ -895,20 +915,25 @@ def main():
                         if modal_type == "pota_spot_outcome":
                             state["modal"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
                         elif state.get("modal") is not None:
                             state["modal"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
                         elif is_browse_active(state):
                             state["browse"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
 
                     elif intent == "ui.back":
                         if state.get("modal") is not None:
                             state["modal"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
                         elif is_browse_active(state):
                             state["browse"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
                         else:
                             ids = [p["id"] for p in pages]
                             prev_page = rotate(ids, state["page"], "prev")
@@ -918,6 +943,7 @@ def main():
                             state["browse"] = None
                             state["modal"] = None
                             state_changed = True
+                            publish_ui_result(r, intent)
 
                     elif intent == "ui.ok":
                         modal = state.get("modal")
@@ -931,11 +957,13 @@ def main():
                                 if node_id == "rt-controller" and step == "warn":
                                     state["modal"] = build_node_reboot_modal(node_id, "armed")
                                     state_changed = True
+                                    publish_ui_result(r, intent)
                                 else:
                                     if node_id:
                                         publish_intent(r, "node.reboot", {"nodeId": node_id, "confirm": True})
                                     state["modal"] = None
                                     state_changed = True
+                                    publish_ui_result(r, intent)
                             elif modal_type == "pota_spot_outcome":
                                 spot_id = str(modal.get("spot_id") or "").strip()
                                 options = as_list(modal.get("options"))
@@ -957,6 +985,7 @@ def main():
                                 if not spots_model:
                                     state["modal"] = None
                                     state_changed = True
+                                    publish_ui_result(r, intent)
                                     continue
 
                                 target_spot = None
@@ -984,7 +1013,8 @@ def main():
                                     if outcome_key == "worked":
                                         publish_radio_log_qso_intent(r, target_spot)
                                 state["modal"] = None
-                                state_changed = True                                    
+                                state_changed = True            
+                                publish_ui_result(r, intent)                        
 
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
@@ -1009,6 +1039,7 @@ def main():
                                 if node_id:
                                     state["modal"] = build_node_reboot_modal(node_id, "warn")
                                     state_changed = True
+                                    publish_ui_result(r, intent)
 
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
                                 continue
@@ -1033,6 +1064,7 @@ def main():
                                 state["browse"] = None
                                 state["focus"] = "pota_spots_summary"
                                 state_changed = True
+                                publish_ui_result(r, intent)
 
                                 if band_changed and not has_tuner:
                                     state["modal"] = build_band_tune_reminder_modal(new_band)
@@ -1051,6 +1083,7 @@ def main():
                             elif state["page"] == "pota" and panel_id == "pota_spots_summary":
                                 state["modal"] = build_pota_spot_outcome_modal(item)
                                 state_changed = True
+                                publish_ui_result(r, intent)
 
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):
@@ -1083,6 +1116,7 @@ def main():
                                     modal["selected_option_index"] = new_option_index
                                     state["modal"] = modal
                                     state_changed = True
+                                    publish_ui_result(r, intent)
                                 continue
 
                             model = resolve_browse_model(r, state["page"], state["focus"])

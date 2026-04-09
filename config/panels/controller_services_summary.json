@@ -1,6 +1,9 @@
 {
   "id": "controller_services_summary",
   "type": "controller_services_summary",
+  "interaction": {
+    "browsable": true
+  },
   "focusable": true,
   "refresh": { "mode": "poll", "intervalMs": 750 },
   "bindings": [

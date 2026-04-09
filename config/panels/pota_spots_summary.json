@@ -1,6 +1,9 @@
 {
   "id": "pota_spots_summary",
   "type": "pota_spots_summary",
+  "interaction": {
+    "browsable": true
+  },
   "focusable": true,
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
   "bindings": [

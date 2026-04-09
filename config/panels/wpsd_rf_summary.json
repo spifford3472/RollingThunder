@@ -1,6 +1,9 @@
 {
   "id": "wpsd_rf_summary",
   "type": "wpsd_rf_summary",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": true,
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 1500 },
   "bindings": [

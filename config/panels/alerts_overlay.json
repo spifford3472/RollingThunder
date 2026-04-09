@@ -1,6 +1,9 @@
 {
   "id": "alerts_overlay",
   "type": "alerts_overlay",
+  "interaction": {
+    "browsable": false
+  },
   "focusable": true,
 
   "refresh": { "mode": "push", "topic": "rt/alerts/active", "fallbackPollMs": 1000 },

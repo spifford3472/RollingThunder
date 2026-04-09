@@ -506,8 +506,8 @@ function renderSpotsWindow(container, list, m, context) {
         <div class="rt-muted" style="font-size:0.75rem; margin-top:4px;">${esc(debugStatusSummary)}</div>
       </div>
     ` : "";
-    const debugStatusSummary = view.map((x) => `${getSpotId(x)} => ${x.__status || "-"}`).join(" | ");
-    container.innerHTML = reminderOnlyHtml || `<div class="muted">${noSpotsText}</div>`;
+//    const debugStatusSummary = view.map((x) => `${getSpotId(x)} => ${x.__status || "-"}`).join(" | ");
+//    container.innerHTML = reminderOnlyHtml || `<div class="muted">${noSpotsText}</div>`;
     return;
   }
 

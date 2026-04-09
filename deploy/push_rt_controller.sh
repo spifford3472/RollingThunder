@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+
 set -euo pipefail
 
 TARGET_HOST="${1:-rt-controller}"
@@ -7,6 +9,8 @@ TARGET_USER="${RT_SSH_USER:-spiff}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=deploy/common/lib.sh
 source "${REPO_ROOT}/deploy/common/lib.sh"
+
+${REPO_ROOT}/tools/rt_bump_build.sh
 
 # --- repo invariants (deploy gate) ---
 deploy_entry
