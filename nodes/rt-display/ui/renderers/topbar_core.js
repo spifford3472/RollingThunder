@@ -115,8 +115,24 @@ function staleTextOpacity(fresh, normal = 1.0, stale = 0.45) {
 
 
 export function renderTopbarCore(container, panel, data) {
+  console.log("topbar_core data:", data);
   const params = new URLSearchParams(location.search);
-  const page = params.get("page") || "home";
+  //const page = params.get("page") || "home";
+
+  const pageId =
+    data?.ui?.page ||   // 👈 THIS is the real source
+    data?.ui_page?.page ||
+    data?.ui_page?.id ||
+    data?.page ||
+    params.get("page") ||
+    "home";
+
+  const pageTitle =
+    data?.ui_page?.title ||
+    data?.page_title ||
+    pageId;
+
+  const page = `${pageTitle}`;
 
   const sys = data?.sys_health || null;
   const clock = data?.clock || null;

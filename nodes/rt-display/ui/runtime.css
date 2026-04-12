@@ -63,22 +63,27 @@
 .rt-slot-hdr {
   padding: 2px 2px 0 2px;
 }
-.rt-slot-hdr-row{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
+/* put title + browse pill on the same line */
+.rt-slot-hdr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
-.rt-slot-title{
-  font-weight:700;
-  font-size:13px;
-  opacity:0.92;
-  text-transform:none;
+/* let the left side shrink cleanly */
+.rt-slot-title {
+  font-weight: 700;
+  font-size: 13px;
+  opacity: 0.92;
+  min-width: 0;
+  flex: 1 1 auto;
 }
-.rt-slot-right{
-  display:flex;
-  align-items:center;
-  gap:8px;
+/* right side holds browse pill / reason without growing panel height */
+.rt-slot-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 .rt-slot-reason{
   font-size:12px;
@@ -87,6 +92,15 @@
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
+}
+
+/* browse pill next to panel name, compact */
+.rt-slot-hdr .rt-pill {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  margin: 0;
 }
 
 /* ensure body can’t crush */
@@ -136,13 +150,15 @@
 .rt-flag { height: 18px; width: auto; border-radius: 2px; opacity: 0.95; }
 
 /* runtime-owned focus highlight */
+/* keep the white focus border only */
 .rt-slot.rt-active {
   outline: 2px solid rgba(255,255,255,0.85);
   outline-offset: 2px;
 }
 
+
 .rt-slot.rt-active .rt-slot-hdr::before {
-  content: "▶ ";
+  content: none;
 }
 
 /* Selected row highlight (browse cursor) */
