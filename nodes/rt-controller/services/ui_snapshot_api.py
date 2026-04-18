@@ -32,6 +32,8 @@ import mimetypes
 import os
 import re
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -40,6 +42,7 @@ import urllib.request
 from urllib.error import URLError, HTTPError
 
 import redis
+from redis.connection import BlockingConnectionPool
 
 
 HOST = os.environ.get("RT_UI_HOST", "0.0.0.0")
@@ -138,6 +141,74 @@ FLAGS_PREFIX = "/ui/flags"  # we will serve /ui/flags/<code>.png
 WPSD_HTTP_BASE = os.environ.get("RT_WPSD_HTTP_BASE", "http://192.168.8.184")
 FLAGS_MAX_BYTES = int(os.environ.get("RT_FLAGS_MAX_BYTES", "200000"))  # 200KB cap
 _FLAG_RE = re.compile(r"^[a-z]{2}\.png$", re.IGNORECASE)
+
+# Shared Redis connection pools.
+#
+# Why:
+# - ui_snapshot_api runs under ThreadingHTTPServer, so concurrent requests can
+#   otherwise create fresh TCP connections repeatedly.
+# - BlockingConnectionPool is safer than ConnectionPool here because it waits
+#   briefly for an available connection instead of failing fast when the pool is
+#   temporarily exhausted.
+#
+# Notes:
+# - health_check_interval lets redis-py validate long-idle sockets without an
+#   explicit ping() on every request.
+# - PubSub gets a separate pool because SSE subscribers can hold connections
+#   open for long periods.
+_REDIS_POOL = BlockingConnectionPool(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    db=REDIS_DB,
+    password=REDIS_PASSWORD,
+    decode_responses=True,
+    socket_timeout=REDIS_TIMEOUT,
+    socket_connect_timeout=REDIS_TIMEOUT,
+    socket_keepalive=True,
+    health_check_interval=30,
+    max_connections=int(os.environ.get("RT_REDIS_POOL_MAX_CONNECTIONS", "10")),
+    timeout=float(os.environ.get("RT_REDIS_POOL_WAIT_SEC", "1.0")),
+)
+
+_SSE_REDIS_TIMEOUT = max(1.0, float(os.environ.get("RT_SSE_REDIS_TIMEOUT_SEC", "2.0")))
+_PUBSUB_POOL = BlockingConnectionPool(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    db=REDIS_DB,
+    password=REDIS_PASSWORD,
+    decode_responses=True,
+    socket_timeout=_SSE_REDIS_TIMEOUT,
+    socket_connect_timeout=max(_SSE_REDIS_TIMEOUT, 1.0),
+    socket_keepalive=True,
+    health_check_interval=30,
+    max_connections=int(os.environ.get("RT_REDIS_PUBSUB_POOL_MAX_CONNECTIONS", "5")),
+    timeout=float(os.environ.get("RT_REDIS_PUBSUB_POOL_WAIT_SEC", "1.0")),
+)
+
+SNAPSHOT_CACHE_TTL = float(os.environ.get("RT_SNAPSHOT_CACHE_TTL_SEC", "2.0"))
+NODES_CACHE_TTL = float(os.environ.get("RT_NODES_CACHE_TTL_SEC", "2.0"))
+
+_cache_lock = threading.Lock()
+_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and time.time() < float(entry.get("expires", 0.0)):
+            payload = entry.get("payload")
+            if isinstance(payload, dict):
+                return json.loads(json.dumps(payload, ensure_ascii=False))
+        return None
+
+
+def _cache_set(key: str, payload: Dict[str, Any], ttl: float) -> None:
+    if ttl <= 0:
+        return
+    safe_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    with _cache_lock:
+        _cache[key] = {"expires": time.time() + ttl, "payload": safe_payload}
+
 
 
 def now_iso_utc() -> str:
@@ -522,35 +593,14 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
     # ---------- Redis ----------
     def _redis(self) -> redis.Redis:
-        r = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB,
-            password=REDIS_PASSWORD,
-            decode_responses=True,
-            socket_timeout=REDIS_TIMEOUT,
-            socket_connect_timeout=REDIS_TIMEOUT,
-        )
-        r.ping()
-        return r
+        return redis.Redis(connection_pool=_REDIS_POOL)
 
     def _redis_pubsub_client(self) -> redis.Redis:
         """
         Separate client for PubSub. Use a larger socket timeout so the thread can
         wait/poll safely without hammering Redis.
         """
-        t = max(1.0, float(os.environ.get("RT_SSE_REDIS_TIMEOUT_SEC", "2.0")))
-        r = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB,
-            password=REDIS_PASSWORD,
-            decode_responses=True,
-            socket_timeout=t,
-            socket_connect_timeout=max(t, 1.0),
-        )
-        r.ping()
-        return r
+        return redis.Redis(connection_pool=_PUBSUB_POOL)
 
     def _key_allowed(self, k: Any) -> bool:
         if not isinstance(k, str):
@@ -1023,6 +1073,87 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
         return self._write_json(200, payload)
 
+    def _pipeline_hashes_for_keys(self, r: redis.Redis, keys: list[Any]) -> list[tuple[str, Dict[str, Any]]]:
+        """
+        Given candidate keys, batch TYPE and HGETALL to reduce Redis round trips.
+        Returns only keys whose type is hash.
+        """
+        if not keys:
+            return []
+
+        pipe = r.pipeline(transaction=False)
+        for key in keys:
+            pipe.type(key)
+        types = pipe.execute()
+
+        hash_keys: list[str] = []
+        for key, ktype in zip(keys, types):
+            if str(ktype) == "hash":
+                ks = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else str(key)
+                hash_keys.append(ks)
+
+        if not hash_keys:
+            return []
+
+        pipe = r.pipeline(transaction=False)
+        for key in hash_keys:
+            pipe.hgetall(key)
+        raw_hashes = pipe.execute()
+
+        out: list[tuple[str, Dict[str, Any]]] = []
+        for key, raw in zip(hash_keys, raw_hashes):
+            h: Dict[str, Any] = {}
+            if isinstance(raw, dict):
+                for hk, hv in raw.items():
+                    parsed = _try_parse_json(hv)
+                    if isinstance(parsed, str):
+                        parsed = _coerce_scalar(parsed)
+                    h[hk] = _truncate(parsed)
+            out.append((key, h))
+        return out
+
+    def _scan_hashes(self, r: redis.Redis, match: str, limit: Optional[int] = None, scan_count: int = 100) -> list[tuple[str, Dict[str, Any]]]:
+        """
+        Scan matching keys and batch TYPE/HGETALL in chunks.
+        If limit is set, stop after collecting at least that many candidate keys.
+        """
+        out: list[tuple[str, Dict[str, Any]]] = []
+        chunk: list[Any] = []
+
+        for key in r.scan_iter(match=match, count=scan_count):
+            chunk.append(key)
+            if limit is not None and (len(out) + len(chunk)) >= limit:
+                needed = max(0, limit - len(out))
+                out.extend(self._pipeline_hashes_for_keys(r, chunk[:needed]))
+                return out[:limit]
+            if len(chunk) >= scan_count:
+                out.extend(self._pipeline_hashes_for_keys(r, chunk))
+                chunk = []
+
+        if chunk:
+            out.extend(self._pipeline_hashes_for_keys(r, chunk))
+
+        return out[:limit] if limit is not None else out
+
+    def _pipeline_get_json_strings(self, r: redis.Redis, keys: list[str]) -> Dict[str, Any]:
+        """Batch GET a list of string keys and JSON-parse their values when possible."""
+        if not keys:
+            return {}
+
+        pipe = r.pipeline(transaction=False)
+        for key in keys:
+            pipe.get(key)
+        raw_vals = pipe.execute()
+
+        out: Dict[str, Any] = {}
+        for key, raw in zip(keys, raw_vals):
+            if not raw:
+                out[key] = None
+                continue
+            parsed = _try_parse_json(raw)
+            out[key] = parsed if isinstance(parsed, dict) else None
+        return out
+
     def _handle_deploy(self) -> None:
         payload: Dict[str, Any] = {
             "source": "rt-controller",
@@ -1046,14 +1177,14 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
 
             payload["data"]["expected"] = {"deployed_commit": expected_commit}
 
-            nodes_out = []
-            for key in r.scan_iter(match=f"{KEY_NODE_PREFIX}*"):
-                if r.type(key) != "hash":
-                    continue
-                h = _hgetall_parsed(r, key)
-                node_id = str(h.get("id") or str(key).split(":")[-1])
+            node_items = self._scan_hashes(r, f"{KEY_NODE_PREFIX}*")
+            node_ids = [str(h.get("id") or key.split(":")[-1]) for key, h in node_items]
+            report_keys = [f"{KEY_DEPLOY_PREFIX}{node_id}" for node_id in node_ids]
+            reports_by_key = self._pipeline_get_json_strings(r, report_keys)
 
-                report = _load_deploy_report(r, node_id)
+            nodes_out = []
+            for (key, h), node_id in zip(node_items, node_ids):
+                report = reports_by_key.get(f"{KEY_DEPLOY_PREFIX}{node_id}")
 
                 deploy_obj: Dict[str, Any] = {
                     "deployed_commit": None,
@@ -1116,6 +1247,10 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         return self._write_json(200, payload)
 
     def _handle_nodes(self) -> None:
+        cached = _cache_get("nodes")
+        if cached is not None:
+            return self._write_json(200, cached)
+
         payload: Dict[str, Any] = {
             "source": "rt-controller",
             "endpoint": "/api/v1/ui/nodes",
@@ -1129,12 +1264,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             r = self._redis()
 
             nodes = []
-            for key in r.scan_iter(match=f"{KEY_NODE_PREFIX}*"):
-                if r.type(key) != "hash":
-                    continue
-
-                h = _hgetall_parsed(r, key)
-
+            for key, h in self._scan_hashes(r, f"{KEY_NODE_PREFIX}*"):
                 node_obj = {
                     "id": h.get("id") or str(key).split(":")[-1],
                     "role": h.get("role"),
@@ -1152,6 +1282,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             nodes.sort(key=lambda x: str(x.get("id") or ""))
             payload["data"]["nodes"] = nodes
             payload["ok"] = True
+            _cache_set("nodes", payload, NODES_CACHE_TTL)
 
         except Exception as e:
             payload["errors"].append(f"nodes_failed: {type(e).__name__}: {e}")
@@ -1159,6 +1290,10 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         return self._write_json(200, payload)
 
     def _handle_snapshot(self) -> None:
+        cached = _cache_get("snapshot")
+        if cached is not None:
+            return self._write_json(200, cached)
+
         payload: Dict[str, Any] = {
             "source": "rt-controller",
             "endpoint": "/api/v1/ui/snapshot",
@@ -1180,22 +1315,27 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             except Exception:
                 node_ids = []
 
-            for nid in node_ids:
-                nk = f"{KEY_NODE_PREFIX}{nid}"
-                if r.exists(nk):
-                    nodes[nid] = _hgetall_parsed(r, nk)
+            node_keys = [f"{KEY_NODE_PREFIX}{nid}" for nid in node_ids]
+            node_pipe = r.pipeline(transaction=False)
+            for nk in node_keys:
+                node_pipe.hgetall(nk)
+            node_hashes = node_pipe.execute() if node_keys else []
+
+            for nid, raw in zip(node_ids, node_hashes):
+                if raw:
+                    h: Dict[str, Any] = {}
+                    for k, v in raw.items():
+                        parsed = _try_parse_json(v)
+                        if isinstance(parsed, str):
+                            parsed = _coerce_scalar(parsed)
+                        h[k] = _truncate(parsed)
+                    nodes[nid] = h
 
             services: Dict[str, Any] = {}
-            count = 0
-            for key in r.scan_iter(match=f"{KEY_SERVICE_PREFIX}*"):
-                if count >= MAX_SERVICES:
-                    break
-                if r.type(key) != "hash":
-                    continue
-                h = _hgetall_parsed(r, key)
+            service_items = self._scan_hashes(r, f"{KEY_SERVICE_PREFIX}*", limit=MAX_SERVICES)
+            for key, h in service_items:
                 sid = str(h.get("id") or key.split(":", 2)[-1])
                 services[sid] = _service_summary_fields(h)
-                count += 1
 
             payload["data"] = {
                 "system": {
@@ -1205,6 +1345,7 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 "services": services,
             }
             payload["ok"] = True
+            _cache_set("snapshot", payload, SNAPSHOT_CACHE_TTL)
 
         except Exception as e:
             payload["errors"].append(f"snapshot_failed: {type(e).__name__}: {e}")
@@ -1267,9 +1408,43 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         self._safe_write(b'{"error":"not_found"}')
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """
+    ThreadingHTTPServer with a bounded worker pool.
+
+    Why:
+    - caps concurrent request handling so bursts cannot create unbounded threads
+    - reuses worker threads, which is friendlier on Raspberry Pi-class hardware
+
+    Notes:
+    - SSE connections still occupy a worker while active
+    - choose RT_HTTP_WORKERS with expected SSE + request concurrency in mind
+    """
+
+    daemon_threads = True
+
+    def __init__(self, server_address, RequestHandlerClass, *, max_workers: int = 8, **kwargs):
+        super().__init__(server_address, RequestHandlerClass, **kwargs)
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+
+    def process_request(self, request, client_address):
+        self._pool.submit(self.process_request_thread, request, client_address)
+
+    def server_close(self):
+        try:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._pool.shutdown(wait=False)
+        super().server_close()
+
+
 def main() -> None:
-    httpd = ThreadingHTTPServer((HOST, PORT), UiSnapshotHandler)
-    print(f"ui_snapshot_api listening on {HOST}:{PORT} (redis {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB})")
+    workers = int(os.environ.get("RT_HTTP_WORKERS", "6"))
+    httpd = BoundedThreadingHTTPServer((HOST, PORT), UiSnapshotHandler, max_workers=workers)
+    print(
+        f"ui_snapshot_api listening on {HOST}:{PORT} "
+        f"(redis {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}, workers={workers})"
+    )
     httpd.serve_forever()
 
 
