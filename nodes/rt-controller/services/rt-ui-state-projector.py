@@ -91,6 +91,9 @@ PROJECTED_KEYS = {
     "led_snapshot": "rt:ui:led_snapshot",
 }
 
+UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+UI_PROJECTION_CHANGED_TOPIC = os.environ.get("RT_UI_PROJECTION_CHANGED_TOPIC", "ui.projection.changed")
+
 CONTROL_NAMES = ("back", "page", "primary", "cancel", "mode", "info")
 
 BLINK_SLOW_MS = 900
@@ -735,10 +738,17 @@ class UIStateProjector:
         desired_keys = set(projection.keys())
         managed_keys = set(PROJECTED_KEYS.values()) | self.last_optional_keys | optional_keys
         stale_keys = sorted(managed_keys - desired_keys)
-
+        changed_keys: list[str] = []
+        for key, value in sorted(projection.items()):
+            prev = self.last_projection.get(key)
+            if prev != value:
+                changed_keys.append(key)
+        deleted_keys: list[str] = []
+        for key in stale_keys:
+            if key in self.last_projection or key in self.last_optional_keys:
+                deleted_keys.append(key)
         if projection == self.last_projection and optional_keys == self.last_optional_keys:
             return
-
         pipe = self.redis_client.pipeline(transaction=False)
         for key, value in sorted(projection.items()):
             pipe.set(key, value)
@@ -750,6 +760,7 @@ class UIStateProjector:
 
         self.last_projection = dict(projection)
         self.last_optional_keys = set(optional_keys)
+        self._publish_projection_changed(changed_keys, deleted_keys)
         self.log.debug("applied ui projection keys=%s deleted=%s", sorted(desired_keys), stale_keys)
 
     @staticmethod
@@ -808,6 +819,30 @@ class UIStateProjector:
     @staticmethod
     def _json_any(value: Any) -> str:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    def _publish_projection_changed(self, changed_keys: Sequence[str], deleted_keys: Sequence[str]) -> None:
+        if not changed_keys and not deleted_keys:
+            return
+
+        event = {
+            "topic": UI_PROJECTION_CHANGED_TOPIC,
+            "payload": {
+                "keys": list(changed_keys) + list(deleted_keys),
+                "changed_keys": list(changed_keys),
+                "deleted_keys": list(deleted_keys),
+                "ts_ms": int(time.time() * 1000),
+            },
+            "ts_ms": int(time.time() * 1000),
+            "source": "rt-ui-state-projector",
+        }
+
+        try:
+            self.redis_client.publish(
+                UI_BUS_CHANNEL,
+                json.dumps(event, sort_keys=True, separators=(",", ":")),
+            )
+        except Exception:
+            self.log.exception("failed to publish ui.projection.changed")
 
     @staticmethod
     def _truthy(value: Any) -> bool:

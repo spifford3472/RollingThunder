@@ -512,6 +512,8 @@ async function fetchUiProjectionState() {
   };
 }
 
+const UI_PROJECTION_TOPIC = "ui.projection.changed";
+
 function tryParseJSON(v) {
   if (!v || typeof v !== "string") return v;
   try {
@@ -562,6 +564,11 @@ function tryParseJSON(v) {
   let _activeModal = null;
   let panelLastData = new Map();
   let panelRerender = new Map();
+  let uiProjectionUnsub = null;
+  let uiProjectionPollTimer = null;
+  let uiProjectionInflight = false;
+  let uiProjectionNeedsRerun = false;
+  let uiProjectionSubscribed = false;
 
   function stopAllRefresh() {
     for (const handle of refreshHandles) {
@@ -889,13 +896,41 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
     rerenderPanelsFromUiState();
   }
 
-  async function pollUiState() {
+  async function refreshUiProjectionState(reason = "unknown") {
+    if (uiProjectionInflight) {
+      uiProjectionNeedsRerun = true;
+      return;
+    }
+
+    uiProjectionInflight = true;
     try {
       const uiState = await fetchUiProjectionState();
       maybeApplyUiState(uiState);
     } catch (e) {
-      if (debug) console.warn("[rt] pollUiState error", e);
+      if (debug) console.warn("[rt] refreshUiProjectionState error", reason, e);
+    } finally {
+      uiProjectionInflight = false;
+      if (uiProjectionNeedsRerun) {
+        uiProjectionNeedsRerun = false;
+        queueMicrotask(() => {
+          void refreshUiProjectionState("rerun");
+        });
+      }
     }
+  }
+
+  function startUiProjectionUpdates() {
+    if (uiProjectionSubscribed) return;
+    uiProjectionSubscribed = true;
+
+    store.subscribe(UI_PROJECTION_TOPIC);
+    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {
+      void refreshUiProjectionState("bus");
+    });
+
+    uiProjectionPollTimer = setInterval(() => {
+      void refreshUiProjectionState("fallback");
+    }, 10000);
   }
 
   function keyToIntent(e) {
@@ -923,10 +958,20 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
   });
 
   // Initial mount follows controller state if present; otherwise home.
-  await pollUiState();
+  await refreshUiProjectionState("initial");
   if (!currentPageId) {
     mountCurrentPage("home", null);
   }
 
-  setInterval(pollUiState, 500);
+  startUiProjectionUpdates();
+
+  window.addEventListener("beforeunload", () => {
+    try {
+      if (typeof uiProjectionUnsub === "function") {
+        uiProjectionUnsub();
+      }
+      store.unsubscribe(UI_PROJECTION_TOPIC);
+      if (uiProjectionPollTimer) clearInterval(uiProjectionPollTimer);
+    } catch (_) {}
+  });
 })();
