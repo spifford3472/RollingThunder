@@ -32,7 +32,7 @@ class FT891RadioBackend:
     def _validate(self, freq_hz: int, mode: str | None, passband_hz: int | None) -> None:
         if freq_hz <= 0:
             raise RadioValidationError("invalid frequency")
-
+        
         if mode is not None:
             mode = mode.upper()
             valid_modes = {

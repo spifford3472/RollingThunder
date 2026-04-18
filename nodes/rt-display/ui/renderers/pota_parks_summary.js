@@ -1,4 +1,16 @@
 // pota_parks_summary.js
+//
+// Browse-capable POTA parks panel.
+// Reads:
+//   - data.context <- rt:pota:context
+//   - data.nearby  <- rt:pota:nearby
+//
+// Emits on OK:
+//   - rt-emit-intent { intent:"ui.ok", params:{} }
+//
+// Notes:
+// - Park selection is controller-owned.
+// - Browse confirmation is controller-owned via ui.ok.
 
 const WINDOW = 6;
 
@@ -15,18 +27,25 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function applyProjectedBrowseCursor(container, list, m, browse, expectedPanelId) {
-  const slot = container.closest(".rt-slot");
-  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
-  if (!browseMode) return;
-
+function applyProjectedBrowseCursorToParks(data, list, m) {
+  const browse = data?.ui_browse || data?.__ui?.browse || null;
   if (!browse || typeof browse !== "object") return;
-  if (String(browse.panel || "") !== expectedPanelId) return;
+  if (String(browse.panel || "") !== "pota_parks_summary") return;
 
   const idx = Number(browse.selected_index);
   if (!Number.isFinite(idx)) return;
 
+  if (!Array.isArray(list) || list.length <= 0) {
+    m.cursor = 0;
+    m.offset = 0;
+    m.selectedRef = null;
+    return;
+  }
+
   m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+  const cur = list[m.cursor];
+  m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
+  ensureCursorInWindow(m, list.length);
 }
 
 function getModel(container) {
@@ -43,7 +62,7 @@ function getModel(container) {
 }
 
 function computeStableKey(list) {
-  return list.map(x => String(x?.reference || "")).join("|");
+  return list.map((x) => String(x?.reference || x?.park_ref || "")).join("|");
 }
 
 function ensureCursorInWindow(m, total) {
@@ -61,7 +80,7 @@ function ensureCursorInWindow(m, total) {
 function renderParksWindow(container, list, m, context) {
   const total = list.length;
   const selectedRefs = Array.isArray(context?.selected_park_refs)
-    ? context.selected_park_refs.map(x => String(x || "").trim()).filter(Boolean)
+    ? context.selected_park_refs.map((x) => String(x || "").trim()).filter(Boolean)
     : [];
   const selectedRef = String(context?.selected_park_ref || "").trim();
 
@@ -79,7 +98,7 @@ function renderParksWindow(container, list, m, context) {
 
   const rows = view.map((item, i) => {
     const absoluteIndex = off + i;
-    const ref = String(item?.reference || "").trim();
+    const ref = String(item?.reference || item?.park_ref || "").trim();
     const name = String(item?.name || "").trim() || "(unnamed)";
     const synthetic = !!item?.synthetic;
     const dist = item?.distance_miles == null ? "" : `${Number(item.distance_miles).toFixed(1)} mi`;
@@ -151,30 +170,19 @@ function attachBrowseHandlersOnce(container) {
 
     m.cursor = clamp((m.cursor ?? 0) + (delta > 0 ? 1 : -1), 0, total - 1);
     const cur = list[m.cursor];
-    m.selectedRef = cur ? String(cur?.reference || "") : null;
+    m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
 
     ensureCursorInWindow(m, total);
     renderParksWindow(container, list, m, container.__rtPotaParksContext || {});
   };
 
   const onOk = () => {
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
-    const cur = list[m.cursor];
-    const park_ref = String(cur?.reference || "").trim();
-
-    console.log("[pota_parks] emitting pota.select_park", { reference: park_ref });
-
     slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
       detail: {
-        intent: "pota.select_park",
-        params: { reference: park_ref }
-      }
+        intent: "ui.ok",
+        params: {},
+      },
     }));
   };
 
@@ -210,7 +218,18 @@ export function renderPotaParksSummary(container, panel, data) {
   const nearby = data?.nearby || {};
   container.__rtPotaParksContext = context;
 
-  const choices = Array.isArray(nearby?.choices) ? nearby.choices.filter(Boolean).slice() : [];
+  const choices = Array.isArray(nearby)
+    ? nearby.filter(Boolean).slice()
+    : Array.isArray(nearby?.choices)
+      ? nearby.choices.filter(Boolean).slice()
+      : Array.isArray(nearby?.parks)
+        ? nearby.parks.filter(Boolean).slice()
+        : Array.isArray(nearby?.items)
+          ? nearby.items.filter(Boolean).slice()
+          : Array.isArray(nearby?.nearby)
+            ? nearby.nearby.filter(Boolean).slice()
+            : [];
+
   const m = getModel(container);
 
   const key = computeStableKey(choices);
@@ -220,18 +239,28 @@ export function renderPotaParksSummary(container, panel, data) {
 
     const selectedRef = String(context?.selected_park_ref || "").trim();
     if (selectedRef) {
-      const idx = choices.findIndex(x => String(x?.reference || "").trim() === selectedRef);
+      const idx = choices.findIndex(
+        (x) => String(x?.reference || x?.park_ref || "").trim() === selectedRef
+      );
       m.cursor = idx >= 0 ? idx : 0;
       m.selectedRef = selectedRef;
     } else {
       m.cursor = 0;
       m.selectedRef = "";
     }
+  } else if (context?.selected_park_ref) {
+    const selectedRef = String(context.selected_park_ref).trim();
+    const idx = choices.findIndex(
+      (x) => String(x?.reference || x?.park_ref || "").trim() === selectedRef
+    );
+    if (idx >= 0) {
+      m.cursor = idx;
+      m.selectedRef = selectedRef;
+    }
   }
 
   m.lastList = choices;
-  const browse = data?.ui_browse || null;
-  applyProjectedBrowseCursor(container, choices, m, browse, "pota_parks_summary");
+  applyProjectedBrowseCursorToParks(data, choices, m);
 
   if (choices.length <= 0) {
     m.cursor = 0;
@@ -240,7 +269,7 @@ export function renderPotaParksSummary(container, panel, data) {
   } else {
     ensureCursorInWindow(m, choices.length);
     const cur = choices[m.cursor];
-    m.selectedRef = cur ? String(cur?.reference || "") : null;
+    m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
   }
 
   renderParksWindow(container, choices, m, context);

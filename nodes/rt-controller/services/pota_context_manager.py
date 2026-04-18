@@ -40,8 +40,7 @@ from redis.exceptions import RedisError
 
 SERVICE_NAME = "pota_context_manager"
 SERVICE_VERSION = "0.3310"
-FULL_REFRESH_INTERVAL_SEC = env_int("RT_POTA_FULL_REFRESH_INTERVAL_SEC", 120)
-LOOP_INTERVAL_SEC = 1.0
+
 
 BAND_ORDER = [
     "160m", "80m", "60m", "40m", "30m",
@@ -84,6 +83,8 @@ def env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+FULL_REFRESH_INTERVAL_SEC = env_int("RT_POTA_FULL_REFRESH_INTERVAL_SEC", 120)
+LOOP_INTERVAL_SEC = 1.0
 
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:

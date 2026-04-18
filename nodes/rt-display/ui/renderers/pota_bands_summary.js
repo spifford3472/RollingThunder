@@ -6,8 +6,12 @@
 //   - data.context <- rt:pota:context
 //
 // Emits on OK:
-//   - rt-emit-intent { type:"pota.select_band", band:"20m" }
-//   - rt-request-focus { panelId:"pota_spots_summary" }
+//   - rt-emit-intent { intent:"ui.ok", params:{} }
+//
+// Notes:
+// - Band selection is controller-owned.
+// - Focus advance to POTA Spots is controller-owned.
+// - Tune reminder modal is controller-owned.
 
 const WINDOW = 8;
 
@@ -24,26 +28,23 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function bandSortKey(item) {
+  const raw = String(item?.band || item?.id || item?.name || item || "").trim().toLowerCase();
+  if (!raw) return [9999, ""];
 
+  if (raw.endsWith("m")) {
+    const meters = Number.parseInt(raw.slice(0, -1), 10);
+    if (Number.isFinite(meters)) {
+      return [meters, raw];
+    }
+  }
 
-//function applyProjectedBrowseCursor(container, list, m, browse, expectedPanelId) {
-//  const slot = container.closest(".rt-slot");
-//  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
-//  if (!browseMode) return;
-//
-//  if (!browse || typeof browse !== "object") return;
-//  if (String(browse.panel || "") !== expectedPanelId) return;
-//
-//  const idx = Number(browse.selected_index);
-//  if (!Number.isFinite(idx)) return;
-//
-//  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
-//}
+  return [9999, raw];
+}
 
 function applyProjectedBrowseCursorToBands(data, bands, m) {
   const browse = data?.ui_browse || data?.__ui?.browse || null;
   if (!browse || typeof browse !== "object") return;
-
   if (String(browse.panel || "") !== "pota_bands_summary") return;
 
   const idx = Number(browse.selected_index);
@@ -97,7 +98,7 @@ function getModel(container) {
 }
 
 function computeStableKey(list) {
-  return list.map(x => String(x?.band || "")).join("|");
+  return list.map((x) => String(x?.band || x?.id || x?.name || "")).join("|");
 }
 
 function ensureCursorInWindow(m, total) {
@@ -154,15 +155,6 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
     `;
   }).join("");
 
-  //Readd once working, and remove the method directly below
-  //let footerLeft = `Showing ${Math.min(WINDOW, total)}/${total}`;
-  //if (browseMode) {
-  //  footerLeft = `Selected Band #${clamp(m.cursor, 0, total - 1) + 1} of ${total}`;
-  //} else if (selectedBandFromContext) {
-  //  footerLeft = `Active band: ${esc(selectedBandFromContext)}`;
-  //}
-
-  //Temp: show cursor position even when not in browse mode, to help debugging and because it can be useful info for users too
   let footerLeft = `Cursor ${clamp(m.cursor, 0, Math.max(0, total - 1)) + 1}/${total}`;
 
   if (!browseMode && selectedBandFromContext) {
@@ -186,20 +178,11 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
 
 function attachBrowseHandlersOnce(container) {
   const slot = container.closest(".rt-slot");
-  console.log("[pota_bands] attachBrowseHandlersOnce", {
-    hasContainer: !!container,
-    hasSlot: !!slot,
-    containerClass: container?.className,
-    slotClass: slot?.className
-  });
-
   if (!slot) return;
   if (slot.__rtPotaBandsBrowseAttached) return;
   slot.__rtPotaBandsBrowseAttached = true;
 
   const onDelta = (ev) => {
-    console.log("[pota_bands] rt-browse-delta", ev?.detail);
-
     const delta = Number(ev?.detail?.delta ?? 0);
     if (!Number.isFinite(delta) || delta === 0) return;
 
@@ -219,38 +202,12 @@ function attachBrowseHandlersOnce(container) {
   };
 
   const onOk = () => {
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp(m.cursor ?? 0, 0, total - 1);
-    const cur = list[m.cursor];
-    const band = String(cur?.band || "").trim();
-    if (!band) return;
-
-    // Optimistic local selection for immediate UI feedback
-    m.selectedBand = band;
-    container.__rtPotaBandsSelectedBandFromContext = band;
-    renderBandsWindow(container, list, m, band);
-
-    console.log("[pota_bands] emitting pota.select_band", { band });
-
     slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
       bubbles: true,
       detail: {
-        intent: "pota.select_band",
-        params: {
-          band
-        }
-      }
-    }));
-
-    slot.dispatchEvent(new CustomEvent("rt-request-focus", {
-      bubbles: true,
-      detail: {
-        panelId: "pota_spots_summary"
-     }
+        intent: "ui.ok",
+        params: {},
+      },
     }));
   };
 
@@ -266,9 +223,12 @@ export function renderPotaBandsSummary(container, panel, data) {
   const context = data?.context || {};
 
   const bands = Array.isArray(bandsRaw)
-    ? bandsRaw.filter(Boolean).slice().sort((a, b) =>
-        String(a?.band || "").localeCompare(String(b?.band || ""))
-      )
+    ? bandsRaw.filter(Boolean).slice().sort((a, b) => {
+        const [am, as] = bandSortKey(a);
+        const [bm, bs] = bandSortKey(b);
+        if (am !== bm) return am - bm;
+        return as.localeCompare(bs);
+      })
     : [];
 
   const selectedBandFromContext = String(context?.selected_band || "").trim();
@@ -282,31 +242,28 @@ export function renderPotaBandsSummary(container, panel, data) {
     m.offset = 0;
 
     if (selectedBandFromContext) {
-      const idx = bands.findIndex(x => String(x?.band || "") === selectedBandFromContext);
+      const idx = bands.findIndex((x) => String(x?.band || "") === selectedBandFromContext);
       m.cursor = idx >= 0 ? idx : 0;
-      m.selectedBand = idx >= 0 ? selectedBandFromContext : (bands[0] ? String(bands[0].band || "") : null);
+      m.selectedBand = idx >= 0
+        ? selectedBandFromContext
+        : (bands[0] ? String(bands[0].band || "") : null);
     } else if (m.selectedBand) {
-      const idx = bands.findIndex(x => String(x?.band || "") === String(m.selectedBand || ""));
+      const idx = bands.findIndex((x) => String(x?.band || "") === String(m.selectedBand || ""));
       m.cursor = idx >= 0 ? idx : 0;
     } else {
       m.cursor = 0;
       m.selectedBand = bands[0] ? String(bands[0].band || "") : null;
     }
-  } else {
-    if (selectedBandFromContext) {
-      const idx = bands.findIndex(x => String(x?.band || "") === selectedBandFromContext);
-      if (idx >= 0) {
-        m.cursor = idx;
-        m.selectedBand = selectedBandFromContext;
-      }
+  } else if (selectedBandFromContext) {
+    const idx = bands.findIndex((x) => String(x?.band || "") === selectedBandFromContext);
+    if (idx >= 0) {
+      m.cursor = idx;
+      m.selectedBand = selectedBandFromContext;
     }
   }
 
   m.lastList = bands;
-  const browse = data?.ui_browse || null;
   applyProjectedBrowseCursorToBands(data, bands, m);
-  //applyProjectedBrowseCursor(container, bands, m, browse, "pota_bands_summary");
-
 
   if (bands.length <= 0) {
     m.cursor = 0;

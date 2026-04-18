@@ -242,6 +242,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules" \
     "${UDEV_DST_DIR}/99-rollingthunder-ft891.rules" "644"
+
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-rigctld-watchdog.service" \
+    "${UNIT_DST_DIR}/rt-rigctld-watchdog.service" "644"
 else
   echo "[dry] would install units to ${UNIT_DST_DIR}: ${UNITS[*]}"
   echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"

@@ -263,35 +263,29 @@ def publish_radio_tune_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
         except Exception:
             freq_hz = 0
 
+    band = str(spot.get("band") or "").strip()
+    raw_mode = str(spot.get("mode") or "SSB").strip().upper()
+
+    if raw_mode == "SSB":
+        if int(freq_hz or 0) > 0:
+            mode = "LSB" if int(freq_hz) < 10_000_000 else "USB"
+        elif band.lower() in {"160m", "80m", "60m", "40m"}:
+            mode = "LSB"
+        else:
+            mode = "USB"
+    else:
+        mode = raw_mode or "USB"
+
     params = {
         "freq_hz": int(freq_hz or 0),
-        "band": str(spot.get("band") or "").strip() or None,
-        "mode": str(spot.get("mode") or "SSB").strip() or "SSB",
+        "band": band or None,
+        "mode": mode,
         "spot_id": str(spot.get("spot_id") or spot_item_id(spot) or "").strip() or None,
+        "nodeId": "rt-radio",
     }
 
     publish_intent(r, "radio.tune", params)
 
-def publish_pota_spot_outcome_intent(r: redis.Redis, spot: Dict[str, Any], outcome: str) -> None:
-    params = {
-        "outcome": str(outcome or "").strip(),
-        "spot_id": str(spot.get("spot_id") or spot_item_id(spot) or "").strip() or None,
-        "callsign": str(spot.get("callsign") or spot.get("call") or "").strip() or None,
-        "park_ref": str(spot.get("park_ref") or spot.get("reference") or "").strip() or None,
-        "band": str(spot.get("band") or "").strip() or None,
-        "mode": str(spot.get("mode") or "SSB").strip() or "SSB",
-    }
-
-    freq_hz = spot.get("freq_hz")
-    if freq_hz is None:
-        try:
-            freq_hz = int(float(str(spot.get("frequency") or "0")))
-        except Exception:
-            freq_hz = 0
-
-    params["freq_hz"] = int(freq_hz or 0)
-
-    publish_intent(r, "pota.spot.outcome", params)
 
 def build_band_tune_reminder_modal(band: str) -> Dict[str, Any]:
     ts = now_ms()
@@ -1061,8 +1055,16 @@ def main():
 
                                 update_pota_context_selected_band(r, new_band)
 
-                                state["browse"] = None
                                 state["focus"] = "pota_spots_summary"
+                                state["browse"] = {
+                                    "active": True,
+                                    "page": "pota",
+                                    "panel": "pota_spots_summary",
+                                    "selected_index": 0,
+                                    "selected_id": None,
+                                    "count": 0,
+                                    "updated_at_ms": now_ms(),
+                                }
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
@@ -1079,7 +1081,6 @@ def main():
                                     if first_spot:
                                         publish_radio_tune_intent(r, first_spot)
                                     state["pending_action"] = None
-
                             elif state["page"] == "pota" and panel_id == "pota_spots_summary":
                                 state["modal"] = build_pota_spot_outcome_modal(item)
                                 state_changed = True

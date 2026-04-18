@@ -1,4 +1,15 @@
 // pota_spots_summary.js
+//
+// Browse-capable POTA spots panel.
+// Reads:
+//   - data.spots            <- rt:pota:ui:ssb:spots:selected
+//   - data.context          <- rt:pota:context
+//   - data.ui_page_context  <- rt:ui:page_context (projected)
+//
+// Notes:
+// - Spot outcome modal/open is controller-owned via ui.ok.
+// - Band-change reminder/tuner behavior is controller-owned.
+// - Spot browse auto-tune remains renderer-triggered on cursor move.
 
 const WINDOW = 8;
 
@@ -10,12 +21,6 @@ const esc = (s) =>
     '"': "&quot;",
     "'": "&#39;",
   }[c]));
-
-function returnToBrowseMode(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-  slot.classList.add("rt-browse-mode");
-}
 
 function dedupeSpots(items) {
   const seen = new Set();
@@ -110,14 +115,14 @@ function annotatePileupPressure(list) {
   const callCounts = Object.create(null);
 
   for (const item of items) {
-    const call = String(item?.call || "").trim().toUpperCase();
+    const call = String(item?.call || item?.callsign || "").trim().toUpperCase();
     if (!call) continue;
     callCounts[call] = (callCounts[call] || 0) + 1;
   }
 
   return items.map((item) => {
     const ageSec = spotAgeSec(item);
-    const call = String(item?.call || "").trim().toUpperCase();
+    const call = String(item?.call || item?.callsign || "").trim().toUpperCase();
     const freq = Number(item?.freq_hz || 0);
 
     let neighbors = 0;
@@ -224,9 +229,6 @@ function getModel(container) {
       lastTunedSpotId: "",
       lastTuneFingerprint: "",
       pendingBandTune: false,
-      bandReminderOpen: false,
-      bandReminderText: "",
-      bandReminderTimer: null,
     };
   }
   return container.__rtPotaSpotsModel;
@@ -250,19 +252,6 @@ function ensureCursorInWindow(m, total) {
   m.offset = clamp(m.offset, 0, maxOff);
 }
 
-function radioHasTuner() {
-  try {
-    const cfg =
-      window?.RT_APP_CONFIG ||
-      window?.__RT_APP_CONFIG ||
-      window?.RollingThunderConfig ||
-      {};
-    return cfg?.globals?.radio?.has_tuner ?? false;
-  } catch {
-    return false;
-  }
-}
-
 function normalizeTuneMode(rawMode, freqHz, band) {
   const mode = String(rawMode || "").trim().toUpperCase();
   const freq = Number(freqHz || 0);
@@ -276,7 +265,7 @@ function normalizeTuneMode(rawMode, freqHz, band) {
     return "USB";
   }
 
-  if (mode === "LSB" || mode === "USB" || mode === "CW" || mode === "AM" || mode === "FM" || mode === "DIGI") {
+  if (["LSB", "USB", "CW", "AM", "FM", "DIGI"].includes(mode)) {
     return mode;
   }
 
@@ -335,17 +324,6 @@ function emitTuneForSpot(container, item, { force = false } = {}) {
   });
 
   return true;
-}
-
-function emitTunerActionForBand(container, band) {
-  const slot = container.closest(".rt-slot");
-  if (!slot || !band) return;
-
-  if (radioHasTuner()) {
-    emitIntent(slot, "radio.atas_tune", { band });
-  } else {
-    showBandReminder(container, band);
-  }
 }
 
 function findNextSelectableIndex(list, startIndex, direction) {
@@ -416,47 +394,6 @@ function moveCursor(model, list, direction) {
   return true;
 }
 
-function clearBandReminder(container) {
-  const m = getModel(container);
-  m.bandReminderOpen = false;
-  m.bandReminderText = "";
-
-  if (m.bandReminderTimer) {
-    clearTimeout(m.bandReminderTimer);
-    m.bandReminderTimer = null;
-  }
-}
-
-function showBandReminder(container, band) {
-  const m = getModel(container);
-
-  clearBandReminder(container);
-
-  m.bandReminderOpen = true;
-  m.bandReminderText = band
-    ? `Band changed to ${band}. Tune the antenna now.`
-    : "Band changed. Tune the antenna now.";
-
-  renderSpotsWindow(
-    container,
-    Array.isArray(m.lastList) ? m.lastList : [],
-    m,
-    container.__rtPotaSpotsContext || {}
-  );
-
-  m.bandReminderTimer = setTimeout(() => {
-    m.bandReminderOpen = false;
-    m.bandReminderText = "";
-    m.bandReminderTimer = null;
-    renderSpotsWindow(
-      container,
-      Array.isArray(m.lastList) ? m.lastList : [],
-      m,
-      container.__rtPotaSpotsContext || {}
-    );
-  }, 5000);
-}
-
 function renderSpotsWindow(container, list, m, context) {
   const total = Array.isArray(list) ? list.length : 0;
   const selectedBand = String(context?.selected_band || "").trim();
@@ -465,49 +402,11 @@ function renderSpotsWindow(container, list, m, context) {
     : "No spots.";
 
   if (total === 0) {
-    const reminderOnlyHtml = m.bandReminderOpen ? `
-      <style>
-        .rt-pota-band-reminder-backdrop {
-          position: absolute;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.45);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 18;
-        }
-        .rt-pota-band-reminder {
-          min-width: 280px;
-          max-width: 90%;
-          background: #1a1a1a;
-          color: #f5f5f5;
-          border: 1px solid rgba(255,255,255,0.20);
-          border-radius: 8px;
-          box-shadow: 0 8px 24px rgba(0,0,0,0.40);
-          padding: 14px 16px;
-          text-align: center;
-        }
-        .rt-pota-band-reminder-title {
-          font-weight: 700;
-          margin-bottom: 8px;
-        }
-        .rt-pota-band-reminder-body {
-          font-size: 1rem;
-        }
-      </style>
+    container.innerHTML = `
       <div style="position: relative;">
         <div class="muted">${noSpotsText}</div>
-        <div class="rt-pota-band-reminder-backdrop">
-          <div class="rt-pota-band-reminder" role="alert" aria-live="assertive">
-            <div class="rt-pota-band-reminder-title">Antenna Tune Reminder</div>
-            <div class="rt-pota-band-reminder-body">${esc(m.bandReminderText || "Tune the antenna now.")}</div>
-          </div>
-        </div>
-        <div class="rt-muted" style="font-size:0.75rem; margin-top:4px;">${esc(debugStatusSummary)}</div>
       </div>
-    ` : "";
-//    const debugStatusSummary = view.map((x) => `${getSpotId(x)} => ${x.__status || "-"}`).join(" | ");
-//    container.innerHTML = reminderOnlyHtml || `<div class="muted">${noSpotsText}</div>`;
+    `;
     return;
   }
 
@@ -520,8 +419,8 @@ function renderSpotsWindow(container, list, m, context) {
 
   const rows = view.map((item, i) => {
     const absoluteIndex = off + i;
-    const call = String(item?.call || "").trim() || "?";
-    const parkRef = String(item?.park_ref || "").trim() || "-";
+    const call = String(item?.call || item?.callsign || "").trim() || "?";
+    const parkRef = String(item?.park_ref || item?.reference || "").trim() || "-";
     const freq = mhz(item?.freq_hz);
     const mode = String(item?.mode || "SSB").trim();
     const age = ageText(item);
@@ -571,15 +470,6 @@ function renderSpotsWindow(container, list, m, context) {
 
   const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
 
-  const bandReminderHtml = m.bandReminderOpen ? `
-    <div class="rt-pota-band-reminder-backdrop">
-      <div class="rt-pota-band-reminder" role="alert" aria-live="assertive">
-        <div class="rt-pota-band-reminder-title">Antenna Tune Reminder</div>
-        <div class="rt-pota-band-reminder-body">${esc(m.bandReminderText || "Tune the antenna now.")}</div>
-      </div>
-    </div>
-  ` : "";
-
   container.innerHTML = `
     <style>
       .rt-pressure-pill {
@@ -610,33 +500,6 @@ function renderSpotsWindow(container, list, m, context) {
         color: #fca5a5;
         box-shadow: 0 0 6px rgba(239,68,68,0.5);
       }
-      .rt-pota-band-reminder-backdrop {
-        position: absolute;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 18;
-      }
-      .rt-pota-band-reminder {
-        min-width: 280px;
-        max-width: 90%;
-        background: #1a1a1a;
-        color: #f5f5f5;
-        border: 1px solid rgba(255,255,255,0.20);
-        border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.40);
-        padding: 14px 16px;
-        text-align: center;
-      }
-      .rt-pota-band-reminder-title {
-        font-weight: 700;
-        margin-bottom: 8px;
-      }
-      .rt-pota-band-reminder-body {
-        font-size: 1rem;
-      }
     </style>
     <div style="position: relative;">
       <table>
@@ -648,7 +511,6 @@ function renderSpotsWindow(container, list, m, context) {
       <div class="rt-footer">
         <span class="rt-muted">${footerLeft}</span>${hint}
       </div>
-      ${bandReminderHtml}
     </div>
   `;
 }
@@ -784,7 +646,5 @@ export function renderPotaSpotsSummary(container, panel, data) {
 
   if (m.pendingBandTune) {
     m.pendingBandTune = false;
-    emitTunerActionForBand(container, String(context?.selected_band || "").trim());
-    emitTuneForSpot(container, cur, { force: true });
   }
 }
