@@ -20,7 +20,7 @@ Environment=RT_POTA_PARKS_INDEX=/opt/rollingthunder/data/POTA/us_parks.tileindex
 Environment=RT_KEY_GPS_POS=rt:gps:pos
 Environment=RT_KEY_POTA_NEARBY=rt:pota:nearby
 Environment=RT_KEY_ALERTS_ACTIVE=rt:alerts:active
-Environment=RT_POTA_NEARBY_POLL_MS=1000
+Environment=RT_POTA_NEARBY_POLL_MS=3000
 Environment=RT_POTA_NEARBY_RADIUS_MILES=5.0
 Environment=RT_POTA_TILE_SCALE=10
 Environment=RT_POTA_NEARBY_ALERT_ENABLED=true

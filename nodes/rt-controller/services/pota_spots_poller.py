@@ -40,6 +40,7 @@ Notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -116,6 +117,40 @@ def epoch_to_iso_utc(epoch: int) -> str:
 
 def compact_json(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+
+
+def stable_band_spots_fingerprint(band_spots: Dict[str, List[Dict[str, Any]]]) -> str:
+    """
+    Fingerprint only the effective per-band spot state, excluding transient values like
+    current poll time. This is used to suppress redundant Redis rewrites.
+    """
+    canonical: Dict[str, List[Dict[str, Any]]] = {}
+
+    for band in sorted(band_spots.keys()):
+        rows: List[Dict[str, Any]] = []
+        for s in band_spots[band]:
+            raw = s.get("raw") or {}
+            rows.append(
+                {
+                    "call": str(s.get("call") or ""),
+                    "freq_hz": int(s.get("freq_hz") or 0),
+                    "band": str(s.get("band") or ""),
+                    "mode": str(s.get("mode") or ""),
+                    "park_ref": str(s.get("park_ref") or ""),
+                    "park_name": str(s.get("park_name") or ""),
+                    "spot_ts_utc": str(s.get("spot_ts_utc") or ""),
+                    "country2": str(s.get("country2") or ""),
+                    "state2": str(s.get("state2") or ""),
+                    "spotter": str(raw.get("spotter") or ""),
+                    "comments": str(raw.get("comments") or ""),
+                    "source": str(raw.get("source") or ""),
+                    "count": int(raw.get("count") or 0),
+                }
+            )
+        canonical[band] = rows
+
+    payload = compact_json(canonical).encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()
 
 
 def build_spotmeta_payload(
@@ -703,6 +738,8 @@ def main() -> int:
     sess.headers.update({"User-Agent": "RollingThunder/rt-controller (POTA spots poller)"})
 
     backoff = 1.0
+    last_response_hash: Optional[str] = None
+    last_band_spots_fp: Optional[str] = None
 
     while not StopFlag.stop:
         t0 = time.time()
@@ -716,57 +753,75 @@ def main() -> int:
             resp = sess.get(cfg.pota_url, timeout=cfg.http_timeout_sec)
             resp.raise_for_status()
 
-            raw_spots = resp.json()
-            print(f"[pota_spots_poller] raw_spots={len(raw_spots) if isinstance(raw_spots, list) else 'non-list'}", flush=True)
-            if not isinstance(raw_spots, list):
-                raise ValueError("POTA API returned non-list JSON")
+            response_bytes = resp.content
+            response_hash = hashlib.sha1(response_bytes).hexdigest()
 
-            context = read_context_tag(r, cfg.key_prefix)
-            yyyymmdd = utc_yyyymmdd(now_utc)
+            if response_hash == last_response_hash:
+                print("[pota_spots_poller] response unchanged; skipping processing", flush=True)
+                backoff = 1.0
+            else:
+                raw_spots = resp.json()
+                print(
+                    f"[pota_spots_poller] raw_spots={len(raw_spots) if isinstance(raw_spots, list) else 'non-list'}",
+                    flush=True,
+                )
+                if not isinstance(raw_spots, list):
+                    raise ValueError("POTA API returned non-list JSON")
 
-            normalized: List[Dict[str, Any]] = []
-            for spot in raw_spots:
-                if not isinstance(spot, dict):
-                    continue
+                context = read_context_tag(r, cfg.key_prefix)
+                yyyymmdd = utc_yyyymmdd(now_utc)
 
-                total_seen += 1
-                s = normalize_spot(spot, now_utc, cfg.include_am_fm, band_table)
-                if not s:
-                    continue
+                normalized: List[Dict[str, Any]] = []
+                for spot in raw_spots:
+                    if not isinstance(spot, dict):
+                        continue
 
-                total_norm += 1
+                    total_seen += 1
+                    s = normalize_spot(spot, now_utc, cfg.include_am_fm, band_table)
+                    if not s:
+                        continue
 
-                if s["age_sec"] > cfg.max_age_sec:
-                    total_age_dropped += 1
-                    continue
+                    total_norm += 1
 
-                # Placeholder for future context-aware filtering; currently preserved
-                _ = context
-                _ = yyyymmdd
+                    if s["age_sec"] > cfg.max_age_sec:
+                        total_age_dropped += 1
+                        continue
 
-                normalized.append(s)
+                    # Placeholder for future context-aware filtering; currently preserved
+                    _ = context
+                    _ = yyyymmdd
 
-            pre_dedupe_count = len(normalized)
-            normalized = dedupe_latest(normalized)
-            post_dedupe_count = len(normalized)
+                    normalized.append(s)
 
-            print(
-                f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
-                f"age_dropped={total_age_dropped} "
-                f"pre_dedupe={pre_dedupe_count} post_dedupe={post_dedupe_count}",
-                flush=True,
-            )
+                pre_dedupe_count = len(normalized)
+                normalized = dedupe_latest(normalized)
+                post_dedupe_count = len(normalized)
 
-            band_spots: Dict[str, List[Dict[str, Any]]] = {}
-            for s in normalized:
-                band_spots.setdefault(s["band"], []).append(s)
+                print(
+                    f"[pota_spots_poller] seen={total_seen} normalized={total_norm} "
+                    f"age_dropped={total_age_dropped} "
+                    f"pre_dedupe={pre_dedupe_count} post_dedupe={post_dedupe_count}",
+                    flush=True,
+                )
 
-            for b in list(band_spots.keys()):
-                band_spots[b] = band_spots[b][: cfg.max_spots_per_band]
+                band_spots: Dict[str, List[Dict[str, Any]]] = {}
+                for s in normalized:
+                    band_spots.setdefault(s["band"], []).append(s)
 
-            write_redis(r, cfg, band_spots, band_order, band_table, now_utc)
+                for b in list(band_spots.keys()):
+                    band_spots[b] = band_spots[b][: cfg.max_spots_per_band]
 
-            backoff = 1.0
+                band_spots_fp = stable_band_spots_fingerprint(band_spots)
+
+                if band_spots_fp != last_band_spots_fp:
+                    write_redis(r, cfg, band_spots, band_order, band_table, now_utc)
+                    last_band_spots_fp = band_spots_fp
+                    print("[pota_spots_poller] redis updated", flush=True)
+                else:
+                    print("[pota_spots_poller] effective state unchanged; skipping redis write", flush=True)
+
+                last_response_hash = response_hash
+                backoff = 1.0
 
         except Exception as e:
             print(f"[pota_spots_poller] error: {e}", file=sys.stderr, flush=True)

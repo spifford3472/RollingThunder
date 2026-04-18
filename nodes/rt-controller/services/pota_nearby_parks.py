@@ -41,13 +41,14 @@ Notes:
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import redis
 
@@ -73,9 +74,12 @@ GPS_POS_KEY = os.environ.get("RT_KEY_GPS_POS", "rt:gps:pos")
 POTA_NEARBY_KEY = os.environ.get("RT_KEY_POTA_NEARBY", "rt:pota:nearby")
 ALERTS_ACTIVE_KEY = os.environ.get("RT_KEY_ALERTS_ACTIVE", "rt:alerts:active")
 
-POLL_MS = max(250, int(os.environ.get("RT_POTA_NEARBY_POLL_MS", "1000")))
+POLL_MS = max(250, int(os.environ.get("RT_POTA_NEARBY_POLL_MS", "3000")))
 THRESHOLD_MILES = max(0.1, float(os.environ.get("RT_POTA_NEARBY_RADIUS_MILES", "5.0")))
 TILE_SCALE = max(1, int(os.environ.get("RT_POTA_TILE_SCALE", "10")))
+
+MOVE_REUSE_METERS = max(1.0, float(os.environ.get("RT_POTA_NEARBY_MOVE_REUSE_METERS", "50.0")))
+GPS_ROUND_DECIMALS = max(3, int(os.environ.get("RT_POTA_NEARBY_GPS_ROUND_DECIMALS", "5")))
 
 ALERT_ENABLED = os.environ.get("RT_POTA_NEARBY_ALERT_ENABLED", "true").strip().lower() == "true"
 ALERT_TTL_SEC = max(60, int(os.environ.get("RT_POTA_NEARBY_ALERT_TTL_SEC", "300")))
@@ -136,6 +140,22 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return r_miles * c
 
 
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Great-circle distance in meters.
+    """
+    r_meters = 6371008.8
+
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+
+    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return r_meters * c
+
+
 def miles_per_degree_lon(lat: float) -> float:
     """
     Approximate miles per degree longitude at latitude.
@@ -155,8 +175,21 @@ def lon_tile_radius(radius_miles: float, lat: float, tile_scale: int) -> int:
     return max(1, int(math.ceil(radius_miles / tile_width_miles)))
 
 
-def json_dumps_compact(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, sort_keys=False)
+def lat_delta_for_miles(radius_miles: float) -> float:
+    return radius_miles / 69.0
+
+
+def lon_delta_for_miles(radius_miles: float, lat: float) -> float:
+    return radius_miles / miles_per_degree_lon(lat)
+
+
+def json_dumps_compact(obj: Any, *, sort_keys: bool = False) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, sort_keys=sort_keys)
+
+
+def payload_fingerprint(payload: Dict[str, Any]) -> str:
+    raw = json_dumps_compact(payload, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 # -------------------- Alert helpers --------------------
@@ -179,6 +212,7 @@ def remove_alert_by_id(r: redis.Redis, alert_id: str) -> None:
         "last_update_ms": now_ms(),
     }
     r.set(ALERTS_ACTIVE_KEY, json_dumps_compact(payload))
+
 
 def _safe_json_load(s: Optional[str]) -> Any:
     if not s:
@@ -495,9 +529,18 @@ class PotaParkIndex:
                         seen.add(idx)
                         candidate_ids.append(idx)
 
+        max_lat_delta = lat_delta_for_miles(radius_miles)
+        max_lon_delta = lon_delta_for_miles(radius_miles, lat)
+
         out: List[NearbyPark] = []
         for idx in candidate_ids:
             park = self.parks[idx]
+
+            if abs(park.latitude - lat) > max_lat_delta:
+                continue
+            if abs(park.longitude - lon) > max_lon_delta:
+                continue
+
             dist = haversine_miles(lat, lon, park.latitude, park.longitude)
             if dist <= radius_miles:
                 out.append(
@@ -518,8 +561,7 @@ class PotaParkIndex:
 
 # -------------------- Redis state publishing --------------------
 
-def write_nearby_state(
-    r: redis.Redis,
+def build_nearby_state_payload(
     *,
     gps_valid: bool,
     threshold_miles: float,
@@ -529,7 +571,7 @@ def write_nearby_state(
     source_csv: str,
     csv_mtime_ns: int,
     tile_scale: int,
-) -> None:
+) -> Dict[str, Any]:
     choices: List[Dict[str, Any]] = [
         {
             "reference": "",
@@ -540,7 +582,7 @@ def write_nearby_state(
     ]
     choices.extend([p.to_wire() for p in nearby])
 
-    payload = {
+    return {
         "gps_valid": bool(gps_valid),
         "last_update_ms": now_ms(),
         "threshold_miles": float(threshold_miles),
@@ -557,7 +599,6 @@ def write_nearby_state(
         },
         "choices": choices,
     }
-    r.set(POTA_NEARBY_KEY, json_dumps_compact(payload))
 
 
 def read_current_gps_pos(r: redis.Redis) -> Tuple[bool, Optional[float], Optional[float]]:
@@ -600,6 +641,10 @@ def main() -> None:
     )
     index.reload_if_needed(force=True)
 
+    last_query_lat: Optional[float] = None
+    last_query_lon: Optional[float] = None
+    last_nearby: List[NearbyPark] = []
+    last_state_fp: Optional[str] = None
     last_alert_message = ""
 
     while True:
@@ -611,19 +656,47 @@ def main() -> None:
 
             nearby: List[NearbyPark] = []
             if gps_valid and lat is not None and lon is not None:
-                nearby = index.nearby(lat, lon, THRESHOLD_MILES)
+                reuse_previous = False
 
-            write_nearby_state(
-                r,
+                if last_query_lat is not None and last_query_lon is not None:
+                    moved_m = haversine_meters(lat, lon, last_query_lat, last_query_lon)
+                    if moved_m < MOVE_REUSE_METERS:
+                        reuse_previous = True
+
+                if reuse_previous:
+                    nearby = last_nearby
+                else:
+                    nearby = index.nearby(lat, lon, THRESHOLD_MILES)
+                    last_query_lat = lat
+                    last_query_lon = lon
+                    last_nearby = nearby
+            else:
+                last_query_lat = None
+                last_query_lon = None
+                last_nearby = []
+
+            rounded_lat = round(lat, GPS_ROUND_DECIMALS) if lat is not None else None
+            rounded_lon = round(lon, GPS_ROUND_DECIMALS) if lon is not None else None
+
+            state_payload = build_nearby_state_payload(
                 gps_valid=gps_valid,
                 threshold_miles=THRESHOLD_MILES,
-                current_lat=lat,
-                current_lon=lon,
+                current_lat=rounded_lat,
+                current_lon=rounded_lon,
                 nearby=nearby,
                 source_csv=str(index.csv_path),
                 csv_mtime_ns=index.csv_mtime_ns,
                 tile_scale=index.tile_scale,
             )
+
+            state_payload_for_fp = dict(state_payload)
+            state_payload_for_fp["last_update_ms"] = 0
+            state_fp = payload_fingerprint(state_payload_for_fp)
+
+            if state_fp != last_state_fp:
+                state_payload["last_update_ms"] = now_ms()
+                r.set(POTA_NEARBY_KEY, json_dumps_compact(state_payload))
+                last_state_fp = state_fp
 
             if ALERT_ENABLED:
                 if gps_valid and nearby:
@@ -638,21 +711,21 @@ def main() -> None:
 
                     if msg != last_alert_message:
                         last_alert_message = msg
-
-                    upsert_alert(
-                        r,
-                        alert_id=ALERT_ID,
-                        title="Nearby POTA park",
-                        message=msg,
-                        severity="info",
-                        kind="pota_nearby",
-                        source=ALERT_SOURCE,
-                        service=ALERT_SERVICE,
-                        ttl_sec=ALERT_TTL_SEC,
-                    )
+                        upsert_alert(
+                            r,
+                            alert_id=ALERT_ID,
+                            title="Nearby POTA park",
+                            message=msg,
+                            severity="info",
+                            kind="pota_nearby",
+                            source=ALERT_SOURCE,
+                            service=ALERT_SERVICE,
+                            ttl_sec=ALERT_TTL_SEC,
+                        )
                 else:
-                    last_alert_message = ""
-                    remove_alert_by_id(r, ALERT_ID)
+                    if last_alert_message != "":
+                        last_alert_message = ""
+                        remove_alert_by_id(r, ALERT_ID)
 
         except Exception as e:
             print(f"[pota_nearby_parks] ERROR: {type(e).__name__}: {e}", flush=True)

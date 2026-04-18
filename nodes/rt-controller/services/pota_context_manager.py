@@ -24,6 +24,7 @@ Writes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ from redis.exceptions import RedisError
 
 SERVICE_NAME = "pota_context_manager"
 SERVICE_VERSION = "0.3310"
+FULL_REFRESH_INTERVAL_SEC = env_int("RT_POTA_FULL_REFRESH_INTERVAL_SEC", 120)
 LOOP_INTERVAL_SEC = 1.0
 
 BAND_ORDER = [
@@ -58,6 +60,14 @@ def epoch_to_iso_utc(epoch: int) -> str:
 
 def compact_json(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def stable_compact_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+
+
+def payload_fingerprint(obj: Any) -> str:
+    return hashlib.sha1(stable_compact_json(obj).encode("utf-8")).hexdigest()
 
 
 def env_str(name: str, default: str) -> str:
@@ -132,6 +142,7 @@ class Config:
     pota_ssb_spots_source_prefix: str = env_str("RT_POTA_SSB_SPOTS_SOURCE_PREFIX", "rt:pota:ssb:spots")
     pota_ssb_spotmeta_prefix: str = env_str("RT_POTA_SSB_SPOTMETA_PREFIX", "rt:pota:ssb:spotmeta")
 
+    full_refresh_interval_sec: int = env_int("RT_POTA_FULL_REFRESH_INTERVAL_SEC", 120)
     pota_ui_bands_key: str = env_str("RT_POTA_UI_BANDS_KEY", "rt:pota:ui:ssb:bands")
     pota_ui_spots_prefix: str = env_str("RT_POTA_UI_SPOTS_PREFIX", "rt:pota:ui:ssb:spots")
     pota_ui_selected_spots_key: str = env_str(
@@ -244,7 +255,6 @@ def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "selection_ts": existing.get("selection_ts", base["selection_ts"]),
     }
 
-    # Normalize singular park fields first.
     if not ctx["selected_park_ref"]:
         ctx["selected_park_ref"] = ""
         ctx["selected_park_name"] = "Not in a park"
@@ -252,11 +262,9 @@ def normalize_context(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not ctx["selected_park_name"]:
         ctx["selected_park_name"] = "Not in a park" if not ctx["selected_park_ref"] else ""
 
-    # Validate selected_band.
     if ctx["selected_band"] and ctx["selected_band"] not in BAND_ORDER:
         ctx["selected_band"] = ""
 
-    # Keep singular/plural fields compatible.
     if ctx["selected_park_refs"]:
         ctx["selected_park_ref"] = ctx["selected_park_refs"][0]
         if ctx["selected_park_names"]:
@@ -306,14 +314,6 @@ def derive_context_from_nearby(
     ctx: Dict[str, Any],
     nearby: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """
-    Keep selected park arrays stable, and derive which selected parks have
-    been left by comparing them against current nearby choices.
-
-    Important:
-    - This does NOT auto-clear operator selections.
-    - It only derives left_selected_park_refs.
-    """
     result = dict(ctx)
 
     ref_to_name = nearby_reference_name_map(nearby)
@@ -322,7 +322,6 @@ def derive_context_from_nearby(
     selected_refs = _normalize_string_list(result.get("selected_park_refs", []))
     selected_names = _normalize_string_list(result.get("selected_park_names", []))
 
-    # Build a stable selected_park_names array aligned to selected_park_refs.
     selected_names_by_ref: Dict[str, str] = {}
     for i, ref in enumerate(selected_refs):
         if i < len(selected_names):
@@ -345,7 +344,6 @@ def derive_context_from_nearby(
         result["selected_park_ref"] = ""
         result["selected_park_name"] = "Not in a park"
 
-    # Derive which selected parks are no longer nearby.
     result["left_selected_park_refs"] = [ref for ref in selected_refs if ref not in nearby_refs]
 
     return result
@@ -440,7 +438,7 @@ def enrich_spot_row(base: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> Dic
 
     meta_ts = meta.get("spot_ts")
     if meta_ts is None:
-        meta_ts = meta.get("spot_ts_epoch")  # backward-compat during rollout
+        meta_ts = meta.get("spot_ts_epoch")
 
     try:
         if meta_ts is not None:
@@ -457,64 +455,152 @@ def enrich_spot_row(base: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> Dic
     return row
 
 
-def zset_band_counts(r: redis.Redis, spots_prefix: str) -> List[Tuple[str, int]]:
-    counts: List[Tuple[str, int]] = []
+def read_source_band_state(
+    r: redis.Redis,
+    bands_source_key: str,
+    spots_prefix: str,
+) -> Dict[str, Tuple[int, int]]:
+    """
+    Returns:
+      { band: (count, last_spot_ts) }
 
-    for band in BAND_ORDER:
-        key = f"{spots_prefix}:{band}"
+    Source-aware signature:
+    - band membership comes from rt:pota:ssb:bands
+    - last_spot_ts is the zset score on that key
+    - count is zcard(rt:pota:ssb:spots:<band>)
+    """
+    try:
+        raw_bands = r.zrange(bands_source_key, 0, -1, withscores=True)
+    except RedisError:
+        raise
+    except Exception as exc:
+        log_warning(
+            "Unable to read source band zset",
+            event="source_bands_read_error",
+            key=bands_source_key,
+            error=str(exc),
+        )
+        return {}
+
+    source_scores: Dict[str, int] = {}
+    for member, score in raw_bands:
+        band = str(member or "").strip()
+        if not band:
+            continue
         try:
-            count = int(r.zcard(key))
-        except RedisError:
-            raise
+            source_scores[band] = int(float(score))
+        except Exception:
+            source_scores[band] = 0
+
+    if not source_scores:
+        return {}
+
+    pipe = r.pipeline(transaction=False)
+    band_keys: List[Tuple[str, str]] = []
+
+    for band in source_scores.keys():
+        key = f"{spots_prefix}:{band}"
+        band_keys.append((band, key))
+        pipe.zcard(key)
+
+    try:
+        counts = pipe.execute()
+    except RedisError:
+        raise
+    except Exception as exc:
+        log_warning(
+            "Unable to pipeline source band counts",
+            event="source_band_counts_pipeline_error",
+            error=str(exc),
+        )
+        return {}
+
+    out: Dict[str, Tuple[int, int]] = {}
+    for (band, key), raw_count in zip(band_keys, counts):
+        try:
+            count = int(raw_count or 0)
         except Exception as exc:
             log_warning(
-                "Unable to read band spot count",
-                event="band_zcard_error",
+                "Unable to parse source band count",
+                event="source_band_count_error",
                 key=key,
                 error=str(exc),
             )
             count = 0
 
+        # keep only actually active bands
         if count > 0:
-            counts.append((band, count))
+            out[band] = (count, source_scores.get(band, 0))
 
-    return counts
+    return out
 
 
-def zset_band_spots_with_meta(
+def load_changed_band_spots_with_meta(
     r: redis.Redis,
-    spots_key: str,
+    spots_prefix: str,
     spotmeta_prefix: str,
-) -> Tuple[List[Dict[str, Any]], int, int]:
+    bands: List[str],
+) -> Tuple[Dict[str, List[Dict[str, Any]]], int, int]:
+    """
+    Only rebuild the specific bands that changed.
+    """
+    if not bands:
+        return {}, 0, 0
+
+    pipe = r.pipeline(transaction=False)
+    band_keys: List[Tuple[str, str]] = []
+
+    for band in bands:
+        key = f"{spots_prefix}:{band}"
+        band_keys.append((band, key))
+        pipe.zrange(key, 0, -1, withscores=True)
+
     try:
-        raw = r.zrange(spots_key, 0, -1, withscores=True)
+        zrange_results = pipe.execute()
     except RedisError:
         raise
     except Exception as exc:
         log_warning(
-            "Unable to read band spots zset",
-            event="spots_zset_read_error",
-            key=spots_key,
+            "Unable to pipeline changed band spot zset reads",
+            event="changed_bands_zrange_pipeline_error",
             error=str(exc),
         )
-        return [], 0, 0
+        return {}, 0, 0
 
-    base_rows = [parse_band_spot_member(member, score) for member, score in raw]
-    members = [row["member"] for row in base_rows]
+    per_band_rows: Dict[str, List[Dict[str, Any]]] = {}
+    total_meta_hits = 0
+    total_meta_malformed = 0
 
-    meta_by_member, malformed_count = load_spotmeta_bulk(r, spotmeta_prefix, members)
+    for (band, key), raw in zip(band_keys, zrange_results):
+        if not isinstance(raw, list):
+            log_warning(
+                "Band spots zset returned unexpected type",
+                event="spots_zset_invalid_type",
+                key=key,
+            )
+            per_band_rows[band] = []
+            continue
 
-    rows: List[Dict[str, Any]] = []
-    hit_count = 0
+        base_rows = [parse_band_spot_member(member, score) for member, score in raw]
+        members = [row["member"] for row in base_rows]
 
-    for base in base_rows:
-        member = base["member"]
-        meta = meta_by_member.get(member)
-        if meta:
-            hit_count += 1
-        rows.append(enrich_spot_row(base, meta))
+        meta_by_member, malformed_count = load_spotmeta_bulk(r, spotmeta_prefix, members)
 
-    return rows, hit_count, malformed_count
+        rows: List[Dict[str, Any]] = []
+        hit_count = 0
+
+        for base in base_rows:
+            member = base["member"]
+            meta = meta_by_member.get(member)
+            if meta:
+                hit_count += 1
+            rows.append(enrich_spot_row(base, meta))
+
+        per_band_rows[band] = rows
+        total_meta_hits += hit_count
+        total_meta_malformed += malformed_count
+
+    return per_band_rows, total_meta_hits, total_meta_malformed
 
 
 class Service:
@@ -522,6 +608,16 @@ class Service:
         self.cfg = cfg
         self.redis_mgr = RedisManager(cfg)
         self.running = True
+
+        self._last_ui_bands_fp: Optional[str] = None
+        self._last_ui_selected_spots_fp: Optional[str] = None
+        self._last_ui_spots_fp_by_band: Dict[str, str] = {}
+        self._last_full_refresh_monotonic: float = 0.0
+
+        self._last_source_band_state: Dict[str, Tuple[int, int]] = {}
+        self._cached_per_band_spots: Dict[str, List[Dict[str, Any]]] = {
+            band: [] for band in BAND_ORDER
+        }
 
     def stop(self, *_args: Any) -> None:
         self.running = False
@@ -536,53 +632,136 @@ class Service:
             r.set(self.cfg.pota_context_key, compact_json(derived))
         return derived
 
-    def build_ui_band_summary(self, r: redis.Redis) -> List[Dict[str, Any]]:
-        counts = zset_band_counts(r, self.cfg.pota_ssb_spots_source_prefix)
-        return [{"band": band, "count": count} for band, count in counts]
-
-    def build_ui_spots(self, r: redis.Redis) -> Tuple[Dict[str, List[Dict[str, Any]]], int, int]:
-        result: Dict[str, List[Dict[str, Any]]] = {}
-        total_meta_hits = 0
-        total_meta_malformed = 0
-
+    def build_ui_band_summary_from_source(
+        self,
+        source_band_state: Dict[str, Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
         for band in BAND_ORDER:
-            source_key = f"{self.cfg.pota_ssb_spots_source_prefix}:{band}"
-            rows, meta_hits, malformed = zset_band_spots_with_meta(
-                r,
-                source_key,
-                self.cfg.pota_ssb_spotmeta_prefix,
+            state = source_band_state.get(band)
+            if not state:
+                continue
+            count, _last_spot_ts = state
+            if count > 0:
+                out.append({"band": band, "count": count})
+        return out
+
+    def refresh_changed_bands(
+        self,
+        r: redis.Redis,
+        source_band_state: Dict[str, Tuple[int, int]],
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], int, int, List[str], List[str], bool]:
+        previous = self._last_source_band_state
+        current = source_band_state
+
+        now_mono = time.monotonic()
+        force_full_refresh = False
+
+        if self._last_full_refresh_monotonic <= 0.0:
+            force_full_refresh = True
+        elif (now_mono - self._last_full_refresh_monotonic) >= self.cfg.full_refresh_interval_sec:
+            force_full_refresh = True
+
+        if force_full_refresh:
+            changed_bands = sorted(current.keys())
+        else:
+            changed_bands = sorted(
+                band for band in current.keys()
+                if previous.get(band) != current.get(band)
             )
-            result[band] = rows
-            total_meta_hits += meta_hits
-            total_meta_malformed += malformed
 
-        return result, total_meta_hits, total_meta_malformed
+        removed_bands = sorted(band for band in previous.keys() if band not in current)
 
+        refreshed_rows, meta_hits, meta_malformed = load_changed_band_spots_with_meta(
+            r,
+            self.cfg.pota_ssb_spots_source_prefix,
+            self.cfg.pota_ssb_spotmeta_prefix,
+            changed_bands,
+        )
+
+        for band in changed_bands:
+            self._cached_per_band_spots[band] = refreshed_rows.get(band, [])
+
+        for band in removed_bands:
+            self._cached_per_band_spots[band] = []
+
+        self._last_source_band_state = dict(current)
+
+        if force_full_refresh:
+            self._last_full_refresh_monotonic = now_mono
+
+        per_band_spots = {
+            band: self._cached_per_band_spots.get(band, [])
+            for band in BAND_ORDER
+        }
+        return per_band_spots, meta_hits, meta_malformed, changed_bands, removed_bands, force_full_refresh
+    
     def publish_ui_state(
         self,
         r: redis.Redis,
         context: Dict[str, Any],
         band_summary: List[Dict[str, Any]],
         per_band_spots: Dict[str, List[Dict[str, Any]]],
-    ) -> None:
+    ) -> Tuple[int, int]:
         selected_band = str(context.get("selected_band", "") or "")
         selected_spots = per_band_spots.get(selected_band, []) if selected_band else []
 
+        writes = 0
+        skipped = 0
         pipe = r.pipeline(transaction=False)
-        pipe.set(self.cfg.pota_ui_bands_key, compact_json(band_summary))
+
+        ui_bands_fp = payload_fingerprint(band_summary)
+        if ui_bands_fp != self._last_ui_bands_fp:
+            pipe.set(self.cfg.pota_ui_bands_key, compact_json(band_summary))
+            self._last_ui_bands_fp = ui_bands_fp
+            writes += 1
+        else:
+            skipped += 1
+
         for band in BAND_ORDER:
             key = f"{self.cfg.pota_ui_spots_prefix}:{band}"
-            pipe.set(key, compact_json(per_band_spots.get(band, [])))
-        pipe.set(self.cfg.pota_ui_selected_spots_key, compact_json(selected_spots))
-        pipe.execute()
+            payload = per_band_spots.get(band, [])
+            band_fp = payload_fingerprint(payload)
+
+            if self._last_ui_spots_fp_by_band.get(band) != band_fp:
+                pipe.set(key, compact_json(payload))
+                self._last_ui_spots_fp_by_band[band] = band_fp
+                writes += 1
+            else:
+                skipped += 1
+
+        selected_fp = payload_fingerprint(selected_spots)
+        if selected_fp != self._last_ui_selected_spots_fp:
+            pipe.set(self.cfg.pota_ui_selected_spots_key, compact_json(selected_spots))
+            self._last_ui_selected_spots_fp = selected_fp
+            writes += 1
+        else:
+            skipped += 1
+
+        if writes > 0:
+            pipe.execute()
+
+        return writes, skipped
 
     def run_once(self) -> None:
         r = self.redis_mgr.get()
         nearby = load_json_object(r, self.cfg.pota_nearby_key)
         context = self.ensure_context_key(r, nearby)
-        band_summary = self.build_ui_band_summary(r)
-        per_band_spots, total_meta_hits, total_meta_malformed = self.build_ui_spots(r)
-        self.publish_ui_state(r, context, band_summary, per_band_spots)
+
+        source_band_state = read_source_band_state(
+            r,
+            self.cfg.pota_ssb_bands_source_key,
+            self.cfg.pota_ssb_spots_source_prefix,
+        )
+
+        band_summary = self.build_ui_band_summary_from_source(source_band_state)
+
+        per_band_spots, total_meta_hits, total_meta_malformed, changed_bands, removed_bands, force_full_refresh = self.refresh_changed_bands(
+            r,
+            source_band_state,
+        )
+
+        writes, skipped = self.publish_ui_state(r, context, band_summary, per_band_spots)
 
         total_spots = sum(len(v) for v in per_band_spots.values())
 
@@ -591,12 +770,17 @@ class Service:
             event="cycle_complete",
             active_bands=len(band_summary),
             total_ui_spots=total_spots,
+            changed_bands=changed_bands,
+            removed_bands=removed_bands,
             selected_park_ref=context.get("selected_park_ref", ""),
             selected_park_refs=context.get("selected_park_refs", []),
             left_selected_park_refs=context.get("left_selected_park_refs", []),
             selected_band=context.get("selected_band", ""),
             spotmeta_hits=total_meta_hits,
             spotmeta_malformed=total_meta_malformed,
+            redis_keys_written=writes,
+            redis_keys_skipped=skipped,
+            forced_full_refresh=force_full_refresh,
         )
 
     def run(self) -> None:

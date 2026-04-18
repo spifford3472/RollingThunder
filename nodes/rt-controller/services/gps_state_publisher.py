@@ -38,13 +38,15 @@ Restart safety:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 import threading
 from typing import Any, Dict, Optional, Tuple
 
 import redis
-import gps  # gpsd python bindings (from gpsd package)
+import gps
 from collections.abc import Mapping
 
 
@@ -65,12 +67,13 @@ KEY_GPS_POS = os.environ.get("RT_KEY_GPS_POS", "rt:gps:pos")
 GPSD_HOST = os.environ.get("RT_GPSD_HOST", "127.0.0.1")
 GPSD_PORT = os.environ.get("RT_GPSD_PORT", "2947")
 
-# Freshness thresholds (milliseconds)
-TPV_STALE_MS = int(os.environ.get("RT_GPS_TPV_STALE_MS", "3000"))     # TPV is chatty
-SKY_STALE_MS = int(os.environ.get("RT_GPS_SKY_STALE_MS", "15000"))   # SKY is slower
+TPV_STALE_MS = int(os.environ.get("RT_GPS_TPV_STALE_MS", "3000"))
+SKY_STALE_MS = int(os.environ.get("RT_GPS_SKY_STALE_MS", "15000"))
 
-# Internal safety: if publish loop is blocked too long, exit so systemd restarts us.
 HANG_EXIT_SEC = float(os.environ.get("RT_GPS_HANG_EXIT_SEC", "30"))
+
+GRID_POSITION_ROUND_DECIMALS = int(os.environ.get("RT_GPS_GRID_POSITION_ROUND_DECIMALS", "6"))
+TRACK_ROUND_DECIMALS = int(os.environ.get("RT_GPS_TRACK_ROUND_DECIMALS", "1"))
 
 
 # -------------------- Helpers --------------------
@@ -92,31 +95,25 @@ def _scalarize(v: Any) -> str:
     return str(v)
 
 
-def hset_dict(r: redis.Redis, key: str, fields: Dict[str, Any]) -> None:
-    safe = {str(k): _scalarize(v) for k, v in fields.items()}
-    r.hset(key, mapping=safe)
+def _hash_fields(fields: Dict[str, Any]) -> str:
+    normalized = {str(k): _scalarize(v) for k, v in fields.items()}
+    raw = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
 
 def normalize_report(obj: Any) -> Optional[Dict[str, Any]]:
-    """
-    gpsd python binding often returns gps.client.dictwrapper, which is not a dict
-    and (on some builds) not a Mapping either.
-    We normalize to a plain dict so the rest of the code is deterministic.
-    """
     if obj is None:
         return None
 
-    # Already a dict
     if isinstance(obj, dict):
         return obj
 
-    # Some versions present mapping-like behavior
     if isinstance(obj, Mapping):
         try:
             return dict(obj)
         except Exception:
             pass
 
-    # gps.client.dictwrapper: has .get() and keys(), but isn't a Mapping
     get = getattr(obj, "get", None)
     keys = getattr(obj, "keys", None)
     if callable(get) and callable(keys):
@@ -131,12 +128,12 @@ def normalize_report(obj: Any) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-    # Last resort: attribute dict
     d = getattr(obj, "__dict__", None)
     if isinstance(d, dict) and d:
         return d
 
     return None
+
 
 def num(v: Any) -> Optional[float]:
     if isinstance(v, (int, float)):
@@ -156,10 +153,6 @@ def cardinal_from_deg(deg: float) -> str:
 
 
 def maidenhead(lat: float, lon: float, precision: int = 6) -> str:
-    """
-    Convert lat/lon to Maidenhead locator.
-    precision must be 4 or 6 (EM79 or EM79xm).
-    """
     if precision not in (4, 6):
         raise ValueError("precision must be 4 or 6")
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
@@ -193,6 +186,58 @@ def maidenhead(lat: float, lon: float, precision: int = 6) -> str:
     return f"{a}{b}{c}{d}{e}{f}"
 
 
+# -------------------- Redis writer cache --------------------
+class RedisHashWriter:
+    """
+    Separates content changes from heartbeat/freshness-only changes.
+    This allows content hashes to stay stable while still updating
+    last_update_ms and related timing fields as needed.
+    """
+
+    def __init__(self, client: redis.Redis) -> None:
+        self.client = client
+        self.last_content_hashes: Dict[str, str] = {}
+        self.last_heartbeat_hashes: Dict[str, str] = {}
+
+    def write_changed(
+        self,
+        payloads: Dict[str, Dict[str, Any]],
+        heartbeat_fields_by_key: Dict[str, Tuple[str, ...]],
+    ) -> int:
+        pipe = self.client.pipeline(transaction=False)
+        writes = 0
+
+        for key, fields in payloads.items():
+            heartbeat_fields = set(heartbeat_fields_by_key.get(key, ()))
+            content_fields = {k: v for k, v in fields.items() if k not in heartbeat_fields}
+            heartbeat_only = {k: v for k, v in fields.items() if k in heartbeat_fields}
+
+            content_hash = _hash_fields(content_fields)
+            heartbeat_hash = _hash_fields(heartbeat_only)
+
+            content_changed = self.last_content_hashes.get(key) != content_hash
+            heartbeat_changed = self.last_heartbeat_hashes.get(key) != heartbeat_hash
+
+            if content_changed:
+                safe = {str(k): _scalarize(v) for k, v in fields.items()}
+                pipe.hset(key, mapping=safe)
+                self.last_content_hashes[key] = content_hash
+                self.last_heartbeat_hashes[key] = heartbeat_hash
+                writes += 1
+                continue
+
+            if heartbeat_changed and heartbeat_only:
+                safe = {str(k): _scalarize(v) for k, v in heartbeat_only.items()}
+                pipe.hset(key, mapping=safe)
+                self.last_heartbeat_hashes[key] = heartbeat_hash
+                writes += 1
+
+        if writes > 0:
+            pipe.execute()
+
+        return writes
+
+
 # -------------------- GPSD reader thread --------------------
 class GpsCache:
     def __init__(self) -> None:
@@ -223,21 +268,15 @@ class GpsCache:
 
 
 def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
-    """
-    Persistent gpsd session reader. Reconnects on failure with bounded backoff.
-    """
     backoff = 0.5
     while not stop.is_set():
         sess = None
         try:
             cache.set_connected(False)
 
-            # gps.gps() supports host/port
             sess = gps.gps(host=GPSD_HOST, port=GPSD_PORT)
-            # enable JSON watch
             sess.stream(gps.WATCH_ENABLE | gps.WATCH_JSON)
 
-            # Set socket timeout so we can notice stop events and reconnect cleanly.
             try:
                 sess.sock.settimeout(2.0)  # type: ignore[attr-defined]
             except Exception:
@@ -255,7 +294,6 @@ def gpsd_reader(cache: GpsCache, stop: threading.Event) -> None:
                 except StopIteration:
                     raise OSError("gpsd stream ended")
                 except Exception as e:
-                    # timeout or socket errors -> reconnect
                     raise OSError(f"gpsd read error: {e}")
 
                 if not isinstance(report, dict):
@@ -296,19 +334,23 @@ def main() -> None:
         retry_on_timeout=True,
     )
 
+    writer = RedisHashWriter(r)
+
     cache = GpsCache()
     stop = threading.Event()
     t = threading.Thread(target=gpsd_reader, args=(cache, stop), daemon=True)
     t.start()
 
-    # Last-known derived state (prevents oscillation when SKY/TPV arrives at different rates)
     last_sats_used = 0
     last_track_deg = 0.0
     last_track_cardinal = "N"
     last_grid4 = ""
     last_grid6 = ""
     pos_last_good_ms = 0
-    gps_last_seen_ms = 0  # last time we saw *fresh* TPV
+    gps_last_seen_ms = 0
+
+    last_grid_position_key: Optional[Tuple[float, float]] = None
+    last_track_key: Optional[float] = None
 
     last_loop_progress = time.time()
 
@@ -316,7 +358,6 @@ def main() -> None:
         loop_start = time.time()
         ts = now_ms()
 
-        # Detect a true hang (should never happen, but if it does, exit so systemd restarts us)
         if (loop_start - last_loop_progress) > HANG_EXIT_SEC:
             raise SystemExit(f"gps_state_publisher hung for > {HANG_EXIT_SEC}s; exiting for restart")
 
@@ -329,7 +370,6 @@ def main() -> None:
             tpv_fresh = tpv is not None and tpv_ms > 0 and tpv_age <= TPV_STALE_MS
             sky_fresh = sky is not None and sky_ms > 0 and sky_age <= SKY_STALE_MS
 
-            # Derive fix_type
             fix_type = 0
             if tpv_fresh:
                 try:
@@ -339,10 +379,8 @@ def main() -> None:
 
             has_fix = fix_type >= 2
 
-            # Satellite used count
             sats_used = last_sats_used
             if sky_fresh and isinstance(sky, dict):
-                # gpsd SKY typically has "uSat" (used satellites)
                 if isinstance(sky.get("uSat"), (int, float)):
                     sats_used = int(sky["uSat"])
                 else:
@@ -354,20 +392,17 @@ def main() -> None:
                         )
             last_sats_used = sats_used
 
-            # Time
             time_source = "system"
             utc_iso = now_iso_utc()
             if tpv_fresh and fix_type >= 1 and isinstance(tpv, dict):
                 t_iso = tpv.get("time")
                 if isinstance(t_iso, str) and t_iso.strip():
-                    # gpsd usually gives ISO ending in Z; keep as-is (UI Date() parses it fine)
                     utc_iso = t_iso.strip()
                     time_source = "gps"
 
             if tpv_fresh:
                 gps_last_seen_ms = ts
 
-            # Speed (m/s -> mph/kph), clamp mph < 2 to 0
             speed_mps = 0.0
             if tpv_fresh and isinstance(tpv, dict):
                 sm = num(tpv.get("speed"))
@@ -377,7 +412,6 @@ def main() -> None:
             mph = clamp_mph(speed_mps * 2.2369362920544)
             kph = speed_mps * 3.6
 
-            # Position/nav
             valid_pos = False
             lat = None
             lon = None
@@ -397,35 +431,36 @@ def main() -> None:
                         if am is not None:
                             alt_m = am
 
-                    # Track/course (degrees). Keep last known if missing.
                     tr = num(tpv.get("track"))
                     if tr is not None:
-                        last_track_deg = float(tr) % 360.0
-                        last_track_cardinal = cardinal_from_deg(last_track_deg)
+                        track_key = round(float(tr) % 360.0, TRACK_ROUND_DECIMALS)
+                        if track_key != last_track_key:
+                            last_track_key = track_key
+                            last_track_deg = float(tr) % 360.0
+                            last_track_cardinal = cardinal_from_deg(last_track_deg)
 
-                    # Maidenhead grids (keep last known if compute fails)
-                    try:
-                        last_grid4 = maidenhead(lat, lon, 4)
-                        last_grid6 = maidenhead(lat, lon, 6)
-                    except Exception:
-                        pass
+                    position_key = (
+                        round(lat, GRID_POSITION_ROUND_DECIMALS),
+                        round(lon, GRID_POSITION_ROUND_DECIMALS),
+                    )
+                    if position_key != last_grid_position_key:
+                        last_grid_position_key = position_key
+                        try:
+                            last_grid4 = maidenhead(lat, lon, 4)
+                            last_grid6 = maidenhead(lat, lon, 6)
+                        except Exception:
+                            pass
 
-            # Always publish heartbeat, even if gpsd is down.
-            hset_dict(
-                r,
-                KEY_GPS_TIME,
-                {
+            alt_ft = (alt_m * 3.280839895013123) if isinstance(alt_m, (int, float)) else None
+
+            payloads = {
+                KEY_GPS_TIME: {
                     "utc_iso": utc_iso,
                     "source": time_source,
                     "last_update_ms": ts,
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                 },
-            )
-
-            hset_dict(
-                r,
-                KEY_GPS_FIX,
-                {
+                KEY_GPS_FIX: {
                     "has_fix": has_fix,
                     "fix_type": fix_type,
                     "sats": sats_used,
@@ -433,26 +468,14 @@ def main() -> None:
                     "last_update_ms": ts,
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                 },
-            )
-
-            hset_dict(
-                r,
-                KEY_GPS_SPEED,
-                {
+                KEY_GPS_SPEED: {
                     "mps": round(speed_mps, 3),
                     "mph": round(mph, 3),
                     "kph": round(kph, 3),
                     "last_update_ms": ts,
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                 },
-            )
-
-            alt_ft = (alt_m * 3.280839895013123) if isinstance(alt_m, (int, float)) else None
-
-            hset_dict(
-                r,
-                KEY_GPS_POS,
-                {
+                KEY_GPS_POS: {
                     "valid": valid_pos,
                     "lat": lat if valid_pos else "",
                     "lon": lon if valid_pos else "",
@@ -466,16 +489,23 @@ def main() -> None:
                     "gps_last_seen_ms": gps_last_seen_ms or "",
                     "pos_last_good_ms": pos_last_good_ms or "",
                 },
-            )
+            }
+
+            heartbeat_fields_by_key = {
+                KEY_GPS_TIME: ("last_update_ms", "gps_last_seen_ms"),
+                KEY_GPS_FIX: ("last_update_ms", "gps_last_seen_ms"),
+                KEY_GPS_SPEED: ("last_update_ms", "gps_last_seen_ms"),
+                KEY_GPS_POS: ("last_update_ms", "gps_last_seen_ms", "pos_last_good_ms"),
+            }
+
+            writer.write_changed(payloads, heartbeat_fields_by_key)
 
             last_loop_progress = time.time()
 
         except Exception as e:
-            # Log and continue with backoff so we don't spin if Redis is down.
             print(f"[gps_state_publisher] ERROR: {type(e).__name__}: {e}", flush=True)
             time.sleep(0.5)
 
-        # Maintain cadence
         elapsed = time.time() - loop_start
         sleep_s = interval_s - elapsed
         if sleep_s > 0:

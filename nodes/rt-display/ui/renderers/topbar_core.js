@@ -132,7 +132,7 @@ export function renderTopbarCore(container, panel, data) {
     data?.page_title ||
     pageId;
 
-  const page = `${pageTitle}`;
+  const page = `${pageTitle} (${pageId})`;
 
   const sys = data?.sys_health || null;
   const clock = data?.clock || null;

@@ -57,6 +57,7 @@ UNITS=(
   "rt-radio-deploy-report-publisher.timer"
   "rt-radio-deploy-report-publisher.service"
   "rigctld.service"
+  "rt-rigctld-watchdog.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -78,6 +79,7 @@ fail_missing "${SYSTEMD_DIR}/rt-radio-ui-intent-worker.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
 fail_missing "${SYSTEMD_DIR}/rigctld.service"
+fail_missing "${SYSTEMD_DIR}/rt-rigctld-watchdog.service"
 
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
@@ -89,6 +91,7 @@ fail_missing "${SVC_DIR}/radio/hamlib_client.py"
 fail_missing "${SVC_DIR}/radio/service.py"
 fail_missing "${SVC_DIR}/radio/radios/__init__.py"
 fail_missing "${SVC_DIR}/radio/radios/ft891.py"
+
 
 # Common rsync excludes
 RSYNC_EXCLUDES=(

@@ -366,7 +366,7 @@
 
   <script>
     const LED_NAMES = ["page", "back", "primary", "cancel", "mode", "info"];
-    const DEFAULT_POLL_MS = 200;
+    const DEFAULT_POLL_MS = 1000;
 
     let pollMs = DEFAULT_POLL_MS;
     let pollTimer = null;
@@ -493,25 +493,42 @@
       setText("last-intent", lastIntentLabel);
     }
 
-    async function pollOnce() {
-      try {
-        const snapshot = await fetchLeds();
-        renderSnapshot(snapshot);
-        setServerStatus("Connected", true);
+    let lastTs = null;
 
-        if (snapshot && snapshot.show_push && snapshot.show_push.button) {
-          flashShowPush(snapshot.show_push.button);
+    async function pollOnce() {
+      const snapshot = await fetchLeds();
+
+      if (snapshot && snapshot.ts_ms === lastTs) {
+        return; // no change, skip render
+      }
+
+      lastTs = snapshot.ts_ms;
+      renderSnapshot(snapshot);
+    }
+
+    let polling = false;
+
+    async function pollLoop() {
+      if (polling) return;
+      polling = true;
+
+      while (true) {
+        const start = Date.now();
+
+        try {
+          await pollOnce();
+        } catch (e) {
+          // already handled inside pollOnce
         }
-      } catch (err) {
-        setServerStatus(`LED API error: ${err.message}`, false);
+
+        const elapsed = Date.now() - start;
+        const delay = Math.max(pollMs - elapsed, 50);
+        await new Promise(r => setTimeout(r, delay));
       }
     }
 
     function startPolling() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-      }
-      pollTimer = setInterval(pollOnce, pollMs);
+      pollLoop();
     }
 
     function attachButtonHandlers() {

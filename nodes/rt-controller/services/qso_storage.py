@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Deque, Dict, Iterator, List, Mapping, Optional
 
 import rt_config
 
@@ -159,18 +160,16 @@ def append_canonical_qso(qso: Mapping[str, Any]) -> Path:
     return path
 
 
-def iter_recent_qsos(limit: Optional[int] = 100) -> List[CanonicalQSO]:
+def iter_qsos() -> Iterator[CanonicalQSO]:
     """
-    Return recent canonical QSO records, newest first.
+    Lazily iterate canonical QSO records from oldest to newest.
 
-    Practical v0.3700 implementation:
-        read JSONL, parse valid lines, reverse, then slice.
+    Malformed or non-dict lines are ignored.
     """
     path = get_qso_jsonl_path()
     if not path.exists():
-        return []
+        return
 
-    records: List[CanonicalQSO] = []
     with path.open("r", encoding="utf-8") as fh:
         for raw_line in fh:
             line = raw_line.strip()
@@ -178,18 +177,37 @@ def iter_recent_qsos(limit: Optional[int] = 100) -> List[CanonicalQSO]:
                 continue
             try:
                 obj = json.loads(line)
-                if isinstance(obj, dict):
-                    records.append(obj)
             except json.JSONDecodeError:
-                # Ignore malformed lines rather than failing the whole read.
                 continue
 
-    records.reverse()  # newest first
+            if isinstance(obj, dict):
+                yield obj
 
+
+def iter_recent_qsos(limit: Optional[int] = 100) -> List[CanonicalQSO]:
+    """
+    Return recent canonical QSO records, newest first.
+
+    Practical implementation:
+        - iterate lazily through the JSONL
+        - keep only the most recent `limit` records when a positive limit is given
+        - reverse only that bounded set at the end
+
+    Behavior:
+        - if limit is None or limit <= 0, return all valid records newest first
+    """
     if limit is None or limit <= 0:
+        records = list(iter_qsos())
+        records.reverse()
         return records
 
-    return records[:limit]
+    recent: Deque[CanonicalQSO] = deque(maxlen=limit)
+    for record in iter_qsos():
+        recent.append(record)
+
+    records = list(recent)
+    records.reverse()
+    return records
 
 
 def _normalized_compare_value(value: Any) -> str:

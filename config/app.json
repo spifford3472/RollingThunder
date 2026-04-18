@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 52,
-    "build": 4
+    "build": 18
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -53,7 +53,7 @@
     "enabled": true,
     "bind": "0.0.0.0",
     "port": 8630,
-    "pollMs": 200
+    "pollMs": 1000
   },
   "services": {
     "redis_state": {

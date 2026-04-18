@@ -1,0 +1,24 @@
+[Unit]
+Description=RollingThunder rigctld watchdog
+After=network-online.target rigctld.service
+Wants=network-online.target
+Requires=rigctld.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/rollingthunder/radio.env
+EnvironmentFile=-/etc/rollingthunder/radio-watchdog.env
+Requires=rigctld.service
+After=rigctld.service
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/rigctld_watchdog.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
