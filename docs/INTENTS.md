@@ -152,6 +152,10 @@ Read-only: - radio.hf.query - radio.hf.status
 
 Future (gated): - radio.hf.set.freq - radio.hf.set.mode - radio.hf.ptt
 
+- radio.tune
+- radio.log_qso
+- radio.atas_tune 
+
 ------------------------------------------------------------------------
 
 ### 4.7 Page Lifecycle (page.\*)
@@ -160,7 +164,18 @@ Future (gated): - radio.hf.set.freq - radio.hf.set.mode - radio.hf.ptt
 -   page.exit
 
 ------------------------------------------------------------------------
+### 4.8 POTA (pota.*)
 
+-   pota.select_band
+-   pota.select_park
+
+--------------------
+### 4.81 Node (node.*)
+
+-   node.reboot
+
+
+----------------------------------------------------------------------------------------------------------------------------
 ## 5. Safety Model
 
 ### Safe

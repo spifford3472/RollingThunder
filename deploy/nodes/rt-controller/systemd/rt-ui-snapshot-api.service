@@ -31,7 +31,10 @@ Environment=RT_KEY_SERVICE_PREFIX=rt:services:
 
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/ui_snapshot_api.py
 Restart=always
-RestartSec=1
+#RestartSec=1
+#New section
+RestartSec=10s
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target

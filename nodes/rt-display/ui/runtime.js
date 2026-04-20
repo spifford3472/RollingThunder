@@ -22,6 +22,56 @@ import { startPanelRefresh } from "./refresh.js";
 import { renderPanelError } from "./renderers/panel_error.js";
 
 // -----------------------------------------------------------------------------
+// Overlay Asset Loader
+// -----------------------------------------------------------------------------
+(function loadOverlayAssets() {
+  function loadCSS(href) {
+    const existing = document.querySelector(`link[href="${href}"]`);
+    if (existing) return;
+
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+
+  function loadJS(src) {
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${src}"]`);
+      if (existing) {
+        resolve();
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  loadCSS("/shared/controller-overlay.css");
+  loadJS("/shared/controller-overlay.js")
+    .then(() => console.log("[rt] controller overlay loaded"))
+    .catch((err) => console.error("[rt] controller overlay failed to load", err));
+})();
+
+function rtShowControllerOverlay(message) {
+  if (window.RTControllerOverlay) {
+    window.RTControllerOverlay.show(
+      message || "Lost connection to rt-controller. Reconnecting…"
+    );
+  }
+}
+
+function rtHideControllerOverlay() {
+  if (window.RTControllerOverlay) {
+    window.RTControllerOverlay.hide();
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Runtime extension helpers
 // -----------------------------------------------------------------------------
 
@@ -215,7 +265,6 @@ function validateIntent(intent, params) {
     };
   }
 
-  // Allow controller-owned core UI intents through without extra schema checks.
   if ([
     "ui.page.next",
     "ui.page.prev",
@@ -248,7 +297,6 @@ function handleRuntimeFocusRequest(ev, runtimeCtx) {
   const nav = runtimeCtx?.nav || null;
   if (!nav || typeof nav.setActivePanel !== "function") return;
 
-  // Local helper only; this does not own focus truth.
   nav.setActivePanel(panelId);
 }
 
@@ -470,6 +518,15 @@ function sameUiState(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function tryParseJSON(v) {
+  if (!v || typeof v !== "string") return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+}
+
 async function fetchUiProjectionState() {
   const resp = await fetch("/api/v1/ui/state/batch", {
     method: "POST",
@@ -489,7 +546,7 @@ async function fetchUiProjectionState() {
   });
 
   if (!resp.ok) {
-    throw new Error(`ui-state-batch-http-${resp.status}`);
+    throw new Error(`HTTP ${resp.status}`);
   }
 
   const payload = await resp.json();
@@ -513,15 +570,6 @@ async function fetchUiProjectionState() {
 }
 
 const UI_PROJECTION_TOPIC = "ui.projection.changed";
-
-function tryParseJSON(v) {
-  if (!v || typeof v !== "string") return v;
-  try {
-    return JSON.parse(v);
-  } catch {
-    return v;
-  }
-}
 
 (async function main() {
   const params = new URLSearchParams(location.search);
@@ -552,6 +600,7 @@ function tryParseJSON(v) {
     browse: null,
     modal: null,
     authority: null,
+    page_context: null,
   };
 
   let currentPage = null;
@@ -566,9 +615,11 @@ function tryParseJSON(v) {
   let panelRerender = new Map();
   let uiProjectionUnsub = null;
   let uiProjectionPollTimer = null;
+  let uiProjectionRetryTimer = null;
   let uiProjectionInflight = false;
   let uiProjectionNeedsRerun = false;
   let uiProjectionSubscribed = false;
+  let uiProjectionRetryDelayMs = 1500;
 
   function stopAllRefresh() {
     for (const handle of refreshHandles) {
@@ -590,24 +641,24 @@ function tryParseJSON(v) {
     return m;
   }
 
-function buildInjectedUiStateForPanel(panelId, uiState) {
-  const browse =
-    uiState?.browse &&
-    typeof uiState.browse === "object" &&
-    String(uiState.browse.panel || "") === String(panelId || "")
-      ? uiState.browse
-      : null;
+  function buildInjectedUiStateForPanel(panelId, uiState) {
+    const browse =
+      uiState?.browse &&
+      typeof uiState.browse === "object" &&
+      String(uiState.browse.panel || "") === String(panelId || "")
+        ? uiState.browse
+        : null;
 
-  return {
-    page: uiState?.page || null,
-    focus: uiState?.focus || null,
-    layer: uiState?.layer || null,
-    browse,
-    modal: uiState?.modal || null,
-    authority: uiState?.authority || null,
-    page_context: uiState?.page_context || null,
-  };
-}
+    return {
+      page: uiState?.page || null,
+      focus: uiState?.focus || null,
+      layer: uiState?.layer || null,
+      browse,
+      modal: uiState?.modal || null,
+      authority: uiState?.authority || null,
+      page_context: uiState?.page_context || null,
+    };
+  }
 
   function buildRenderDataForPanel(panelId, uiState) {
     const base = panelLastData.get(panelId) || {};
@@ -725,6 +776,22 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
 
   function isAllowed(intent) {
     return allowedIntents.has(intent);
+  }
+
+  function clearUiProjectionRetryTimer() {
+    if (uiProjectionRetryTimer) {
+      clearTimeout(uiProjectionRetryTimer);
+      uiProjectionRetryTimer = null;
+    }
+  }
+
+  function scheduleUiProjectionRetry(reason = "retry") {
+    if (uiProjectionRetryTimer) return;
+
+    uiProjectionRetryTimer = setTimeout(() => {
+      uiProjectionRetryTimer = null;
+      void refreshUiProjectionState(reason);
+    }, uiProjectionRetryDelayMs);
   }
 
   async function emitIntent(intent, params = null) {
@@ -905,9 +972,21 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
     uiProjectionInflight = true;
     try {
       const uiState = await fetchUiProjectionState();
+
+      clearUiProjectionRetryTimer();
+      uiProjectionRetryDelayMs = 1500;
+      rtHideControllerOverlay();
+
       maybeApplyUiState(uiState);
     } catch (e) {
-      if (debug) console.warn("[rt] refreshUiProjectionState error", reason, e);
+      rtShowControllerOverlay("Lost connection to rt-controller. Reconnecting…");
+
+      if (debug) {
+        console.warn("[rt] refreshUiProjectionState error", reason, e);
+      }
+
+      scheduleUiProjectionRetry("retry-after-error");
+      uiProjectionRetryDelayMs = Math.min(uiProjectionRetryDelayMs * 2, 5000);
     } finally {
       uiProjectionInflight = false;
       if (uiProjectionNeedsRerun) {
@@ -925,6 +1004,7 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
 
     store.subscribe(UI_PROJECTION_TOPIC);
     uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {
+      clearUiProjectionRetryTimer();
       void refreshUiProjectionState("bus");
     });
 
@@ -957,7 +1037,6 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
     await emitIntent(validation.intent, validation.params);
   });
 
-  // Initial mount follows controller state if present; otherwise home.
   await refreshUiProjectionState("initial");
   if (!currentPageId) {
     mountCurrentPage("home", null);
@@ -971,6 +1050,7 @@ function buildInjectedUiStateForPanel(panelId, uiState) {
         uiProjectionUnsub();
       }
       store.unsubscribe(UI_PROJECTION_TOPIC);
+      clearUiProjectionRetryTimer();
       if (uiProjectionPollTimer) clearInterval(uiProjectionPollTimer);
     } catch (_) {}
   });

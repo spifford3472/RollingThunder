@@ -638,13 +638,25 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                 return False
             if "\n" in ch or "\r" in ch:
                 return False
-
             r = self._redis_pubsub_client()
             payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
             r.publish(ch, payload)
             return True
         except Exception:
             return False
+        finally:
+            try:
+                if r is not None:
+                    r.close()
+            except Exception:
+                pass
+# ORIGINAL CODE COMMENTED OUT (2026-04-18):
+#            r = self._redis_pubsub_client()
+#            payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+#            r.publish(ch, payload)
+#            return True
+#        except Exception:
+#            return False
 
     def _handle_ui_intent(self) -> None:
         """
@@ -999,7 +1011,19 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         finally:
             try:
                 if "pubsub" in locals():
-                    pubsub.close()  # type: ignore[name-defined]
+                    try:
+                        pubsub.unsubscribe()  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                    try:
+                        pubsub.close()  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                if "r" in locals():
+                    r.close()  # type: ignore[name-defined]
             except Exception:
                 pass
 

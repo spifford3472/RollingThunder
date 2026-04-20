@@ -1,0 +1,62 @@
+#rt-controller-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+#rt-controller-overlay.rt-visible {
+  display: flex;
+}
+
+#rt-controller-overlay .rt-controller-overlay-card {
+  min-width: 320px;
+  max-width: 640px;
+  margin: 24px;
+  padding: 24px 28px;
+  border-radius: 16px;
+  background: rgba(18, 18, 18, 0.92);
+  color: #f5f5f5;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  text-align: center;
+  font-family: sans-serif;
+}
+
+#rt-controller-overlay .rt-controller-overlay-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+#rt-controller-overlay .rt-controller-overlay-message {
+  font-size: 18px;
+  line-height: 1.4;
+  opacity: 0.95;
+  margin-bottom: 14px;
+}
+
+#rt-controller-overlay .rt-controller-overlay-detail {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+#rt-controller-overlay .rt-controller-overlay-spinner {
+  width: 42px;
+  height: 42px;
+  margin: 0 auto 18px auto;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(255, 255, 255, 0.95);
+  animation: rt-controller-overlay-spin 1s linear infinite;
+}
+
+@keyframes rt-controller-overlay-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
