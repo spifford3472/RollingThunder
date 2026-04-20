@@ -70,7 +70,8 @@ fail_missing_dir "${SVC_DIR}"
 fail_missing_dir "${TOOLS_DIR}"
 
 fail_missing "${SYSTEMD_DIR}/rt-display-presence.service"
-fail_missing "${OPS_DIR}/rt-display-kiosk.service.template"
+#Remove because now using wayland and the old X11-based unit is no longer relevant
+#fail_missing "${OPS_DIR}/rt-display-kiosk.service.template"
 fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service"
