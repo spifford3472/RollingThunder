@@ -32,6 +32,8 @@ SYSTEMD_DIR="${NODE_DIR}/systemd"
 SVC_DIR="${NODE_DIR}/services"
 TOOLS_DIR="${NODE_DIR}/tools"
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
+SVC_USER_DIR="${NODE_DIR}/autostart_systemd"
+SVC_AUTOSTART_DIR="${NODE_DIR}/autostart"
 
 # runtime destinations (spiff-owned)
 RT_ROOT="/opt/rollingthunder"
@@ -39,6 +41,8 @@ RT_NODE="${RT_ROOT}/nodes/rt-display"
 RT_SVC="${RT_NODE}/services"
 RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
+RT_AUTOSTART="/home/spiff/.config/autostart"
+RT_USER_SVC="/home/spiff/.config/systemd/user"
 
 UNIT_DST_DIR="/etc/systemd/system"
 
@@ -50,7 +54,6 @@ LEGACY_UNITS=(
 # NOTE: rt-display-ui.service is intentionally removed.
 UNITS=(
   "rt-display-presence.service"
-  "rt-display-kiosk.service"
 
   # NEW: per-node UI intent worker (unique unit name)
   "rt-display-ui-intent-worker.service"
@@ -94,7 +97,7 @@ RSYNC_EXCLUDES=(
 echo "[push] Ensure runtime dirs exist (spiff-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   mkdir -p '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy';
-  mkdir -p '${RT_NODE}';
+  mkdir -p '${RT_NODE}' '${RT_AUTOSTART}' '${RT_USER_SVC}';
 "
 
 # Optional legacy cleanup (strongly recommended once)
@@ -108,6 +111,21 @@ if [[ "${CLEAN_LEGACY}" == "1" ]]; then
   else
     echo "[dry] would rm -rf ${RT_NODE}/ui ${RT_ROOT}/config ${RT_NODE}/config ..."
   fi
+fi
+
+echo "[push] Disable/remove legacy system rt-display-kiosk.service"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    sudo systemctl stop rt-display-kiosk.service 2>/dev/null || true
+    sudo systemctl disable rt-display-kiosk.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/rt-display-kiosk.service
+    sudo rm -f /etc/systemd/system/graphical.target.wants/rt-display-kiosk.service
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed rt-display-kiosk.service 2>/dev/null || true
+    exit 0
+  "
+else
+  echo "[dry] would stop/disable/remove legacy system rt-display-kiosk.service"
 fi
 
 echo "[push] Ensure venv exists + deps"
@@ -135,6 +153,16 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
 
 # ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
+echo "[push] Sync user service -> ${RT_USER_SVC}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${SVC_USER_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_USER_SVC}/"
+
+echo "[push] Sync desktop autostart -> ${RT_AUTOSTART}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${SVC_AUTOSTART_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_AUTOSTART}/"
+
 echo "[push] Sync services dir -> ${RT_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
@@ -164,6 +192,8 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     chmod +x '${RT_OPS}/rt-display-kiosk.sh' || true
     chmod +x '${RT_TOOLS}/publish_deploy_report.sh' || true
     chmod +x '${RT_SVC}/rt-display-ui-intent-worker.py' || true
+    chmod +x '${RT_AUTOSTART}/rt-display-kiosk.desktop' || true
+    chmod +x '${RT_USER_SVC}/rt-display-kiosk.service' || true
   "
 else
   echo "[dry] would chmod +x kiosk + publish_deploy_report + rt-display-ui-intent-worker.py"
@@ -175,10 +205,6 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-display-presence.service" \
     "${UNIT_DST_DIR}/rt-display-presence.service" "644"
-
-  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
-    "${OPS_DIR}/rt-display-kiosk.service.template" \
-    "${UNIT_DST_DIR}/rt-display-kiosk.service" "644"
 
   # NEW: ui intent worker unit
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \

@@ -369,6 +369,8 @@ def handle_node_reboot(r: redis.Redis, params: Dict[str, Any]) -> None:
     publish_bus(r, {**base, "ok": ok, "msg": msgtxt})
 
 
+# --- ONLY SHOWING THE MODIFIED FUNCTION ---
+
 def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
     base = _radio_result_base(params)
     target = str(base["target"]).strip()
@@ -407,6 +409,12 @@ def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
     if mode == "":
         mode = None
 
+    # ✅ NEW: extract band (safe, optional)
+    band_raw = params.get("band")
+    band = str(band_raw).strip() if band_raw is not None else None
+    if band == "":
+        band = None
+
     passband_raw = params.get("passband_hz")
     if passband_raw in (None, ""):
         passband_hz = None
@@ -443,11 +451,13 @@ def handle_radio_tune(r: redis.Redis, params: Dict[str, Any]) -> None:
     RadioValidationError = runtime["RadioValidationError"]
 
     try:
+        # ✅ NEW: pass band into backend
         result = service.tune(
             freq_hz=freq_hz,
             mode=mode,
             passband_hz=passband_hz,
             autotune=autotune,
+            band=band,  # <-- THIS is the key change
         )
 
         _publish_radio_tune_ok(
