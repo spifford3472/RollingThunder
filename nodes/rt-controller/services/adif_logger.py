@@ -25,7 +25,8 @@ REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
 REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
 
 INTENTS_CH = os.environ.get("RT_UI_INTENTS_CHANNEL", "rt:ui:intents")
-UI_BUS_CH = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CH = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
+LAST_RESULT_KEY = os.environ.get("RT_UI_LAST_RESULT_KEY", "rt:controller:ui:last_result")
 NODE_ID = os.environ.get("RT_NODE_ID", "rt-controller")
 
 # Conservative defaults; override with env if your live keys differ.
@@ -119,8 +120,34 @@ def redis_client() -> redis.Redis:
     return r
 
 
-def publish_bus(r: redis.Redis, payload: Mapping[str, Any]) -> None:
-    r.publish(UI_BUS_CH, compact_json(dict(payload)))
+def publish_state_changed(r: redis.Redis, keys: list[str], source: str = "adif_logger") -> None:
+    evt = {
+        "topic": "state.changed",
+        "payload": {"keys": keys[:50]},
+        "ts_ms": now_ms(),
+        "source": source,
+    }
+    r.publish(SYSTEM_BUS_CH, compact_json(evt))
+
+
+def publish_last_result(r: redis.Redis, payload: Mapping[str, Any]) -> None:
+    obj = dict(payload)
+
+    result = "ok" if bool(obj.get("ok")) else "error"
+    reason = obj.get("error") or obj.get("reason") or obj.get("topic")
+
+    last_result = {
+        "result": result,
+        "intent": "radio.log_qso",
+        "reason": str(reason or ""),
+        "execution_id": str(obj.get("qso_id") or obj.get("ts_ms") or now_ms()),
+        "page": "pota",
+        "focused_panel": None,
+        "ts_ms": int(obj.get("ts_ms") or now_ms()),
+    }
+
+    r.set(LAST_RESULT_KEY, compact_json(last_result), px=5000)
+    publish_state_changed(r, [LAST_RESULT_KEY], source="adif_logger")
 
 
 def load_app_config() -> Dict[str, Any]:
@@ -288,7 +315,7 @@ def _publish_success(
         "exported_records": int(exported_records),
     }
 
-    publish_bus(r, payload)
+    publish_last_result(r, payload)
 
 
 def _publish_error(
@@ -303,7 +330,7 @@ def _publish_error(
         "error": error_message,
         "call": call,
     }
-    publish_bus(r, payload)
+    publish_last_result(r, payload)
 
 
 def _render_adif_text(records: list[str]) -> str:
@@ -441,34 +468,19 @@ def configure_logging() -> None:
 def main() -> None:
     configure_logging()
     logger.info(
-        "Starting adif_logger node=%s redis=%s:%s/%s intents=%s ui_bus=%s",
+        "Starting adif_logger node=%s redis=%s:%s/%s intents=%s system_bus=%s last_result_key=%s",
         NODE_ID,
         REDIS_HOST,
         REDIS_PORT,
         REDIS_DB,
         INTENTS_CH,
-        UI_BUS_CH,
+        SYSTEM_BUS_CH,
+        LAST_RESULT_KEY,
     )
 
     r = redis_client()
     ps = r.pubsub(ignore_subscribe_messages=True)
     ps.subscribe(INTENTS_CH)
-
-    publish_bus(
-        r,
-        {
-            "topic": HELLO_TOPIC,
-            "node": NODE_ID,
-            "ts_ms": now_ms(),
-            "intents_channel": INTENTS_CH,
-            "ui_bus_channel": UI_BUS_CH,
-            "radio_state_key": RADIO_STATE_KEY,
-            "operator_state_key": OPERATOR_STATE_KEY,
-            "motion_state_key": MOTION_STATE_KEY,
-            "gps_pos_key": GPS_POS_KEY,
-            "duplicate_lookback": DUPLICATE_LOOKBACK,
-        },
-    )
 
     while True:
         try:

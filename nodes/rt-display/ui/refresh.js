@@ -36,7 +36,7 @@ function renderHdr(slot, panel, life) {
 }
 
 export function startPanelRefresh({ slot, panel, bindings, store, render }) {
-  const mode = (panel?.refresh?.mode || "poll").toLowerCase();
+  const mode = (panel?.refresh?.mode || "push").toLowerCase();
   const pollIntervalMs = Math.max(250, Number(panel?.refresh?.intervalMs || 1000));
   const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
@@ -198,16 +198,18 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     });
   }
 
-  const fallbackMs =
-    mode === "push"
-      ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
-      : pollIntervalMs;
-
-  const t = setInterval(tick, fallbackMs);
+  // Event-driven only; no panel polling fallback
+  //const fallbackMs =
+  //  mode === "push"
+  //    ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
+  //    : pollIntervalMs;
+  //
+  //const t = setInterval(tick, fallbackMs);
+  const t = null;
 
   slot.__rtStop = () => {
     stopped = true;
-    clearInterval(t);
+    if (t) clearInterval(t);
 
     if (typeof unsub === "function") unsub();
 

@@ -30,6 +30,15 @@ auditable control flow - no hidden bypass paths
 
 There is exactly **one control vocabulary**.
 
+All input sources, including:
+
+- UI (browser)
+- Physical control panel (ESP32)
+- Meshtastic
+- Automation
+
+must emit intents using this vocabulary.
+
 ------------------------------------------------------------------------
 
 ## 2. Intent Structure
@@ -237,6 +246,24 @@ logic in panel - duplicate control vocabularies
 
 Use this document when: - adding controls - adding UI features - adding
 automation - reviewing safety
+
+------------------------------------------------------------------------
+
+## 11. Relationship to Event System
+
+Intents are transported via rt:ui:intents.
+
+They are:
+
+- the ONLY control input path
+- consumed by the controller
+- translated into state changes
+
+Intents do NOT directly trigger UI updates.
+
+UI updates occur only via:
+- state changes in Redis
+- ui.projection.changed events on rt:ui:bus
 
 ------------------------------------------------------------------------
 

@@ -13,7 +13,7 @@ REDIS_DB   = int(os.environ.get("RT_REDIS_DB","0"))
 REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
 REDIS_TIMEOUT = float(os.environ.get("RT_REDIS_TIMEOUT_SEC","0.35"))
 
-UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL","rt:ui:bus")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 
 WPSD_BASE = os.environ.get("RT_WPSD_BASE_URL","http://192.168.8.184").rstrip("/")
 CALLER_URL = WPSD_BASE + "/mmdvmhost/caller_details_table.php"
@@ -43,7 +43,7 @@ def _strip_quotes(v: str) -> str:
 def publish_changed(r: redis.Redis, keys: list[str], source: str) -> None:
     evt = {"topic":"state.changed","payload":{"keys":keys},"ts_ms":now_ms(),"source":source}
     try:
-        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",",":")))
+        r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",",":")))
     except Exception:
         pass
 
@@ -277,7 +277,7 @@ def main() -> None:
                 snapshot["bm_mapped_talkgroups"] = parse_bm_config(bm)
 
             # if we got anything meaningful, we can call it online-ish
-            if snapshot.get("wpsd_version") or snapshot["rf"] or snapshot["dmr_networks"]:
+            if snapshot.get("wpsd_version") or snapshot.get("rf") or snapshot.get("dmr_networks"):
                 snapshot["status"] = "online"
 
             r.set(KEY_SNAPSHOT, json.dumps(snapshot, separators=(",",":")))

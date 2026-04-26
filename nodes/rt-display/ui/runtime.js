@@ -1008,9 +1008,10 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       void refreshUiProjectionState("bus");
     });
 
-    uiProjectionPollTimer = setInterval(() => {
-      void refreshUiProjectionState("fallback");
-    }, 10000);
+    // FALLBACK POLLING DISABLED - event driven only
+    //uiProjectionPollTimer = setInterval(() => {
+    //  void refreshUiProjectionState("fallback");
+    //}, 10000);
   }
 
   function keyToIntent(e) {

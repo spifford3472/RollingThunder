@@ -17,7 +17,8 @@ REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
 REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
 
 INTENTS_CH = os.environ.get("RT_UI_INTENTS_CHANNEL", "rt:ui:intents")
-UI_BUS_CH = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CH = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
+LAST_RESULT_KEY = os.environ.get("RT_UI_LAST_RESULT_KEY", "rt:controller:ui:last_result")
 
 CONFIG_PATH = Path(os.environ.get("RT_CONFIG_PATH", "/opt/rollingthunder/config/app.json"))
 NODE_ID = os.environ.get("RT_NODE_ID", "unknown-node")
@@ -206,8 +207,34 @@ def redis_client() -> redis.Redis:
     return r
 
 
-def publish_bus(r: redis.Redis, payload: Dict[str, Any]) -> None:
-    r.publish(UI_BUS_CH, json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+def publish_state_changed(r: redis.Redis, keys: list[str], source: str = "ui_intent_worker") -> None:
+    evt = {
+        "topic": "state.changed",
+        "payload": {"keys": keys[:50]},
+        "ts_ms": now_ms(),
+        "source": source,
+    }
+    r.publish(SYSTEM_BUS_CH, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
+
+
+def publish_last_result(r: redis.Redis, payload: Dict[str, Any]) -> None:
+    obj = dict(payload)
+
+    result = "ok" if bool(obj.get("ok")) else "error"
+    reason = obj.get("msg") or obj.get("message") or obj.get("error") or obj.get("status")
+
+    last_result = {
+        "result": result,
+        "intent": str(obj.get("topic") or ""),
+        "reason": str(reason or ""),
+        "execution_id": str(obj.get("ts_ms") or now_ms()),
+        "page": "pota",
+        "focused_panel": None,
+        "ts_ms": int(obj.get("ts_ms") or now_ms()),
+    }
+
+    r.set(LAST_RESULT_KEY, json.dumps(last_result, separators=(",", ":")), px=5000)
+    publish_state_changed(r, [LAST_RESULT_KEY], source="ui_intent_worker")
 
 
 def _truthy(x: Any) -> bool:
@@ -261,7 +288,7 @@ def _publish_radio_tune_ok(
     if autotune_error:
         payload["autotune_error"] = autotune_error
 
-    publish_bus(r, payload)
+    publish_last_result(r, payload)
 
 
 def _publish_radio_tune_error(
@@ -271,7 +298,7 @@ def _publish_radio_tune_error(
     error_code: str,
     message: str,
 ) -> None:
-    publish_bus(
+    publish_last_result(
         r,
         {
             **base,
@@ -310,7 +337,7 @@ def _publish_radio_atas_tune_result(
         if error_code:
             payload["error_code"] = error_code
 
-    publish_bus(r, payload)
+    publish_last_result(r, payload)
 
 
 def reboot_this_node() -> tuple[bool, str]:
@@ -350,23 +377,23 @@ def handle_node_reboot(r: redis.Redis, params: Dict[str, Any]) -> None:
     }
 
     if not target:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:missing_nodeId"})
+        publish_last_result(r, {**base, "ok": False, "msg": "bad_request:missing_nodeId"})
         return
 
     if target != NODE_ID:
-        publish_bus(r, {**base, "ok": False, "msg": "not_for_this_node"})
+        publish_last_result(r, {**base, "ok": False, "msg": "not_for_this_node"})
         return
 
     if not ALLOW_NODE_REBOOT:
-        publish_bus(r, {**base, "ok": False, "msg": "reboot_disabled"})
+        publish_last_result(r, {**base, "ok": False, "msg": "reboot_disabled"})
         return
 
     if not confirm:
-        publish_bus(r, {**base, "ok": False, "msg": "not_confirmed"})
+        publish_last_result(r, {**base, "ok": False, "msg": "not_confirmed"})
         return
 
     ok, msgtxt = reboot_this_node()
-    publish_bus(r, {**base, "ok": ok, "msg": msgtxt})
+    publish_last_result(r, {**base, "ok": ok, "msg": msgtxt})
 
 
 # --- ONLY SHOWING THE MODIFIED FUNCTION ---
@@ -689,15 +716,15 @@ def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
     }
 
     if NODE_ID != "rt-controller":
-        publish_bus(r, {**base, "ok": False, "msg": "wrong_node_role"})
+        publish_last_result(r, {**base, "ok": False, "msg": "wrong_node_role"})
         return
 
     if not band:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:missing_band"})
+        publish_last_result(r, {**base, "ok": False, "msg": "bad_request:missing_band"})
         return
 
     if band not in POTA_BAND_ORDER:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:invalid_band"})
+        publish_last_result(r, {**base, "ok": False, "msg": "bad_request:invalid_band"})
         return
 
     ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
@@ -706,7 +733,7 @@ def handle_pota_select_band(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     r.set(POTA_CONTEXT_KEY, compact_json(ctx))
 
-    publish_bus(r, {**base, "ok": True, "msg": "selected_band_updated"})
+    publish_last_result(r, {**base, "ok": True, "msg": "selected_band_updated"})
 
 
 POTA_NEARBY_KEY = os.environ.get("RT_POTA_NEARBY_KEY", "rt:pota:nearby")
@@ -745,7 +772,7 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
     }
 
     if NODE_ID != "rt-controller":
-        publish_bus(r, {**base, "ok": False, "msg": "wrong_node_role"})
+        publish_last_result(r, {**base, "ok": False, "msg": "wrong_node_role"})
         return
 
     ctx = normalize_pota_context(load_json_object(r, POTA_CONTEXT_KEY))
@@ -759,13 +786,13 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
         ctx["selection_ts"] = now_ms()
 
         r.set(POTA_CONTEXT_KEY, compact_json(ctx))
-        publish_bus(r, {**base, "ok": True, "msg": "selected_park_cleared"})
+        publish_last_result(r, {**base, "ok": True, "msg": "selected_park_cleared"})
         return
 
     nearby_map = nearby_choices_by_ref(r)
     choice = nearby_map.get(park_ref)
     if not choice:
-        publish_bus(r, {**base, "ok": False, "msg": "bad_request:park_not_in_nearby_choices"})
+        publish_last_result(r, {**base, "ok": False, "msg": "bad_request:park_not_in_nearby_choices"})
         return
 
     park_name = str(choice.get("name") or "").strip()
@@ -821,7 +848,7 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
 
     r.set(POTA_CONTEXT_KEY, compact_json(ctx))
 
-    publish_bus(r, {
+    publish_last_result(r, {
         **base,
         "ok": True,
         "msg": result_msg,
@@ -835,7 +862,7 @@ def main() -> None:
     ps = r.pubsub(ignore_subscribe_messages=True)
     ps.subscribe(INTENTS_CH)
 
-    publish_bus(
+    publish_last_result(
         r,
         {
             "topic": "ui.intent.worker.hello",

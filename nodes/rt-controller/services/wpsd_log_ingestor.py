@@ -5,14 +5,14 @@ wpsd_log_ingestor.py — RollingThunder (rt-controller)
 Purpose:
 - Read-only ingest of WPSD / Pi-Star MMDVMHost logs (via SSH) for real RF truth
 - Derive per-slot activity + recent TX ring for UI
-- Publish changes to UI bus (Redis PubSub), bounded
+- Publish changes to system bus (Redis PubSub), bounded
 
 Writes (Redis):
 - rt:wpsd:rf:slots     (string JSON) schema rt.wpsd.rf.slots.v1
 - rt:wpsd:rf:recent    (string JSON) schema rt.wpsd.rf.recent.v1
 
 Publishes (Redis PubSub):
-- rt:ui:bus message: {"topic":"state.changed","payload":{"keys":[...]}, ...}
+- rt:system:bus message: {"topic":"state.changed","payload":{"keys":[...]}, ...}
 
 Constraints:
 - Read-only to WPSD appliance (no changes, only ssh + tail)
@@ -49,7 +49,7 @@ REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
 REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
 REDIS_TIMEOUT = float(os.environ.get("RT_REDIS_TIMEOUT_SEC", "0.35"))
 
-UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 
 # WPSD SSH target
 WPSD_HOST = os.environ.get("RT_WPSD_HOST", "rt-wpsd.local")
@@ -234,7 +234,7 @@ def publish_state_changed(r: redis.Redis, keys: List[str], source: str) -> None:
         "source": source,
     }
     try:
-        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
+        r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
     except Exception:
         pass
 

@@ -22,7 +22,9 @@ Phase 15b:
 
 Fix (2026-02-26/27):
 - Publish intents to RT_UI_INTENTS_CHANNEL (default rt:ui:intents) so ui_intent_worker.py receives them.
-- Optionally echo the same intent event to the UI bus (rt:ui:bus) for observability.
+
+Event hardening (2026-04-26):
+- Do not echo intents to rt:ui:bus. The UI bus is reserved for ui.projection.changed only.
 """
 
 from __future__ import annotations
@@ -118,8 +120,8 @@ UI_BUS_CHANNEL_PREFIX = os.environ.get("RT_UI_BUS_CHANNEL_PREFIX", "rt:")  # mus
 # MUST match ui_intent_worker.py's INTENTS_CH env default ("rt:ui:intents")
 UI_INTENTS_CHANNEL = os.environ.get("RT_UI_INTENTS_CHANNEL", "rt:ui:intents")
 
-# Optional: echo intents to the UI bus for observability (default on)
-UI_INTENTS_ECHO_TO_BUS = (os.environ.get("RT_UI_INTENTS_ECHO_TO_BUS", "1").strip() == "1")
+# Event contract: intents must never be echoed to rt:ui:bus.
+# rt:ui:bus is reserved for projector-owned ui.projection.changed events only.
 
 # Intents: conservative bounds + validation
 MAX_INTENT_LEN = int(os.environ.get("RT_MAX_INTENT_LEN", "80"))
@@ -742,15 +744,14 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
             payload["errors"].append(f"channel={UI_INTENTS_CHANNEL}")
             return self._write_json(503, payload)
 
-        # 2) Optional echo to bus (UI/debug visibility)
-        if UI_INTENTS_ECHO_TO_BUS:
-            try:
-                self._publish_bus_event(UI_BUS_DEFAULT_CHANNEL, event_obj)
-            except Exception:
-                pass
+        # 2) Do NOT echo intents to rt:ui:bus.
+        # Event contract:
+        # - rt:ui:intents carries control inputs
+        # - rt:ui:bus carries projector-owned ui.projection.changed only
+        # Echoing intents to the UI bus creates a second event path and is forbidden.
 
         payload["ok"] = True
-        payload["data"] = {"published": True, "channel": UI_INTENTS_CHANNEL, "echo_to_bus": UI_INTENTS_ECHO_TO_BUS}
+        payload["data"] = {"published": True, "channel": UI_INTENTS_CHANNEL, "echo_to_bus": False}
         return self._write_json(200, payload)
 
     # ---------- Static serving (/ui/* and /config/*) ----------

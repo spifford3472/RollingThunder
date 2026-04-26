@@ -189,6 +189,61 @@ APIs expose **state**, not control loops.
 
 ---
 
+### 4.4 Redis Event Model (Event-Driven UI)
+
+RollingThunder uses Redis Pub/Sub for internal event signaling.
+
+The event model is strictly partitioned:
+
+#### Channels
+
+- rt:ui:intents  
+  - All control inputs (UI, hardware, Meshtastic)
+  - Declarative actions only
+  - Consumed by controller
+
+- rt:system:bus  
+  - System state changes (services, nodes, sensors)
+  - High-frequency, internal signals
+  - Not consumed directly by UI
+
+- rt:ui:bus  
+  - UI projection change notifications
+  - Low-frequency, meaningful UI updates only
+  - Consumed by rt-display
+
+#### Panel Integration
+
+- Physical panel inputs are published as intents to rt:ui:intents
+- LED updates are derived from UI projection state
+- Panel does not subscribe to event buses directly
+
+#### Rules
+
+- UI MUST ONLY subscribe to rt:ui:bus
+- UI MUST ignore rt:system:bus
+- Controller is the ONLY publisher of ui.projection.changed
+- System services MUST NOT publish to rt:ui:bus
+- Events are notifications, not state — Redis remains the source of truth
+
+#### Flow
+
+Input → rt:ui:intents  
+→ controller processes  
+→ Redis state updated  
+→ projector detects change  
+→ publishes ui.projection.changed  
+→ UI fetches projection  
+
+#### Constraints (Non-Negotiable)
+
+- No polling loops in UI
+- No direct UI reaction to system events
+- No duplicate event paths
+- No hidden control channels
+
+---
+
 ## 5. UI Architecture
 
 ### 5.1 Page Model
@@ -223,6 +278,72 @@ Physical controls (ESP32):
 
 UI logic is deterministic and minimal.
 No free-form typing.
+
+---
+
+### 5.4 UI Event Model
+
+The UI is strictly event-driven.
+
+- UI subscribes ONLY to rt:ui:bus
+- UI reacts ONLY to ui.projection.changed
+- UI does NOT subscribe to system-level events
+- UI does NOT poll for state continuously
+
+All UI state is derived from controller-owned Redis keys.
+
+The UI is a pure renderer.
+
+---
+
+## 5.5 Physical Control & LED Feedback Model
+
+RollingThunder includes a physical control panel (ESP32-based) with:
+
+- Momentary buttons
+- Rotary encoder
+- LED indicators per control
+
+### Input Model
+
+All physical inputs are converted into intents:
+
+ESP32 → panel bridge → rt:ui:intents → controller
+
+The panel is NOT a control authority.
+It is an input emitter only.
+
+Rules:
+
+- Panel must not execute logic
+- Panel must not directly control radios or services
+- Panel must emit only valid intents
+- Panel follows the same intent vocabulary as UI and Meshtastic
+
+### LED Feedback Model
+
+LEDs are controlled exclusively by the controller.
+
+Flow:
+
+Controller → Redis UI projection → LED sender → ESP32
+
+Rules:
+
+- LED state is derived from controller-owned UI state
+- Panel must not maintain independent LED logic
+- LED behavior must reflect:
+  - page state
+  - focus state
+  - browse state
+  - modal state
+
+### Constraints (Non-Negotiable)
+
+- Panel is stateless
+- Panel does not interpret system state
+- LED output is declarative, not imperative
+- No direct panel ↔ radio communication
 
 ---
 
