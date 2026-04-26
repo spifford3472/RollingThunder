@@ -11,11 +11,11 @@ ExecStart=/opt/rollingthunder/nodes/rt-display/services/rt-display-kiosk-watchdo
 Restart=always
 RestartSec=15
 
-Environment=RT_WATCHDOG_MEM_MB=800
-Environment=RT_WATCHDOG_SWAP_MB=200
-Environment=RT_WATCHDOG_CPU_PCT=90
-Environment=RT_WATCHDOG_CPU_SEC=60
-Environment=RT_WATCHDOG_INTERVAL=30
+Environment=RT_WATCHDOG_MEM_MB=1100
+Environment=RT_WATCHDOG_SWAP_MB=350
+Environment=RT_WATCHDOG_CPU_PCT=95
+Environment=RT_WATCHDOG_CPU_SEC=180
+Environment=RT_WATCHDOG_INTERVAL=60
 
 StandardOutput=journal
 StandardError=journal
