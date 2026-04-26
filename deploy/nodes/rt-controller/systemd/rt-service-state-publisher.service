@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder Service State Publisher (systemd -> Redis)
-After=network-online.target redis.service
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]

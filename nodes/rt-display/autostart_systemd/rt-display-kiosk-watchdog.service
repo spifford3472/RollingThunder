@@ -1,0 +1,24 @@
+[Unit]
+Description=RollingThunder rt-display Kiosk Watchdog
+After=rt-display-kiosk.service
+Requires=rt-display-kiosk.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/opt/rollingthunder/nodes/rt-display/services/rt-display-kiosk-watchdog.sh
+
+Restart=always
+RestartSec=15
+
+Environment=RT_WATCHDOG_MEM_MB=800
+Environment=RT_WATCHDOG_SWAP_MB=200
+Environment=RT_WATCHDOG_CPU_PCT=90
+Environment=RT_WATCHDOG_CPU_SEC=60
+Environment=RT_WATCHDOG_INTERVAL=30
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

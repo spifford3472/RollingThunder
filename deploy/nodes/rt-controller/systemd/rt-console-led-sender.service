@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder Console LED Sender
-After=network-online.target
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]

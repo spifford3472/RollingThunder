@@ -32,15 +32,17 @@ class RadioService:
         self,
         *,
         freq_hz: int,
-        mode: str,
+        mode: str | None,
         passband_hz: int | None = None,
         autotune: bool = False,
+        band: str | None = None,
     ):
         return self.backend.tune(
             freq_hz=freq_hz,
             mode=mode,
             passband_hz=passband_hz,
             autotune=autotune,
+            band=band,
         )
 
     def atas_tune(

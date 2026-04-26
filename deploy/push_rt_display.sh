@@ -51,11 +51,12 @@ LEGACY_UNITS=(
   "rt-deploy-report-publisher.timer"
 )
 
-# NOTE: rt-display-ui.service is intentionally removed.
+# NOTE: rt-display-kiosk.service is a user service (autostart_systemd) not a system unit.
+# The watchdog monitors it via pgrep and restarts it via systemctl --user as root sudo.
 UNITS=(
   "rt-display-presence.service"
 
-  # NEW: per-node UI intent worker (unique unit name)
+  # per-node UI intent worker (unique unit name)
   "rt-display-ui-intent-worker.service"
 
   # deploy report publisher
@@ -71,18 +72,20 @@ fail_missing_dir "${OPS_DIR}"
 fail_missing_dir "${SYSTEMD_DIR}"
 fail_missing_dir "${SVC_DIR}"
 fail_missing_dir "${TOOLS_DIR}"
+fail_missing_dir "${SVC_USER_DIR}"
+fail_missing_dir "${SVC_AUTOSTART_DIR}"
 
 fail_missing "${SYSTEMD_DIR}/rt-display-presence.service"
-#Remove because now using wayland and the old X11-based unit is no longer relevant
-#fail_missing "${OPS_DIR}/rt-display-kiosk.service.template"
-fail_missing "${OPS_DIR}/rt-display-kiosk.sh"
-fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
+fail_missing "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.timer"
+
+fail_missing "${SVC_DIR}/rt-display-kiosk.sh"
+fail_missing "${SVC_DIR}/rt-display-kiosk-watchdog.sh"
+
+fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
 
-# NEW: intent worker artifacts
-fail_missing "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service"
 fail_missing "${SVC_DIR}/rt-display-ui-intent-worker.py"
 
 # Common rsync excludes
@@ -135,9 +138,14 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     if [ ! -x '${RT_ROOT}/.venv/bin/python' ]; then
       python3 -m venv '${RT_ROOT}/.venv'
     fi
-    '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
-    '${RT_ROOT}/.venv/bin/pip' install paho-mqtt >/dev/null
-    '${RT_ROOT}/.venv/bin/pip' install redis >/dev/null
+    # Only upgrade pip/deps if PyPI is reachable
+    if curl -fsS --max-time 5 https://pypi.org >/dev/null 2>&1; then
+      '${RT_ROOT}/.venv/bin/pip' install --upgrade pip >/dev/null
+      '${RT_ROOT}/.venv/bin/pip' install paho-mqtt >/dev/null
+      '${RT_ROOT}/.venv/bin/pip' install redis >/dev/null
+    else
+      echo '[venv] PyPI unreachable, skipping pip upgrade (using existing packages)'
+    fi
   "
 else
   echo "[dry] would ensure venv exists and paho-mqtt + redis installed"
@@ -148,12 +156,13 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "mkdir -p ${COMMON_SERVICES_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --no-times \
   --no-group --no-perms --omit-dir-times \
-  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
+  --exclude='.venv/' --exclude='.git/' --exclude='.dev/' \
   "${COMMON_SERVICES_SRC_DIR}" \
   "${TARGET_USER}@${TARGET_HOST}:${COMMON_SERVICES_DST_DIR}"
 
-# ---- USER-OWNED SYNC (services + ops + tools ONLY) ----
-echo "[push] Sync user service -> ${RT_USER_SVC}"
+# ---- USER-OWNED SYNC ----
+echo "[push] Sync user systemd service -> ${RT_USER_SVC}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${SVC_USER_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_USER_SVC}/"
@@ -178,8 +187,7 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
-# Global Tools will always overwrite system tools since they are meant to be shared across nodes and may contain updates that other nodes rely on. 
-# This is in contrast to services/ops which are more node-specific and less likely to have cross-node dependencies.
+# Global tools always overwrite — shared across nodes, may contain cross-node updates
 echo "[push] Sync global tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
@@ -190,13 +198,14 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   echo "[push] Ensure scripts executable"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     chmod +x '${RT_OPS}/rt-display-kiosk.sh' || true
+    chmod +x '${RT_SVC}/rt-display-kiosk-watchdog.sh' || true
     chmod +x '${RT_TOOLS}/publish_deploy_report.sh' || true
     chmod +x '${RT_SVC}/rt-display-ui-intent-worker.py' || true
     chmod +x '${RT_AUTOSTART}/rt-display-kiosk.desktop' || true
     chmod +x '${RT_USER_SVC}/rt-display-kiosk.service' || true
   "
 else
-  echo "[dry] would chmod +x kiosk + publish_deploy_report + rt-display-ui-intent-worker.py"
+  echo "[dry] would chmod +x kiosk + watchdog + publish_deploy_report + intent-worker + autostart"
 fi
 
 # ---- ROOT-OWNED: install systemd units ----
@@ -206,7 +215,6 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${SYSTEMD_DIR}/rt-display-presence.service" \
     "${UNIT_DST_DIR}/rt-display-presence.service" "644"
 
-  # NEW: ui intent worker unit
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-display-ui-intent-worker.service" \
     "${UNIT_DST_DIR}/rt-display-ui-intent-worker.service" "644"
@@ -240,7 +248,8 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl stop rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
     sudo systemctl disable rt-deploy-report-publisher.timer rt-deploy-report-publisher.service 2>/dev/null || true
-    sudo rm -f /etc/systemd/system/rt-deploy-report-publisher.timer /etc/systemd/system/rt-deploy-report-publisher.service
+    sudo rm -f /etc/systemd/system/rt-deploy-report-publisher.timer
+    sudo rm -f /etc/systemd/system/rt-deploy-report-publisher.service
     sudo systemctl daemon-reload
     exit 0
   "
@@ -248,8 +257,8 @@ else
   echo "[dry] would stop/disable/remove: ${LEGACY_UNITS[*]}"
 fi
 
-# ---- systemd reload + enable + restart ----
-echo "[push] systemd daemon-reload + enable + restart"
+# ---- systemd reload + enable + restart (system units only) ----
+echo "[push] systemd daemon-reload + enable + restart (system units)"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     sudo systemctl daemon-reload
@@ -258,6 +267,27 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   "
 else
   echo "[dry] would daemon-reload + enable + restart: ${UNITS[*]}"
+fi
+
+# ---- user systemd reload + enable + restart (kiosk user service) ----
+echo "[push] user systemd daemon-reload + enable (kiosk user service)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    systemctl --user daemon-reload
+    systemctl --user enable rt-display-kiosk.service
+  "
+else
+  echo "[dry] would user daemon-reload + enable rt-display-kiosk.service"
+fi
+
+echo "[push] user systemd daemon-reload + enable (kiosk watchdog user service)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
+    systemctl --user daemon-reload
+    systemctl --user enable rt-display-kiosk-watchdog.service
+  "
+else
+  echo "[dry] would user daemon-reload + enable rt-display-kiosk-watchdog.service"
 fi
 
 # Record deployed commit
@@ -273,16 +303,23 @@ fi
 
 # ---- Smoke checks ----
 if [[ "${DRY_RUN}" != "1" ]]; then
-  echo "[smoke] status (non-fatal)"
+  echo "[smoke] system unit status (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     sudo systemctl --no-pager --full status rt-display-presence.service | sed -n '1,40p' || true
-    sudo systemctl --no-pager --full status rt-display-kiosk.service   | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-display-kiosk-watchdog.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-ui-intent-worker.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-deploy-report-publisher.timer | sed -n '1,40p' || true
     exit 0
   "
 
-  require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
+  echo "[smoke] user unit status (non-fatal)"
+  ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
+    systemctl --user --no-pager --full status rt-display-kiosk.service | sed -n '1,40p' || true
+    exit 0
+  "
+
+  require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" \
+    "install with: sudo apt-get update && sudo apt-get install -y curl"
 
   echo "[smoke] kiosk target reachable? (non-fatal)"
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e

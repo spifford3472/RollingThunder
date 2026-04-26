@@ -1,7 +1,8 @@
 [Unit]
 Description=RollingThunder Panel Input Bridge
-After=network-online.target
+After=network-online.target redis-server.service
 Wants=network-online.target
+Requires=redis-server.service
 
 [Service]
 Type=simple

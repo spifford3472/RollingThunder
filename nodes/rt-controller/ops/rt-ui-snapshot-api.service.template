@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder UI Snapshot API (read-only, CORS-enabled)
-After=network-online.target
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]

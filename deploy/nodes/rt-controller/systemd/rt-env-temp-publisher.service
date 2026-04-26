@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder Env Temp Publisher
-After=network.target redis.service
+After=network.target redis-server.service
 Wants=network.target
 
 [Service]

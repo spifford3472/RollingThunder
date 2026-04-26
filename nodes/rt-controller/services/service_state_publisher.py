@@ -44,7 +44,7 @@ POLL_SEC = min(POLL_SEC, 60.0)  # must check at least every 60 seconds
 DISCOVER_SEC = float(os.environ.get("RT_DISCOVER_SEC", "30.0"))
 DISCOVER_SEC = min(DISCOVER_SEC, 60.0)  # redis keys must adapt within 60 seconds
 
-UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 
 
 DEFAULT_UNIT_MAP: Dict[str, str] = {
@@ -300,7 +300,7 @@ def main() -> None:
                         "source": "service_state_publisher",
                     }
                     try:
-                        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
+                        r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
                     except Exception:
                         pass
 

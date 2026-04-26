@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder Deploy Report (rt-controller -> Redis)
-After=network-online.target
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]

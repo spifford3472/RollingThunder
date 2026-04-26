@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder UI Interaction State
-After=network.target
+After=network.target redis-server.service
 
 [Service]
 Type=simple

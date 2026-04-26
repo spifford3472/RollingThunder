@@ -92,7 +92,15 @@ PROJECTED_KEYS = {
 }
 
 UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
+UI_INTENTS_CHANNEL = os.environ.get("RT_UI_INTENTS_CHANNEL", "rt:ui:intents")
 UI_PROJECTION_CHANGED_TOPIC = os.environ.get("RT_UI_PROJECTION_CHANGED_TOPIC", "ui.projection.changed")
+
+# Event-driven projection with a slow safety pass. The safety pass keeps the
+# single-writer lock fresh and catches any legacy writer that still does not
+# publish a state.changed event.
+DEFAULT_EVENT_TIMEOUT_MS = int(os.environ.get("UI_PROJECTOR_EVENT_TIMEOUT_MS", "5000"))
+DEFAULT_INTENT_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_INTENT_DEBOUNCE_MS", "75"))
 
 CONTROL_NAMES = ("back", "page", "primary", "cancel", "mode", "info")
 
@@ -127,6 +135,8 @@ class Config:
     result_keys: Sequence[str]
     page_context_keys: Sequence[str]
     system_health_keys: Sequence[str]
+    event_timeout_ms: int
+    intent_debounce_ms: int
 
 
 class UIStateProjector:
@@ -136,6 +146,7 @@ class UIStateProjector:
         self.redis_client = self._connect()
         self.running = True
         self.last_projection: Dict[str, str] = {}
+        self.last_comparison_projection: Dict[str, str] = {}
         self.last_optional_keys: set[str] = set()
         self._page_ids = self._load_page_ids()
         self._browsable_panel_ids = self._load_browsable_panel_ids()
@@ -204,28 +215,145 @@ class UIStateProjector:
         raise GracefulExit()
 
     def run(self) -> None:
-        self.log.info("starting ui state projector")
-        while self.running:
-            started = time.monotonic()
-            try:
-                if not self._acquire_writer_lock():
-                    time.sleep(min(self.config.poll_ms / 1000.0, 1.0))
-                    continue
+        self.log.info(
+            "starting event-driven ui state projector; system_bus=%s intents=%s safety_ms=%s",
+            SYSTEM_BUS_CHANNEL,
+            UI_INTENTS_CHANNEL,
+            self.config.event_timeout_ms,
+        )
 
-                upstream = self._read_upstream_state()
-                projection, optional_keys = self._build_projection(upstream)
-                self._apply_projection(projection, optional_keys)
+        # Initial projection at startup, then event-driven refreshes after that.
+        self._project_once(reason="startup")
+
+        pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(SYSTEM_BUS_CHANNEL, UI_INTENTS_CHANNEL)
+
+        safety_interval = max(0.5, self.config.event_timeout_ms / 1000.0)
+        debounce_interval = max(0.0, self.config.intent_debounce_ms / 1000.0)
+        next_safety_at = time.monotonic() + safety_interval
+        pending_projection_at: Optional[float] = None
+        pending_reason = "event"
+
+        while self.running:
+            try:
+                timeout = 0.25
+                now = time.monotonic()
+                next_due = next_safety_at
+                if pending_projection_at is not None:
+                    next_due = min(next_due, pending_projection_at)
+                timeout = max(0.05, min(timeout, next_due - now))
+
+                msg = pubsub.get_message(timeout=timeout)
+                now = time.monotonic()
+
+                if msg and self._message_should_trigger_projection(msg):
+                    if msg.get("channel") == UI_INTENTS_CHANNEL:
+                        pending_projection_at = now + debounce_interval
+                        pending_reason = "intent"
+                    else:
+                        pending_projection_at = now
+                        pending_reason = "state.changed"
+
+                if pending_projection_at is not None and now >= pending_projection_at:
+                    self._project_once(reason=pending_reason)
+                    pending_projection_at = None
+                    next_safety_at = time.monotonic() + safety_interval
+
+                if now >= next_safety_at:
+                    self._project_once(reason="safety")
+                    next_safety_at = time.monotonic() + safety_interval
+
             except (RedisConnectionError, RedisTimeoutError) as exc:
                 self.log.warning("redis error: %s", exc)
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
                 self.reconnect()
+                pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
+                pubsub.subscribe(SYSTEM_BUS_CHANNEL, UI_INTENTS_CHANNEL)
+                next_safety_at = time.monotonic() + safety_interval
+                pending_projection_at = time.monotonic()
+                pending_reason = "reconnect"
             except GracefulExit:
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
                 raise
             except Exception:
                 self.log.exception("unexpected projector loop failure")
+                time.sleep(0.25)
 
-            elapsed = time.monotonic() - started
-            sleep_for = max(0.0, (self.config.poll_ms / 1000.0) - elapsed)
-            time.sleep(sleep_for)
+    def _project_once(self, reason: str) -> None:
+        if not self._acquire_writer_lock():
+            return
+
+        upstream = self._read_upstream_state()
+        projection, optional_keys = self._build_projection(upstream)
+        self._apply_projection(projection, optional_keys)
+        self.log.debug("projection pass completed reason=%s", reason)
+
+    def _message_should_trigger_projection(self, msg: Mapping[str, Any]) -> bool:
+        if msg.get("type") != "message":
+            return False
+
+        channel = msg.get("channel")
+        if channel == UI_INTENTS_CHANNEL:
+            # ui_interaction_state mutates rt:interaction:state in response to
+            # intents, but it does not currently publish a state.changed event.
+            # Treat intents as a cheap event trigger and let semantic dedupe
+            # suppress no-op/rejected intents.
+            return True
+
+        if channel != SYSTEM_BUS_CHANNEL:
+            return False
+
+        raw = msg.get("data")
+        if not isinstance(raw, str):
+            return False
+
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+
+        if event.get("topic") != "state.changed":
+            return False
+
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            return False
+
+        keys = payload.get("keys")
+        if not isinstance(keys, list):
+            return False
+
+        return self._keys_affect_projection(keys)
+
+    def _keys_affect_projection(self, keys: Sequence[Any]) -> bool:
+        relevant_exact = {
+            self.config.interaction_state_key,
+            self.config.page_context_key,
+            *self.config.snapshot_keys,
+            *self.config.page_keys,
+            *self.config.focus_keys,
+            *self.config.modal_keys,
+            *self.config.browse_keys,
+            *self.config.authority_keys,
+            *self.config.result_keys,
+            *self.config.page_context_keys,
+            *self.config.system_health_keys,
+        }
+
+        for key in keys:
+            if not isinstance(key, str):
+                continue
+            if key in relevant_exact:
+                return True
+            if key.startswith(POTA_SPOT_STATUS_KEY_PREFIX):
+                return True
+        return False
 
     def _acquire_writer_lock(self) -> bool:
         current = self.redis_client.get(self.config.lock_key)
@@ -734,21 +862,80 @@ class UIStateProjector:
             return "browse"
         return "default"
 
+    @staticmethod
+    def _strip_volatile_fields(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                str(k): UIStateProjector._strip_volatile_fields(v)
+                for k, v in value.items()
+                if str(k) not in {
+                    "ts",
+                    "ts_ms",
+                    "timestamp",
+                    "timestamp_ms",
+                    "updated_at_ms",
+                    "last_update_ms",
+                    "gps_last_seen_ms",
+                    "pos_last_good_ms",
+                    "opened_at_ms",
+                }
+            }
+        if isinstance(value, list):
+            return [UIStateProjector._strip_volatile_fields(item) for item in value]
+        return value
+
+    def _semantic_projection(self, projection: Dict[str, str]) -> Dict[str, str]:
+        semantic: Dict[str, str] = {}
+
+        for key, value in projection.items():
+            if not isinstance(value, str):
+                semantic[key] = str(value)
+                continue
+
+            text = value.strip()
+            if not text:
+                semantic[key] = value
+                continue
+
+            if not (text.startswith("{") or text.startswith("[")):
+                semantic[key] = value
+                continue
+
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                semantic[key] = value
+                continue
+
+            stripped = self._strip_volatile_fields(parsed)
+            semantic[key] = json.dumps(stripped, sort_keys=True, separators=(",", ":"))
+
+        return semantic
+
     def _apply_projection(self, projection: Dict[str, str], optional_keys: set[str]) -> None:
         desired_keys = set(projection.keys())
         managed_keys = set(PROJECTED_KEYS.values()) | self.last_optional_keys | optional_keys
         stale_keys = sorted(managed_keys - desired_keys)
+
+        comparison_projection = self._semantic_projection(projection)
+
         changed_keys: list[str] = []
-        for key, value in sorted(projection.items()):
-            prev = self.last_projection.get(key)
+        for key, value in sorted(comparison_projection.items()):
+            prev = self.last_comparison_projection.get(key)
             if prev != value:
                 changed_keys.append(key)
+
         deleted_keys: list[str] = []
         for key in stale_keys:
-            if key in self.last_projection or key in self.last_optional_keys:
+            if key in self.last_comparison_projection or key in self.last_optional_keys:
                 deleted_keys.append(key)
-        if projection == self.last_projection and optional_keys == self.last_optional_keys:
+
+        if (
+            comparison_projection == self.last_comparison_projection
+            and optional_keys == self.last_optional_keys
+        ):
             return
+
         pipe = self.redis_client.pipeline(transaction=False)
         for key, value in sorted(projection.items()):
             pipe.set(key, value)
@@ -759,6 +946,7 @@ class UIStateProjector:
         pipe.execute()
 
         self.last_projection = dict(projection)
+        self.last_comparison_projection = dict(comparison_projection)
         self.last_optional_keys = set(optional_keys)
         self._publish_projection_changed(changed_keys, deleted_keys)
         self.log.debug("applied ui projection keys=%s deleted=%s", sorted(desired_keys), stale_keys)
@@ -1285,6 +1473,8 @@ def build_config() -> Config:
         result_keys=csv_env("UI_PROJECTOR_RESULT_KEYS", DEFAULT_RESULT_KEYS),
         page_context_keys=csv_env("UI_PROJECTOR_PAGE_CONTEXT_KEYS", DEFAULT_PAGE_CONTEXT_KEYS),
         system_health_keys=csv_env("UI_PROJECTOR_SYSTEM_HEALTH_KEYS", DEFAULT_SYSTEM_HEALTH_KEYS),
+        event_timeout_ms=int(os.environ.get("UI_PROJECTOR_EVENT_TIMEOUT_MS", str(DEFAULT_EVENT_TIMEOUT_MS))),
+        intent_debounce_ms=int(os.environ.get("UI_PROJECTOR_INTENT_DEBOUNCE_MS", str(DEFAULT_INTENT_DEBOUNCE_MS))),
     )
 
 

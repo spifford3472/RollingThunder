@@ -2,6 +2,7 @@
 Description=RollingThunder POTA Nearby Parks Publisher
 Wants=network-online.target
 After=network-online.target redis-server.service
+Requires=redis-server.service
 PartOf=multi-user.target
 StartLimitIntervalSec=60
 StartLimitBurst=10

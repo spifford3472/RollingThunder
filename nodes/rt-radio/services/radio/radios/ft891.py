@@ -120,14 +120,8 @@ class FT891RadioBackend:
                     continue
 
         return None
-
+    
     def _select_band(self, band: str | None) -> bool:
-        """
-        Best-effort FT-891 explicit band select via raw CAT passthrough through rigctld.
-
-        Returns True if a raw CAT call was attempted without raising.
-        Returns False if band is absent/unsupported or no raw passthrough exists.
-        """
         band_norm = self._normalize_band(band)
         if not band_norm:
             return False
@@ -136,14 +130,12 @@ class FT891RadioBackend:
         if not cat:
             return False
 
-        # rigctld raw passthrough is typically: "w <CAT> <timeout_ms>"
-        raw = f"w {cat} 500"
-
-        result = self._hamlib_raw_command(raw)
-        if result is not None:
+        try:
+            # ✅ CORRECT: use raw_cat directly (NO "w ...")
+            self.hamlib.raw_cat(cat, expected_bytes=0)
             return True
-
-        return False
+        except Exception:
+            return False
 
     def tune(
         self,

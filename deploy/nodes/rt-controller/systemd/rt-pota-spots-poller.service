@@ -1,7 +1,8 @@
 [Unit]
 Description=RollingThunder POTA SSB Spots Poller
-After=network.target redis.service
-Wants=network.target
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
 StartLimitIntervalSec=60
 StartLimitBurst=3
 OnFailure=rt-alert@%n.service
@@ -31,8 +32,8 @@ Environment=RT_REDIS_DB=0
 EnvironmentFile=/etc/rollingthunder/redis.env
 
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/pota_spots_poller.py
-Restart=on-failure
-RestartSec=2
+Restart=always
+RestartSec=5
 
 # harden a bit (optional but nice)
 NoNewPrivileges=true

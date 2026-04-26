@@ -64,7 +64,7 @@ OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"
 CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
 
 # UI bus publish (read-only consumers)
-UI_BUS_CHANNEL = os.environ.get("RT_UI_BUS_CHANNEL", "rt:ui:bus")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 UI_BUS_MAX_KEYS = int(os.environ.get("RT_UI_BUS_MAX_KEYS", "25"))  # safety for any future batching
 
 def is_deploy_report(msg: Dict[str, Any]) -> bool:
@@ -108,7 +108,7 @@ def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
         "source": source,
     }
     try:
-        r.publish(UI_BUS_CHANNEL, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
+        r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         pass
 

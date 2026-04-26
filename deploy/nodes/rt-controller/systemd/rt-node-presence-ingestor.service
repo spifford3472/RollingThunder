@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder Node Presence Ingestor (Phase 14.4/14.5)
-After=network-online.target
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]

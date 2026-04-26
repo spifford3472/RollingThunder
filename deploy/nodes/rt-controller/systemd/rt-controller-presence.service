@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder rt-controller presence publisher
-After=network-online.target
+After=network-online.target 
 Wants=network-online.target
 
 [Service]

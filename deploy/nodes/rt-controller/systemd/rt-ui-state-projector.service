@@ -1,6 +1,6 @@
 [Unit]
 Description=RollingThunder UI State Projector
-After=network-online.target redis.service
+After=network-online.target redis-server.service
 Wants=network-online.target
 
 [Service]
