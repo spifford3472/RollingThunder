@@ -101,6 +101,7 @@ UI_PROJECTION_CHANGED_TOPIC = os.environ.get("RT_UI_PROJECTION_CHANGED_TOPIC", "
 # publish a state.changed event.
 DEFAULT_EVENT_TIMEOUT_MS = int(os.environ.get("UI_PROJECTOR_EVENT_TIMEOUT_MS", "5000"))
 DEFAULT_INTENT_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_INTENT_DEBOUNCE_MS", "75"))
+DEFAULT_STATE_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", "75"))
 
 CONTROL_NAMES = ("back", "page", "primary", "cancel", "mode", "info")
 
@@ -230,6 +231,7 @@ class UIStateProjector:
 
         safety_interval = max(0.5, self.config.event_timeout_ms / 1000.0)
         debounce_interval = max(0.0, self.config.intent_debounce_ms / 1000.0)
+        state_debounce_interval = 0.0
         next_safety_at = time.monotonic() + safety_interval
         pending_projection_at: Optional[float] = None
         pending_reason = "event"

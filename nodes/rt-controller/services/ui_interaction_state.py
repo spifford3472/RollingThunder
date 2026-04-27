@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import redis
 
+
 REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
 REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
@@ -242,6 +243,18 @@ def publish_ui_result(r: redis.Redis, intent: str, result: str = "accepted") -> 
         )
     except Exception:
         pass
+
+SYSTEM_BUS_CH = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
+
+def publish_state_changed(r: redis.Redis, keys: list[str], source: str = "ui_interaction_state") -> None:
+    evt = {
+        "topic": "state.changed",
+        "payload": {"keys": keys[:50]},
+        "ts_ms": now_ms(),
+        "source": source,
+    }
+    r.publish(SYSTEM_BUS_CH, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
+
 
 def publish_intent(r: redis.Redis, intent: str, params: Dict[str, Any]) -> None:
     payload = {
@@ -741,7 +754,7 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
             return resolve_home_nodes_browse_model(r)
 
         if panel_id == "controller_services_summary":
-            return resolve_home_services_browse_model(r)
+            return resolve_home_nodes_browse_model(r)
 
     if page_id == "pota":
         if panel_id == "pota_parks_summary":
@@ -797,7 +810,7 @@ def rotate(lst, current, direction):
     return lst[idx]
 
 
-def main():
+def run_main_loop():
     last_persist_ms = 0
     r = redis_client()
     acquire_lock(r)
@@ -816,10 +829,12 @@ def main():
 
     ps = r.pubsub(ignore_subscribe_messages=True)
     ps.subscribe(INTENTS_CH)
+    print(f"ui_interaction_state: subscribed to {INTENTS_CH}", flush=True)
 
     while True:
         msg = ps.get_message(timeout=1.0)
         state_changed = False
+        pota_context_changed = False
 
         if msg:
             try:
@@ -1054,6 +1069,7 @@ def main():
                                 band_changed = (old_band != new_band)
 
                                 update_pota_context_selected_band(r, new_band)
+                                pota_context_changed = True
 
                                 state["focus"] = "pota_spots_summary"
                                 state["browse"] = {
@@ -1067,6 +1083,7 @@ def main():
                                 }
                                 state_changed = True
                                 publish_ui_result(r, intent)
+                                publish_state_changed(r, [POTA_CONTEXT_KEY], source="ui_interaction_state")
 
                                 if band_changed and not has_tuner:
                                     state["modal"] = build_band_tune_reminder_modal(new_band)
@@ -1199,7 +1216,29 @@ def main():
             save_state(r, state)
             last_persist_ms = now
 
+            changed_keys = []
+            if state_changed:
+                changed_keys.append(INTERACTION_KEY)
+            if pota_context_changed:
+                changed_keys.append(POTA_CONTEXT_KEY)
+
+            if changed_keys:
+                publish_state_changed(r, changed_keys, source="ui_interaction_state")
+
         time.sleep(0.05)
+
+def main():
+    while True:
+        try:
+            print("ui_interaction_state: starting interaction loop", flush=True)
+            run_main_loop()
+        except redis.exceptions.RedisError as e:
+            print(f"ui_interaction_state: Redis error, reconnecting: {type(e).__name__}: {e}", flush=True)
+            time.sleep(1)
+        except Exception as e:
+            print(f"ui_interaction_state: fatal loop error, restarting: {type(e).__name__}: {e}", flush=True)
+            time.sleep(1)
+
 
 if __name__ == "__main__":
     main()

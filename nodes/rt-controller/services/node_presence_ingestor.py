@@ -12,6 +12,11 @@ Phase 14.5:
 - TTL-based online/offline evaluation (controller-owned judgment)
 - Periodically sweep rt:nodes:* and mark stale nodes offline
 
+Event hardening / noise reduction:
+- Publish state.changed only when semantic node state changes.
+- Keep last_seen fresh for deterministic stale/offline detection.
+- Bound sweep-derived age writes so Redis is not rewritten every sweep.
+
 Constraints:
 - Read-only on MQTT; write-only to Redis for derived state
 - No control actions
@@ -55,42 +60,39 @@ DEPLOY_TOPIC_PREFIX = os.environ.get("RT_DEPLOY_TOPIC_PREFIX", "rt/deploy/report
 DEPLOY_KEY_PREFIX = os.environ.get("RT_KEY_DEPLOY_REPORT_PREFIX", "rt:deploy:report:")
 DEPLOY_TTL_SEC = float(os.environ.get("RT_DEPLOY_TTL_SEC", "300"))
 
-
 # Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
 SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
-
 STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
 OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
 CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
 
-# UI bus publish (read-only consumers)
+# Bound sweep-derived age/status writes when only age_sec would change.
+AGE_WRITE_INTERVAL_SEC = float(os.environ.get("RT_PRESENCE_AGE_WRITE_INTERVAL_SEC", "10.0"))
+
+# System bus for state.changed notifications. UI bus is projector-only.
 SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
-UI_BUS_MAX_KEYS = int(os.environ.get("RT_UI_BUS_MAX_KEYS", "25"))  # safety for any future batching
+UI_BUS_MAX_KEYS = int(os.environ.get("RT_UI_BUS_MAX_KEYS", "25"))
 
-def is_deploy_report(msg: Dict[str, Any]) -> bool:
-    return msg.get("schema") == "deploy.report.v1"
+# Fields that should wake downstream consumers when they change.
+# Volatile heartbeat fields are intentionally excluded.
+PRESENCE_SEMANTIC_FIELDS = (
+    "id",
+    "role",
+    "status",
+    "hostname",
+    "ip",
+    "ui_render_ok",
+    "publisher_error",
+)
 
-def store_deploy_report(r: redis.Redis, report: Dict[str, Any]) -> None:
-    node_id = report.get("node_id")
-    if not isinstance(node_id, str) or not node_id.strip():
-        return
-
-    key = f"{DEPLOY_KEY_PREFIX}{node_id.strip()}"
-    # Compact encoding; bounded by nature (we control what publisher sends)
-    payload = json.dumps(report, separators=(",", ":"), ensure_ascii=False)
-
-    r.set(key, payload)
-    # TTL so we can detect staleness
-    try:
-        r.expire(key, int(DEPLOY_TTL_SEC))
-    except Exception:
-        pass
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
+
 def now_ms() -> int:
     return int(time.time() * 1000)
+
 
 def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
     # hard bounds
@@ -111,6 +113,35 @@ def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
         r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         pass
+
+
+def is_deploy_report(msg: Dict[str, Any]) -> bool:
+    return msg.get("schema") == "deploy.report.v1"
+
+
+def store_deploy_report(r: redis.Redis, report: Dict[str, Any]) -> None:
+    node_id = report.get("node_id")
+    if not isinstance(node_id, str) or not node_id.strip():
+        return
+
+    key = f"{DEPLOY_KEY_PREFIX}{node_id.strip()}"
+    payload = json.dumps(report, separators=(",", ":"), ensure_ascii=False)
+
+    try:
+        previous = r.get(key)
+    except Exception:
+        previous = None
+
+    if previous != payload:
+        r.set(key, payload)
+        publish_state_changed(r, [key], source="deploy_report_ingestor")
+
+    # Refresh TTL whether or not the payload changed.
+    try:
+        r.expire(key, int(DEPLOY_TTL_SEC))
+    except Exception:
+        pass
+
 
 def safe_str(v: Any, max_len: int = 200) -> str:
     s = "" if v is None else str(v)
@@ -141,22 +172,17 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     role = msg.get("role")
     role_s = safe_str(role, 50) if isinstance(role, str) else "unknown"
 
-    # --- IP extraction: accept either top-level "ip" or net.ip (preferred) ---
     ip = None
-
-    # 1) net.ip (preferred)
     net = msg.get("net")
     if isinstance(net, dict):
         ip_val = net.get("ip")
         if isinstance(ip_val, str) and ip_val.strip():
             ip = ip_val.strip()
 
-    # 2) top-level ip (compat / legacy / simple publishers)
     if not ip:
         ip_val = msg.get("ip")
         if isinstance(ip_val, str) and ip_val.strip():
             ip = ip_val.strip()
-
 
     render_ok = None
     ui = msg.get("ui")
@@ -171,7 +197,6 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     node_ts = msg.get("timestamp") or msg.get("ts_iso") or msg.get("ts") or ""
     node_ts_s = safe_str(node_ts, 40) if isinstance(node_ts, str) else ""
 
-    # Controller-derived fields:
     ms = now_ms()
 
     mapping: Dict[str, str] = {
@@ -180,24 +205,48 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
         "status": "online",
         "age_sec": "0",
         "last_seen_ms": str(ms),
-        "last_seen_ts": now_iso_utc(),  # controller timestamp (authoritative)
-        "node_ts": node_ts_s,           # node timestamp (informational)
+        "last_seen_ts": now_iso_utc(),
+        "node_ts": node_ts_s,
         "last_update_ms": str(ms),
+        "publisher_error": "",
     }
 
-
-
-    if hostname_s:
-        mapping["hostname"] = hostname_s
-    if ip:
-        mapping["ip"] = ip
-    if render_ok is not None:
-        mapping["ui_render_ok"] = "true" if render_ok else "false"
-
-    # Clear old errors on healthy ingestion
-    mapping["publisher_error"] = ""
+    mapping["hostname"] = hostname_s
+    mapping["ip"] = ip or ""
+    mapping["ui_render_ok"] = (
+        "true" if render_ok is True
+        else "false" if render_ok is False
+        else ""
+    )
 
     return node_id.strip(), mapping
+
+
+def semantic_presence_changed(prev: Dict[str, str], new: Dict[str, str]) -> bool:
+    for field in PRESENCE_SEMANTIC_FIELDS:
+        if (prev.get(field) or "") != (new.get(field) or ""):
+            return True
+    return False
+
+
+def hset_changed_fields(r: redis.Redis, key: str, prev: Dict[str, str], mapping: Dict[str, str]) -> bool:
+    changed_fields = {
+        field: value
+        for field, value in mapping.items()
+        if (prev.get(field) or "") != (value or "")
+    }
+    if not changed_fields:
+        return False
+    r.hset(key, mapping=changed_fields)
+    return True
+
+
+def should_write_sweeper_age(prev: Dict[str, str], ms_now: int) -> bool:
+    try:
+        last_update_ms = int(prev.get("last_update_ms") or "0")
+    except Exception:
+        last_update_ms = 0
+    return (ms_now - last_update_ms) >= int(max(1.0, AGE_WRITE_INTERVAL_SEC) * 1000)
 
 
 def update_presence_status(r: redis.Redis, key: str, stale_after_ms: int, offline_after_ms: int) -> None:
@@ -230,15 +279,16 @@ def update_presence_status(r: redis.Redis, key: str, stale_after_ms: int, offlin
             status = "offline"
 
         prev_status = (h.get("status") or "").strip()
+        status_changed = status != prev_status
 
-        r.hset(key, mapping={
-            "status": status,
-            "age_sec": str(age_sec),
-            "last_update_ms": str(ms_now),
-        })
+        if status_changed or should_write_sweeper_age(h, ms_now):
+            r.hset(key, mapping={
+                "status": status,
+                "age_sec": str(age_sec),
+                "last_update_ms": str(ms_now),
+            })
 
-        # Publish only when status changes (online/stale/offline)
-        if status != prev_status:
+        if status_changed:
             publish_state_changed(r, [key], source="presence_sweeper")
 
     except Exception:
@@ -260,7 +310,6 @@ def main() -> int:
         socket_connect_timeout=REDIS_TIMEOUT,
     )
 
-    # Verify Redis reachable early (but keep service resilient)
     try:
         r.ping()
     except Exception as e:
@@ -268,7 +317,6 @@ def main() -> int:
 
     stale_after_ms = int(STALE_AFTER_SEC * 1000)
     offline_after_ms = int(OFFLINE_AFTER_SEC * 1000)
-
 
     def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, Any], rc: int) -> None:
         if rc == 0:
@@ -280,13 +328,11 @@ def main() -> int:
         else:
             print(f"[presence_ingestor] MQTT connect failed rc={rc}")
 
-
     def on_message(client: mqtt.Client, userdata: Any, msg_in: Any) -> None:
-        payload, perr = parse_json(msg_in.payload)
+        payload, _perr = parse_json(msg_in.payload)
         if payload is None:
             return
 
-        # 1) Deploy report path (MQTT -> Redis string key)
         if is_deploy_report(payload):
             try:
                 store_deploy_report(r, payload)
@@ -294,39 +340,35 @@ def main() -> int:
                 pass
             return
 
-        # 2) Presence path (existing logic)
         node_id, mapping = derive_node_fields(payload)
-
         if not node_id:
             return
 
         key = f"{NODE_KEY_PREFIX}{node_id}"
         try:
-            # Compare against previous to avoid publish spam
             prev = r.hgetall(key)
-            r.hset(key, mapping=mapping)
+            semantic_changed = semantic_presence_changed(prev, mapping)
 
-            # Publish if any meaningful field changed
-            # (ignore controller timestamps that always change)
-            meaningful = ("role", "ip", "hostname", "ui_render_ok", "publisher_error")
+            # Always keep last_seen fresh for deterministic TTL handling, but
+            # only publish when stable/semantic fields changed.
+            hset_changed_fields(r, key, prev, mapping)
 
-            changed = False
-            for f in meaningful:
-                if (prev.get(f) or "") != (mapping.get(f) or ""):
-                    changed = True
-                    break
-            if changed:
+            if semantic_changed:
                 publish_state_changed(r, [key], source="presence_ingestor")
-  
+
         except Exception as e:
             try:
-                r.hset(key, mapping={
+                err_mapping = {
                     "publisher_error": safe_str(f"redis_write_failed: {type(e).__name__}: {e}", 240),
                     "last_update_ms": str(now_ms()),
-                })
+                }
+                prev = r.hgetall(key)
+                error_changed = semantic_presence_changed(prev, err_mapping)
+                hset_changed_fields(r, key, prev, err_mapping)
+                if error_changed:
+                    publish_state_changed(r, [key], source="presence_ingestor")
             except Exception:
                 pass
-
 
     client = mqtt.Client()
     client.on_connect = on_connect
@@ -336,7 +378,6 @@ def main() -> int:
         client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE)
     except Exception as e:
         print(f"[presence_ingestor] ERROR: MQTT connect failed: {type(e).__name__}: {e}")
-        # Keep trying forever (systemd will restart, but we can also retry)
         while True:
             time.sleep(2.0)
             try:
@@ -346,7 +387,6 @@ def main() -> int:
                 continue
 
     def sweeper_loop() -> None:
-        # Runs forever; controller-owned TTL enforcement
         while True:
             try:
                 for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
@@ -358,8 +398,6 @@ def main() -> int:
     t = threading.Thread(target=sweeper_loop, name="presence-sweeper", daemon=True)
     t.start()
 
-
-    # Blocking loop (simple + appliance-style)
     client.loop_forever()
     return 0
 

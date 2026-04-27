@@ -290,9 +290,10 @@ def main() -> None:
                 state_changed = (state != prev_state)
                 error_changed = (new_error != prev_error)
 
-                r.hset(key, mapping=mapping)
-
                 if state_changed or error_changed:
+                    # Only write when something actually changed
+                    r.hset(key, mapping=mapping)
+
                     evt = {
                         "topic": "state.changed",
                         "payload": {"keys": [key]},
@@ -303,7 +304,13 @@ def main() -> None:
                         r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":")))
                     except Exception:
                         pass
-
+                else:
+                    # No state change → do NOT write full mapping
+                    # Only update heartbeat timestamp
+                    try:
+                        r.hset(key, "last_update_ms", str(now_ms()))
+                    except Exception:
+                        pass                
             except Exception as e:
                 set_error(r, key, f"{type(e).__name__}: {e}")
                 continue
