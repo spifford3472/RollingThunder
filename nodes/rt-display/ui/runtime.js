@@ -946,22 +946,123 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     updateLocalUiModeFromProjection(currentUiState);
   }
 
-  function maybeApplyUiState(uiState) {
+  function bindingRedisKey(binding) {
+    return String(
+      binding?.key ||
+      binding?.redis_key ||
+      binding?.source ||
+      binding?.path ||
+      ""
+    ).trim();
+  }
+
+  function panelBindingKeys(panelId) {
+    const panel = bundle.panelsById[panelId];
+    return coerceBindings(panel)
+      .map(bindingRedisKey)
+      .filter(Boolean);
+  }
+
+  function panelDependsOnChangedKeys(panelId, changedKeys) {
+    const keys = panelBindingKeys(panelId);
+    return keys.some((key) => changedKeys.includes(key));
+  }
+
+  async function fetchUiStateBatch(keys) {
+    const resp = await fetch("/api/v1/ui/state/batch", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    const payload = await resp.json();
+    return payload?.data?.values || {};
+  }
+
+  async function refreshPanelBindings(panelId) {
+    const panel = bundle.panelsById[panelId];
+    const rerender = panelRerender.get(panelId);
+    if (!panel || typeof rerender !== "function") return;
+
+    const bindings = coerceBindings(panel);
+    const keys = bindings.map(bindingRedisKey).filter(Boolean);
+
+    if (!keys.length) {
+      rerender(buildRenderDataForPanel(panelId, currentUiState));
+      return;
+    }
+
+    const values = await fetchUiStateBatch(keys);
+    const nextData = {};
+
+    for (const binding of bindings) {
+      const id = String(binding?.id || "").trim();
+      const key = bindingRedisKey(binding);
+      if (!id || !key) continue;
+
+      const entry = values[key];
+      nextData[id] = entry && entry.ok ? tryParseJSON(entry.value) : null;
+    }
+
+    panelLastData.set(panelId, nextData);
+    rerender(buildRenderDataForPanel(panelId, currentUiState));
+  }
+
+  async function refreshAffectedPanelsFromChangedKeys(changedKeys) {
+    const affectedPanelIds = Array.from(slotByPanelId.keys()).filter((panelId) =>
+      panelDependsOnChangedKeys(panelId, changedKeys)
+    );
+
+    await Promise.all(
+      affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
+    );
+  }
+
+  async function maybeApplyUiState(uiState, changedKeys = null) {
+    const oldPageId = currentPageId;
     currentUiState = uiState;
 
     const pageId = String(uiState?.page || "").trim() || "home";
     const focusId = String(uiState?.focus || "").trim() || null;
 
-    // Always remount the visible page on projection changes.
-    // This forces panel bindings to be re-fetched instead of reusing stale panelLastData.
-    mountCurrentPage(pageId, focusId);
+    const layoutChanged =
+      oldPageId !== pageId ||
+      !currentPage ||
+      !Array.isArray(changedKeys) ||
+      changedKeys.includes("rt:ui:page");
+
+    if (layoutChanged) {
+      mountCurrentPage(pageId, focusId);
+    } else {
+      if (focusId) nav.setActivePanel(focusId);
+
+      updateLocalUiModeFromProjection(uiState);
+
+      if (
+        changedKeys.includes("rt:ui:focus") ||
+        changedKeys.includes("rt:ui:layer") ||
+        changedKeys.includes("rt:ui:browse") ||
+        changedKeys.includes("rt:ui:modal") ||
+        changedKeys.includes("rt:ui:page_context") ||
+        changedKeys.includes("rt:ui:authority")
+      ) {
+        rerenderPanelsFromUiState();
+      }
+
+      await refreshAffectedPanelsFromChangedKeys(changedKeys);
+    }
 
     if (currentPage && focusId) {
       nav.setActivePanel(focusId);
     }
 
     updateLocalUiModeFromProjection(uiState);
-  }
+  }  
 
   async function refreshUiProjectionState(reason = "unknown") {
     if (uiProjectionInflight) {
@@ -976,8 +1077,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       clearUiProjectionRetryTimer();
       uiProjectionRetryDelayMs = 1500;
       rtHideControllerOverlay();
-
-      maybeApplyUiState(uiState);
+      await maybeApplyUiState(uiState, reason?.changed_keys || null);
     } catch (e) {
       rtShowControllerOverlay("Lost connection to rt-controller. Reconnecting…");
 
@@ -1003,7 +1103,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     uiProjectionSubscribed = true;
 
     store.subscribe(UI_PROJECTION_TOPIC);
-    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {
+//    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {    //line 1041 to 1044
       clearUiProjectionRetryTimer();
       void refreshUiProjectionState("bus");
     });
