@@ -10,6 +10,17 @@
 // - Spot outcome modal/open is controller-owned via ui.ok.
 // - Band-change reminder/tuner behavior is controller-owned.
 // - Spot browse auto-tune remains renderer-triggered on cursor move.
+//
+// Changelog:
+// - Reset cursor, offset, and selectedSpotId when selected_band changes.
+//   Previously pendingBandTune was set but cursor was never cleared, so the
+//   spots panel could show a stale cursor position until the spot list key
+//   happened to change (a race condition / content-dependent non-reset).
+// - Simplified applyProjectedBrowseCursorToSpots: it now only runs when the
+//   projected browse panel is actually pota_spots_summary, preventing stale
+//   projected indices from overwriting a freshly reset cursor.
+// - Removed the dead pendingBandTune block at the bottom of
+//   renderPotaSpotsSummary (it set the flag to false but never acted on it).
 
 const WINDOW = 8;
 
@@ -21,6 +32,21 @@ const esc = (s) =>
     '"': "&quot;",
     "'": "&#39;",
   }[c]));
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function unwrapBindingArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") {
+    if (Array.isArray(value.value)) return value.value;
+    if (Array.isArray(value.spots)) return value.spots;
+    if (Array.isArray(value.items)) return value.items;
+    if (Array.isArray(value.rows)) return value.rows;
+  }
+  return [];
+}
 
 function dedupeSpots(items) {
   const seen = new Set();
@@ -56,13 +82,9 @@ function normalizeProjectedPageContext(raw) {
   return {};
 }
 
-function clamp(n, lo, hi) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 function mhz(freqHz) {
   const n = Number(freqHz || 0);
-  if (!Number.isFinite(n) || n <= 0) return "-";
+  if (!Number.isFinite(n) || n <= 0) return "NO FREQ";
   return (n / 1_000_000).toFixed(3);
 }
 
@@ -228,7 +250,6 @@ function getModel(container) {
       lastBandKey: "",
       lastTunedSpotId: "",
       lastTuneFingerprint: "",
-      pendingBandTune: false,
     };
   }
   return container.__rtPotaSpotsModel;
@@ -562,9 +583,13 @@ function attachBrowseModeObserverOnce(container) {
   slot.__rtPotaSpotsBrowseObserver = obs;
 }
 
+// Only apply the projected browse cursor when this panel is actively the
+// browse target.  A stale projected index from a previous panel focus must
+// never overwrite a cursor that was just reset by a band change.
 function applyProjectedBrowseCursorToSpots(data, spots, m) {
   const browse = data?.ui_browse || data?.__ui?.browse || null;
   if (!browse || typeof browse !== "object") return;
+  if (!browse.active) return;
   if (String(browse.panel || "") !== "pota_spots_summary") return;
 
   const idx = Number(browse.selected_index);
@@ -586,7 +611,7 @@ export function renderPotaSpotsSummary(container, panel, data) {
   attachBrowseHandlersOnce(container);
   attachBrowseModeObserverOnce(container);
 
-  const spotsRaw = data?.spots;
+  const spotsRaw = unwrapBindingArray(data?.spots);
   const bindings = data?.__rt?.bindings || {};
 
   const projectedPageContext = normalizeProjectedPageContext(
@@ -615,18 +640,27 @@ export function renderPotaSpotsSummary(container, panel, data) {
 
   container.__rtPotaSpotsContext = context;
 
+  // Band changed: reset cursor state immediately so the incoming spot list
+  // always starts at position 0 regardless of what content arrives.
   if (oldBandKey && newBandKey && oldBandKey !== newBandKey) {
-    m.pendingBandTune = true;
+    m.cursor = 0;
+    m.offset = 0;
+    m.selectedSpotId = null;
+    m.lastKey = "";
+    m.lastTuneFingerprint = "";
   }
 
   m.lastBandKey = newBandKey;
-  m.lastRawList = Array.isArray(spotsRaw) ? spotsRaw.filter(Boolean).slice() : [];
+  m.lastRawList = spotsRaw.filter(Boolean).slice();
 
   const spots = getRenderableSpots(m.lastRawList, context);
   const key = computeStableKey(spots);
 
   if (m.lastKey !== key) {
     m.lastKey = key;
+    // Only reset offset (not cursor) here — a content change within the same
+    // band should keep the cursor on the previously selected spot if it still
+    // exists (syncSelectedSpotId handles that below).
     m.offset = 0;
   }
 
@@ -635,16 +669,4 @@ export function renderPotaSpotsSummary(container, panel, data) {
   applyProjectedBrowseCursorToSpots(data, spots, m);
 
   renderSpotsWindow(container, spots, m, context);
-
-  if (spots.length <= 0) {
-    m.lastTuneFingerprint = "";
-    return;
-  }
-
-  const cur = spots[m.cursor];
-  if (!cur) return;
-
-  if (m.pendingBandTune) {
-    m.pendingBandTune = false;
-  }
 }

@@ -9,7 +9,8 @@
   "bindings": [
     { "id": "bands", "source": "state", "key": "rt:pota:ui:ssb:bands" },
     { "id": "context", "source": "state", "key": "rt:pota:context" },
-    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:pota_bands_summary" }
+    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:pota_bands_summary" },
+    { "id": "interaction", "source": "state", "key": "rt:interaction:state" }
   ],
   "actions": [],
   "meta": {

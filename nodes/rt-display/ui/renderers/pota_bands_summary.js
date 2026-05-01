@@ -1,7 +1,5 @@
 // pota_bands_summary.js
-//
-// Browse-capable POTA SSB bands panel.
-// Renderer-only.
+// Renderer-only POTA SSB bands panel.
 // Authoritative selected band comes from data.context.selected_band.
 
 const WINDOW = 8;
@@ -17,6 +15,26 @@ const esc = (s) =>
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
+}
+
+function unwrapBinding(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") {
+    if (Array.isArray(value.value)) return value.value;
+    if (Array.isArray(value.bands)) return value.bands;
+    if (Array.isArray(value.items)) return value.items;
+    if (Array.isArray(value.rows)) return value.rows;
+  }
+  return [];
+}
+
+function unwrapObject(value) {
+  if (!value) return {};
+  if (value && typeof value === "object" && value.value && typeof value.value === "object") {
+    return value.value;
+  }
+  if (typeof value === "object") return value;
+  return {};
 }
 
 function bandName(item) {
@@ -35,122 +53,42 @@ function bandSortKey(item) {
   return [9999, raw];
 }
 
-function getModel(container) {
-  if (!container.__rtPotaBandsModel) {
-    container.__rtPotaBandsModel = {
-      cursor: 0,
-      offset: 0,
-      lastKey: "",
-      lastList: [],
-    };
-  }
-  return container.__rtPotaBandsModel;
-}
-
-function computeStableKey(list) {
-  return list.map((x) => bandName(x)).join("|");
-}
-
-function ensureCursorInWindow(m, total) {
-  m.cursor = clamp(m.cursor || 0, 0, Math.max(0, total - 1));
-
-  const maxOff = Math.max(0, total - WINDOW);
-  m.offset = clamp(m.offset || 0, 0, maxOff);
-
-  if (m.cursor < m.offset) m.offset = m.cursor;
-  if (m.cursor >= m.offset + WINDOW) m.offset = m.cursor - WINDOW + 1;
-
-  m.offset = clamp(m.offset, 0, maxOff);
-}
-
-function syncCursorToSelectedBand(m, bands, selectedBand) {
-  if (!selectedBand || !Array.isArray(bands) || bands.length <= 0) return;
-
-  const idx = bands.findIndex((x) => bandName(x) === selectedBand);
-  if (idx >= 0) {
-    m.cursor = idx;
-    ensureCursorInWindow(m, bands.length);
-  }
-}
-
-function applyProjectedBrowseCursorToBands(data, bands, m) {
-  const browse = data?.ui_browse || data?.__ui?.browse || null;
-  if (!browse || typeof browse !== "object") return;
-  if (String(browse.panel || "") !== "pota_bands_summary") return;
-
-  const idx = Number(browse.selected_index);
-  if (!Number.isFinite(idx)) return;
-
-  if (!Array.isArray(bands) || bands.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-    return;
-  }
-
-  m.cursor = clamp(idx, 0, Math.max(0, bands.length - 1));
-  ensureCursorInWindow(m, bands.length);
-}
-
-function renderBandsWindow(container, list, m, selectedBandFromContext) {
-  const total = list.length;
-
-  if (total === 0) {
+function renderBandsWindow(container, list, selectedBandFromContext, browseSelectedId) {
+  if (!Array.isArray(list) || list.length === 0) {
     container.innerHTML = `<div class="muted">No POTA SSB bands available.</div>`;
     return;
   }
 
-  ensureCursorInWindow(m, total);
-
-  const off = m.offset;
-  const view = list.slice(off, off + WINDOW);
-
-  const slot = container.closest(".rt-slot");
-  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
-
   const activeBand = String(selectedBandFromContext || "").trim();
+  const cursorBand = String(browseSelectedId || "").trim();
 
-  const rows = view.map((item, i) => {
-    const absoluteIndex = off + i;
+  const rows = list.map((item) => {
     const band = bandName(item);
     const count = Number(item?.count || 0);
 
-    const isCursor = absoluteIndex === m.cursor;
+    const isCursor = cursorBand && band === cursorBand;
     const isActiveBand = activeBand && band === activeBand;
 
-    /*
-      Important:
-      - In browse mode, rt-selected follows the cursor.
-      - Outside browse mode, rt-selected follows selected_band from context.
-      - rt-pota-band-selected always marks the authoritative selected band.
-    */
     const trClass = [
       "sev-ok",
-      browseMode && isCursor ? "rt-selected" : "",
-      !browseMode && isActiveBand ? "rt-selected" : "",
+      isCursor ? "rt-selected" : "",
       isActiveBand ? "rt-pota-band-selected" : "",
     ].filter(Boolean).join(" ");
 
-    const labelHtml = isActiveBand
-      ? `<span class="rt-pota-band-label"><strong>📡 ${esc(band)}</strong></span>`
-      : `<span>${esc(band)}</span>`;
+    const icon = isActiveBand ? "▶" : "&nbsp;";
 
     return `
-      <tr class="${trClass}" data-band="${esc(band)}">
-        <td>${labelHtml}</td>
+      <tr class="${trClass}">
+        <td>
+          <span style="display:flex; align-items:center;">
+            <span style="width:1.6em; text-align:center;">${icon}</span>
+            <strong>${esc(band)}</strong>
+          </span>
+        </td>
         <td>${esc(String(count))}</td>
       </tr>
     `;
   }).join("");
-
-  let footerLeft = `Cursor ${clamp(m.cursor, 0, Math.max(0, total - 1)) + 1}/${total}`;
-
-  if (activeBand) {
-    footerLeft += ` • Active band: ${esc(activeBand)}`;
-  }
-
-  const hint = total > WINDOW
-    ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>`
-    : "";
 
   container.innerHTML = `
     <table>
@@ -159,117 +97,49 @@ function renderBandsWindow(container, list, m, selectedBandFromContext) {
       </thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="rt-footer">
-      <span class="rt-muted">${footerLeft}</span>${hint}
-    </div>
   `;
 }
 
-function attachBrowseModeObserverOnce(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-  if (slot.__rtPotaBandsBrowseObserverAttached) return;
-  slot.__rtPotaBandsBrowseObserverAttached = true;
-
-  const obs = new MutationObserver(() => {
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const selectedBandFromContext = container.__rtPotaBandsSelectedBandFromContext || "";
-    renderBandsWindow(container, list, m, selectedBandFromContext);
-  });
-
-  obs.observe(slot, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-
-  slot.__rtPotaBandsBrowseObserver = obs;
-}
-
-function attachBrowseHandlersOnce(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-  if (slot.__rtPotaBandsBrowseAttached) return;
-  slot.__rtPotaBandsBrowseAttached = true;
-
-  const onDelta = (ev) => {
-    const delta = Number(ev?.detail?.delta ?? 0);
-    if (!Number.isFinite(delta) || delta === 0) return;
-
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp((m.cursor ?? 0) + (delta > 0 ? 1 : -1), 0, total - 1);
-    ensureCursorInWindow(m, total);
-
-    const selectedBandFromContext = container.__rtPotaBandsSelectedBandFromContext || "";
-    renderBandsWindow(container, list, m, selectedBandFromContext);
-  };
-
-  const onOk = () => {
-    slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
-      bubbles: true,
-      detail: {
-        intent: "ui.ok",
-        params: {},
-      },
-    }));
-  };
-
-  slot.addEventListener("rt-browse-delta", onDelta);
-  slot.addEventListener("rt-browse-ok", onOk);
-}
-
 export function renderPotaBandsSummary(container, panel, data) {
-  attachBrowseHandlersOnce(container);
-  attachBrowseModeObserverOnce(container);
+  const bandsRaw = unwrapBinding(data?.bands);
+  const context = unwrapObject(data?.context || {});
 
-  const bandsRaw = data?.bands;
-  const context = data?.context || {};
-
-  const bands = Array.isArray(bandsRaw)
-    ? bandsRaw.filter(Boolean).slice().sort((a, b) => {
-        const [am, as] = bandSortKey(a);
-        const [bm, bs] = bandSortKey(b);
-        if (am !== bm) return am - bm;
-        return as.localeCompare(bs);
-      })
-    : [];
+  const bands = bandsRaw
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => {
+      const [am, as] = bandSortKey(a);
+      const [bm, bs] = bandSortKey(b);
+      if (am !== bm) return am - bm;
+      return as.localeCompare(bs);
+    });
 
   const selectedBandFromContext = String(context?.selected_band || "").trim();
-  container.__rtPotaBandsSelectedBandFromContext = selectedBandFromContext;
 
-  const m = getModel(container);
+  const browseRaw = data?.ui_browse || data?.__ui?.browse || {};
+  const browse = unwrapObject(browseRaw);
 
-  const key = computeStableKey(bands);
-  if (m.lastKey !== key) {
-    m.lastKey = key;
-    m.offset = 0;
-    m.cursor = 0;
-  }
+  const browseSelectedId = (() => {
+    if (!browse?.active) return "";
+    if (String(browse?.panel || "") !== "pota_bands_summary") return "";
 
-  m.lastList = bands;
+    // Prefer selected_id if the controller wrote one
+    const byId = String(browse?.selected_id || "").trim();
+    if (byId) return byId;
 
-  const browse = data?.ui_browse || data?.__ui?.browse || null;
-  const browsingThisPanel =
-    browse &&
-    typeof browse === "object" &&
-    String(browse.panel || "") === "pota_bands_summary";
+    // Fall back to resolving selected_index into a band name from the sorted list
+    const idx = Number(browse?.selected_index);
+    if (Number.isFinite(idx) && idx >= 0 && idx < bands.length) {
+      return bandName(bands[idx]);
+    }
 
-  if (browsingThisPanel) {
-    applyProjectedBrowseCursorToBands(data, bands, m);
-  } else {
-    syncCursorToSelectedBand(m, bands, selectedBandFromContext);
-  }
+    return "";  
+  })();
 
-  if (bands.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-  } else {
-    ensureCursorInWindow(m, bands.length);
-  }
-
-  renderBandsWindow(container, bands, m, selectedBandFromContext);
+  renderBandsWindow(
+    container,
+    bands,
+    selectedBandFromContext,
+    browseSelectedId
+  );
 }

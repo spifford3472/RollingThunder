@@ -947,20 +947,20 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
   }
 
   function maybeApplyUiState(uiState) {
-    if (sameUiState(uiState, currentUiState)) return;
     currentUiState = uiState;
 
     const pageId = String(uiState?.page || "").trim() || "home";
     const focusId = String(uiState?.focus || "").trim() || null;
 
-    if (pageId !== currentPageId) {
-      mountCurrentPage(pageId, focusId);
-    } else if (currentPage && focusId) {
+    // Always remount the visible page on projection changes.
+    // This forces panel bindings to be re-fetched instead of reusing stale panelLastData.
+    mountCurrentPage(pageId, focusId);
+
+    if (currentPage && focusId) {
       nav.setActivePanel(focusId);
     }
 
     updateLocalUiModeFromProjection(uiState);
-    rerenderPanelsFromUiState();
   }
 
   async function refreshUiProjectionState(reason = "unknown") {
