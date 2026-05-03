@@ -83,6 +83,7 @@ UNITS=(
   "rt-console-led-sender.service"
   "rt-panel-input-bridge.service"
   "rt-virtual-panel-server.service"
+  "rt-weather-publisher.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

@@ -10,6 +10,7 @@ User=root
 Group=root
 EnvironmentFile=-/etc/rollingthunder/radio.env
 EnvironmentFile=-/etc/rollingthunder/radio-watchdog.env
+EnvironmentFile=/etc/rollingthunder/redis.env
 Requires=rigctld.service
 After=rigctld.service
 ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/rigctld_watchdog.py

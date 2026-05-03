@@ -34,6 +34,16 @@ function fmtUtcDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+function weatherBadge({ symbol, label, opacity = 1.0, iconClass = "" }) {
+  return `
+    <div class="rt-topbar-icon rt-wx-badge" title="${esc(label)}"
+         style="display:flex; flex-direction:column; align-items:center; gap:2px; opacity:${opacity}; width:72px; min-width:72px; flex:0 0 72px;">
+      <div class="rt-wx-symbol ${esc(iconClass)}">${esc(symbol)}</div>
+      <div class="rt-wx-label">${esc(label)}</div>
+    </div>
+  `;
+}
+
 /**
  * shape-first icon: check, x, or dot
  * - symbol conveys state even if colors are hard to distinguish
@@ -42,8 +52,8 @@ function iconBadge({ symbol, label, opacity = 1.0 }) {
   return `
     <div class="rt-topbar-icon" title="${esc(label)}"
          style="display:flex; flex-direction:column; align-items:center; gap:2px; opacity:${opacity};">
-      <div style="font-size:18px; line-height:18px;">${esc(symbol)}</div>
-      <div style="font-size:10px; opacity:0.85;">${esc(label)}</div>
+      <div style="font-size:24px; line-height:18px;">${esc(symbol)}</div>
+      <div style="font-size:20px; opacity:0.85;">${esc(label)}</div>
     </div>
   `;
 }
@@ -113,6 +123,19 @@ function staleTextOpacity(fresh, normal = 1.0, stale = 0.45) {
   return fresh.stale ? stale : normal;
 }
 
+function startLocalClock(initialIsoTime) {
+  if (!initialIsoTime) return null;
+
+  let base = new Date(initialIsoTime);
+  let baseMs = base.getTime();
+  let startMs = Date.now();
+
+  return () => {
+    const now = Date.now();
+    const delta = now - startMs;
+    return new Date(baseMs + delta);
+  };
+}
 
 export function renderTopbarCore(container, panel, data) {
   console.log("topbar_core data:", data);
@@ -264,12 +287,87 @@ export function renderTopbarCore(container, panel, data) {
 
   const midOpacity = staleTextOpacity(clockFresh, 1.0, 0.45);
 
+  // ---- CPU temp status
+  const tempF = numOrNull(data?.temp?.f);
+  const tempC = numOrNull(data?.temp?.c);
+  const tempStale = String(data?.temp?.stale ?? "1") === "1";
 
+  let cpuSymbol = "●";
+  let cpuClass = "rt-cpu-unknown";
+  let cpuTitle = "CPU temp unknown";
 
+  if (tempStale || tempC == null) {
+    cpuSymbol = "?";
+    cpuClass = "rt-cpu-unknown";
+    cpuTitle = "CPU temp stale/unknown";
+  } else if (tempC >= 75) {
+    cpuSymbol = "🔴";
+    cpuClass = "rt-cpu-bad";
+    cpuTitle = `CPU hot ${tempF?.toFixed(0)}°F / ${tempC.toFixed(1)}°C`;
+  } else if (tempC >= 60) {
+    cpuSymbol = "⚠";
+    cpuClass = "rt-cpu-warn";
+    cpuTitle = `CPU warm ${tempF?.toFixed(0)}°F / ${tempC.toFixed(1)}°C`;
+  } else {
+    cpuSymbol = "✔";
+    cpuClass = "rt-cpu-ok";
+    cpuTitle = `CPU good ${tempF?.toFixed(0)}°F / ${tempC.toFixed(1)}°C`;
+  }
 
-  // ---- Temp (placeholder for now; you said we haven’t written it yet)
-  const tempF = data?.temp?.f ?? "--";
-  const tempC = data?.temp?.c ?? "--";
+  // ---- Outside weather
+  const weatherF = numOrNull(data?.weather?.f);
+  const weatherC = numOrNull(data?.weather?.c);
+  const weatherStale = String(data?.weather?.stale ?? "1") === "1";
+
+  const showWeatherC = Math.floor(Date.now() / 10000) % 2 === 1;
+
+  const weatherText =
+    weatherF == null || weatherC == null
+      ? "WX"
+      : showWeatherC
+        ? `${weatherC.toFixed(1)}°C`
+        : `${weatherF.toFixed(0)}°F`;
+
+  let weatherSymbol = "☀";
+  let weatherIconClass = "rt-wx-sun";
+  let weatherOpacity = weatherStale ? 0.45 : 1.0;
+
+  const forecast = String(data?.weather?.short_forecast || "").toLowerCase();
+
+  if (forecast.includes("storm") || forecast.includes("thunder")) {
+    weatherSymbol = "⚡";
+    weatherIconClass = "rt-wx-storm";
+  } else if (forecast.includes("rain") || forecast.includes("shower")) {
+    weatherSymbol = "☂︎";
+    weatherIconClass = "rt-wx-rain";
+  } else if (forecast.includes("snow")) {
+    weatherSymbol = "❄︎";
+    weatherIconClass = "rt-wx-snow";
+  } else if (forecast.includes("cloud")) {
+    weatherSymbol = "☁︎";
+    weatherIconClass = "rt-wx-cloud";
+  } else if (forecast.includes("sun") || forecast.includes("clear")) {
+    weatherSymbol = "☀︎";
+    weatherIconClass = "rt-wx-sun";
+  }
+
+  // ---- Radio/RIG state
+  const radioState = data?.radio_state || null;
+  const radioOnline = String(radioState?.online || "").toLowerCase() === "true";
+  const radioReason = String(radioState?.reason || "").trim();
+
+  let rigSymbol = "✗";
+  let rigOpacity = 1.0;
+
+  const failures = numOrNull(radioState?.failures);
+
+  if (radioOnline) {
+    rigSymbol = "✔";
+  } else if (failures && failures < 3) {
+    rigSymbol = "⚠";   // transient issue
+  } else {
+    rigSymbol = "✗";   // real failure
+  }
 
   container.innerHTML = `
     <div class="rt-topbar"
@@ -278,32 +376,67 @@ export function renderTopbarCore(container, panel, data) {
       <!-- Left -->
       <div class="rt-topbar-left"
           style="min-width:170px; display:flex; flex-direction:column; gap:2px;">
-        <div class="rt-topbar-brand" style="font-weight:700;">RollingThunder</div>
-        <div class="rt-topbar-page" style="font-size:12px; opacity:0.85;">${esc(page)}</div>
+
+        <div class="rt-logo-wordmark" title="Rolling Thunder - Mobile QTH Anywhere">
+          <div class="rt-logo-main">ROLLING THUNDER</div>
+          <div class="rt-logo-sub">MOBILE QTH ✦ ANYWHERE</div>
+        </div>
+        
       </div>
 
       <!-- Middle -->
       <div class="rt-topbar-mid"
           style="flex:1; text-align:center; display:flex; flex-direction:column; gap:2px; opacity:${midOpacity};">
-        <div style="font-weight:700; font-size:18px; letter-spacing:0.5px;">${esc(utcTime)}</div>
-        <div style="font-size:12px; opacity:0.85;">${esc(utcDate)}</div>
+        <div class="rt-utc-time" style="font-weight:700; font-size:28px; letter-spacing:0.5px;">${esc(utcTime)}</div>
+        <div class="rt-utc-date" style="font-size:20px; opacity:0.85;">${esc(utcDate)}</div>
       </div>
 
       <!-- Right -->
       <div class="rt-topbar-right"
           style="min-width:210px; display:flex; justify-content:flex-end; align-items:flex-end; gap:12px;">
         <div style="display:flex; gap:10px; align-items:flex-end; white-space:nowrap;">
-          ${iconBadge({ symbol: sysSymbol, label: sysLabel, opacity: sysOpacity })}
           ${iconBadge({ symbol: timeSymbol, label: timeLabel, opacity: timeOpacity })}
           ${iconBadge({ symbol: gpsSymbol, label: gpsLabel, opacity: gpsOpacity })}
-        </div>
-
-        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:70px; white-space:nowrap;">
-          <div style="font-weight:700;">${esc(tempF)}°F</div>
-          <div style="font-size:12px; opacity:0.85;">${esc(tempC)}°C</div>
+          ${iconBadge({ symbol: rigSymbol, label: "RIG", opacity: rigOpacity })}
+          ${iconBadge({ symbol: cpuSymbol, label: "CPU", opacity: 1.0 })}
+          ${weatherBadge({ symbol: weatherSymbol, label: weatherText, opacity: weatherOpacity, iconClass: weatherIconClass })}
         </div>
       </div>
     </div>
   `;
 
+  window.__rtTopbarClockBaseMs = dt.getTime();
+  window.__rtTopbarClockStartedAtMs = Date.now();
+
+  if (!window.__rtTopbarClockTimer) {
+    window.__rtTopbarClockTimer = setInterval(() => {
+      const timeEl = document.querySelector(".rt-utc-time");
+      const dateEl = document.querySelector(".rt-utc-date");
+      if (!timeEl || !dateEl) return;
+
+      const baseMs = window.__rtTopbarClockBaseMs;
+      const startedAtMs = window.__rtTopbarClockStartedAtMs;
+      if (!Number.isFinite(baseMs) || !Number.isFinite(startedAtMs)) return;
+
+      const live = new Date(baseMs + (Date.now() - startedAtMs));
+      timeEl.textContent = fmtUtcTime(live);
+      dateEl.textContent = fmtUtcDate(live);
+    }, 1000);
+  }
+  if (!window.__rtWeatherRotateTimer) {
+    window.__rtWeatherRotateTimer = setInterval(() => {
+      const el = document.querySelector(".rt-wx-label");
+      if (!el) return;
+
+      const f = window.__rtWeatherF;
+      const c = window.__rtWeatherC;
+      if (!Number.isFinite(f) || !Number.isFinite(c)) return;
+
+      const showC = Math.floor(Date.now() / 10000) % 2 === 1;
+      el.textContent = showC ? `${c.toFixed(1)}°C` : `${f.toFixed(0)}°F`;
+    }, 1000);
+  }
+
+  window.__rtWeatherF = weatherF;
+  window.__rtWeatherC = weatherC;
 }

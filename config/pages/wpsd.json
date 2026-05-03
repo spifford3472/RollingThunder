@@ -1,7 +1,7 @@
 {
   "id": "wpsd",
   "order": 30,
-  "title": "WPSD",
+  "title": "DMR",
   "layout": {
     "top": ["topbar_core"],
     "middle": [

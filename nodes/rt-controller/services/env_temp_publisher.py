@@ -15,6 +15,7 @@ from __future__ import annotations
 import glob
 import os
 import time
+import json
 from typing import Optional, Tuple
 
 import redis
@@ -34,6 +35,19 @@ INTERVAL_SEC = float(os.environ.get("RT_ENV_TEMP_INTERVAL_SEC", "5.0"))
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+def publish_state_changed(r: redis.Redis, keys: list[str], source: str = "env_temp_publisher") -> None:
+    ts = now_ms()
+    event = {
+        "topic": "state.changed",
+        "payload": {
+            "keys": keys,
+            "changed_keys": keys,
+            "ts_ms": ts,
+        },
+        "ts_ms": ts,
+        "source": source,
+    }
+    r.publish("rt:system:bus", json.dumps(event, sort_keys=True, separators=(",", ":")))
 
 def read_ds18b20_c() -> Optional[float]:
     # Typical DS18B20 path: /sys/bus/w1/devices/28-xxxx/w1_slave
@@ -124,6 +138,7 @@ def main() -> None:
                 "stale": "0",
                 "last_update_ms": ts,
             })
+            publish_state_changed(r, [KEY_TEMP])
         else:
             # do NOT blank c/f; just mark stale and update timestamp
             r.hset(KEY_TEMP, mapping={
@@ -131,7 +146,7 @@ def main() -> None:
                 "stale": "1",
                 "last_update_ms": ts,
             })
-
+            publish_state_changed(r, [KEY_TEMP])
         time.sleep(1)
 
         # Store as hash for ui/state/batch "hash" encoding

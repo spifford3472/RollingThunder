@@ -1103,9 +1103,20 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     uiProjectionSubscribed = true;
 
     store.subscribe(UI_PROJECTION_TOPIC);
-    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {    //line 1041 to 1044
+    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, (event) => {
       clearUiProjectionRetryTimer();
-      void refreshUiProjectionState("bus");
+
+      const changedKeys =
+        event?.payload?.changed_keys ||
+        event?.payload?.keys ||
+        event?.changed_keys ||
+        event?.keys ||
+        null;
+
+      void refreshUiProjectionState({
+        source: "bus",
+        changed_keys: Array.isArray(changedKeys) ? changedKeys : null,
+      });
     });
 
     // FALLBACK POLLING DISABLED - event driven only

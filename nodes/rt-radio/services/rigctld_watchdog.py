@@ -6,6 +6,8 @@ import socket
 import subprocess
 import sys
 import time
+import json
+import redis
 from pathlib import Path
 
 HOST = os.environ.get("RT_RIGCTLD_HOST", "127.0.0.1")
@@ -19,6 +21,14 @@ RIGCTLD_SERVICE = os.environ.get("RT_RIGCTLD_SERVICE", "rigctld")
 MODEMRESET = os.environ.get("RT_RIG_WATCHDOG_MODEMRESET", "0") == "1"
 CP210X_RESET = os.environ.get("RT_RIG_WATCHDOG_CP210X_RESET", "0") == "1"
 LOG_PREFIX = "[rigctld-watchdog]"
+REDIS_HOST = os.environ.get("RT_REDIS_HOST", "rt-controller")
+REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
+REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
+REDIS_PASSWORD = os.environ.get("RT_REDIS_PASSWORD") or None
+REDIS_TIMEOUT_S = float(os.environ.get("RT_REDIS_TIMEOUT_SEC", "0.5"))
+
+RADIO_STATE_KEY = os.environ.get("RT_RADIO_STATE_KEY", "rt:radio:state")
+SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 
 _last_recovery_ts = 0.0
 
@@ -26,6 +36,91 @@ _last_recovery_ts = 0.0
 def log(msg: str) -> None:
     print(f"{LOG_PREFIX} {msg}", flush=True)
 
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def connect_redis() -> redis.Redis | None:
+    try:
+        r = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD,
+            decode_responses=True,
+            socket_timeout=REDIS_TIMEOUT_S,
+            socket_connect_timeout=REDIS_TIMEOUT_S,
+        )
+        r.ping()
+        return r
+    except Exception as exc:
+        log(f"redis unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
+def publish_state_changed(r: redis.Redis, keys: list[str]) -> None:
+    ts = now_ms()
+    event = {
+        "topic": "state.changed",
+        "payload": {
+            "keys": keys,
+            "changed_keys": keys,
+            "ts_ms": ts,
+        },
+        "ts_ms": ts,
+        "source": "rigctld_watchdog",
+    }
+    r.publish(SYSTEM_BUS_CHANNEL, json.dumps(event, sort_keys=True, separators=(",", ":")))
+
+
+def parse_freq_hz(detail: str) -> int | None:
+    for token in str(detail or "").replace("\r", "\n").split():
+        try:
+            value = int(token)
+        except Exception:
+            continue
+        if 100000 <= value <= 1000000000:
+            return value
+    return None
+
+
+def publish_radio_state(
+    r: redis.Redis | None,
+    *,
+    online: bool,
+    reason: str,
+    detail: str,
+    failures: int,
+) -> None:
+    if r is None:
+        return
+
+    ts = now_ms()
+    freq_hz = parse_freq_hz(detail) if online else None
+
+    mapping = {
+        "online": "true" if online else "false",
+        "reason": reason,
+        "detail": str(detail or "")[:240],
+        "failures": str(failures),
+        "last_update_ms": str(ts),
+        "source": "rigctld_watchdog",
+        "host": HOST,
+        "port": str(PORT),
+    }
+
+    if online:
+        mapping["last_ok_ms"] = str(ts)
+        if freq_hz is not None:
+            mapping["freq_hz"] = str(freq_hz)
+    else:
+        mapping["last_error_ms"] = str(ts)
+
+    try:
+        r.hset(RADIO_STATE_KEY, mapping=mapping)
+        publish_state_changed(r, [RADIO_STATE_KEY])
+    except Exception as exc:
+        log(f"redis publish failed: {type(exc).__name__}: {exc}")
 
 def probe_rigctld() -> tuple[bool, str]:
     """
@@ -139,6 +234,7 @@ def main() -> int:
     )
 
     failures = 0
+    r = connect_redis()
 
     while True:
         ok, detail = probe_rigctld()
@@ -146,12 +242,33 @@ def main() -> int:
             if failures:
                 log(f"probe recovered: {detail!r}")
             failures = 0
+            publish_radio_state(
+                r,
+                online=True,
+                reason="ok",
+                detail=detail,
+                failures=failures,
+            )
         else:
             failures += 1
+            publish_radio_state(
+                r,
+                online=False,
+                reason="probe_failed",
+                detail=detail,
+                failures=failures,
+            )
             log(f"probe failed ({failures}/{FAIL_THRESHOLD}): {detail}")
             if failures >= FAIL_THRESHOLD:
                 maybe_recover()
                 failures = 0
+                publish_radio_state(
+                    r,
+                    online=False,
+                    reason="recovery_attempted",
+                    detail=detail,
+                    failures=failures,
+                )
 
         time.sleep(CHECK_INTERVAL_S)
 

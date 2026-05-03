@@ -1,0 +1,16 @@
+[Unit]
+Description=RollingThunder Weather Publisher
+After=network-online.target redis-server.service rt-gps-state-publisher.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_WEATHER_INTERVAL_SEC=300
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/weather_publisher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

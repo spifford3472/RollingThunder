@@ -7,18 +7,19 @@
   "focusable": false,
   "refresh": { "mode": "poll", "intervalMs": 1000 },
   "bindings": [
-    { "id": "sys_health", "source": "state", "key": "rt:system:health" },
     { "id": "clock", "source": "state", "key": "rt:gps:time" },
     { "id": "gps_fix", "source": "state", "key": "rt:gps:fix" },
     { "id": "gps_speed", "source": "state", "key": "rt:gps:speed" },
     { "id": "active_alerts", "source": "state", "key": "rt:alerts:active" },
-    { "id": "temp", "source": "state", "key": "rt:env:temp" }
+    { "id": "temp", "source": "state", "key": "rt:env:temp" },
+    { "id": "weather", "source": "state", "key": "rt:weather:current" },
+    { "id": "radio_state", "source": "state", "key": "rt:radio:state" }
   ],
   "meta": {
     "purpose": "Always-visible status bar (time, gps, alert indicator). No actions.",
-    "title": "Topbar",
+    "title": " ",
     "contract": {
-      "requiredBindings": ["sys_health", "clock"],
+      "requiredBindings": ["clock"],
       "allowNull": ["gps_fix", "gps_speed", "active_alerts", "temp"]
     }
   }

@@ -6,7 +6,12 @@ Wants=network.target
 [Service]
 Type=simple
 User=root
+
+# 🔑 Load Redis credentials (same pattern as other RT services)
+EnvironmentFile=/etc/rollingthunder/redis.env
+
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/env_temp_publisher.py
+
 Restart=always
 RestartSec=1
 

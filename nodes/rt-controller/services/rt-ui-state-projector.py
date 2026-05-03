@@ -77,7 +77,16 @@ DEFAULT_PAGE_CONTEXT_KEYS = [
 ]
 DEFAULT_SYSTEM_HEALTH_KEYS = [
     "rt:system:health",
+    "rt:env:temp",
 ]
+
+# Backend data keys that should wake renderer bindings even when rt:ui:* projection
+# semantics do not otherwise change.
+DEFAULT_BINDING_REFRESH_KEYS = {
+    "rt:env:temp",
+    "rt:weather:current",
+    "rt:radio:state",
+}
 
 PROJECTED_KEYS = {
     "page": "rt:ui:page",
@@ -152,6 +161,7 @@ class UIStateProjector:
         self._page_ids = self._load_page_ids()
         self._browsable_panel_ids = self._load_browsable_panel_ids()
         self._breadcrumb_state: dict[str, Any] = {"last_page": None, "return_button": None}
+        self._pending_binding_refresh_keys: set[str] = set()
 
     def _connect(self) -> Redis:
         client = redis.Redis.from_url(
@@ -293,7 +303,14 @@ class UIStateProjector:
 
         upstream = self._read_upstream_state()
         projection, optional_keys = self._build_projection(upstream)
-        self._apply_projection(projection, optional_keys)
+        pending_binding_refresh_keys = sorted(self._pending_binding_refresh_keys)
+        self._pending_binding_refresh_keys.clear()
+
+        applied = self._apply_projection(projection, optional_keys)
+
+        if not applied and pending_binding_refresh_keys:
+            self._publish_projection_changed(pending_binding_refresh_keys, [])
+
         self.log.debug("projection pass completed reason=%s", reason)
 
     def _message_should_trigger_projection(self, msg: Mapping[str, Any]) -> bool:
@@ -351,6 +368,9 @@ class UIStateProjector:
         for key in keys:
             if not isinstance(key, str):
                 continue
+            if key in DEFAULT_BINDING_REFRESH_KEYS:
+                self._pending_binding_refresh_keys.add(key)
+                return True
             if key in relevant_exact:
                 return True
             if key.startswith(POTA_SPOT_STATUS_KEY_PREFIX):
@@ -960,7 +980,7 @@ class UIStateProjector:
             comparison_projection == self.last_comparison_projection
             and optional_keys == self.last_optional_keys
         ):
-            return
+            return False
 
         pipe = self.redis_client.pipeline(transaction=False)
         for key, value in sorted(projection.items()):
@@ -976,6 +996,7 @@ class UIStateProjector:
         self.last_optional_keys = set(optional_keys)
         self._publish_projection_changed(changed_keys, deleted_keys)
         self.log.debug("applied ui projection keys=%s deleted=%s", sorted(desired_keys), stale_keys)
+        return True
 
     @staticmethod
     def _coerce_int(value: Any) -> Optional[int]:
