@@ -33,6 +33,8 @@ RETRY_SEC = float(os.environ.get("RT_PANEL_BRIDGE_RETRY_SEC", "2.0"))
 SERIAL_STABILIZE_SEC = float(os.environ.get("RT_PANEL_SERIAL_STABILIZE_SEC", "1.5"))
 SYNC_MAX_CONSECUTIVE_NONJSON = int(os.environ.get("RT_PANEL_SYNC_MAX_CONSECUTIVE_NONJSON", "10"))
 POST_SYNC_MAX_CONSECUTIVE_NONJSON = int(os.environ.get("RT_PANEL_POST_SYNC_MAX_CONSECUTIVE_NONJSON", "25"))
+LAST_ENCODER_ROTATE_MS = 0
+ENCODER_ROTATE_THROTTLE_MS = int(os.environ.get("RT_ENCODER_ROTATE_THROTTLE_MS", "120"))
 
 _running = True
 
@@ -150,6 +152,8 @@ def map_event_to_intent(event: dict[str, Any]) -> dict[str, Any] | None:
 
     # ---- Encoder ----
     if control == "enc_main" and etype == "rotate":
+        global LAST_ENCODER_ROTATE_MS
+
         try:
             delta = int(event.get("value", 0))
         except Exception:
@@ -158,10 +162,16 @@ def map_event_to_intent(event: dict[str, Any]) -> dict[str, Any] | None:
         if delta == 0:
             return None
 
-        return {"intent": "ui.browse.delta", "params": {"delta": delta}}
+        now_ms = int(time.time() * 1000)
+        if now_ms - LAST_ENCODER_ROTATE_MS < ENCODER_ROTATE_THROTTLE_MS:
+            return None
+
+        LAST_ENCODER_ROTATE_MS = now_ms
+
+        return {"intent": "ui.browse.delta", "params": {"delta": 1 if delta > 0 else -1}}
 
     if control == "enc_main" and etype == "press":
-        return {"intent": "ui.ok", "params": {}}
+        return {"intent": "ui.encoder.press", "params": {}}
 
     return None
 

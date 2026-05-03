@@ -502,6 +502,10 @@ def acquire_lock(r):
 
 def save_state(r: redis.Redis, state: Dict[str, Any]):
     state["updated_at_ms"] = now_ms()
+
+    # Keep the single-writer lock alive so no second writer resets state.
+    r.pexpire(WRITER_LOCK_KEY, 10000)
+
     r.set(INTERACTION_KEY, json.dumps(state, separators=(",", ":")))
 
 def is_browse_active(state: Dict[str, Any]) -> bool:
@@ -638,7 +642,12 @@ def resolve_pota_parks_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
 
     items = []
     if isinstance(nearby, dict):
-        items = as_list(nearby.get("parks") or nearby.get("items") or nearby.get("nearby"))
+        items = as_list(
+            nearby.get("choices")
+            or nearby.get("parks")
+            or nearby.get("items")
+            or nearby.get("nearby")
+        )
     elif isinstance(nearby, list):
         items = nearby
 
@@ -831,6 +840,13 @@ def run_main_loop():
     ps.subscribe(INTENTS_CH)
     print(f"ui_interaction_state: subscribed to {INTENTS_CH}", flush=True)
 
+    def persist_now(changed_keys: list[str]) -> None:
+        nonlocal last_persist_ms
+        save_state(r, state)
+        last_persist_ms = now_ms()
+        if changed_keys:
+            publish_state_changed(r, changed_keys, source="ui_interaction_state")
+
     while True:
         msg = ps.get_message(timeout=1.0)
         state_changed = False
@@ -847,9 +863,18 @@ def run_main_loop():
                 params = obj.get("params") or {}
 
                 current_page = page_index.get(state["page"])
-                allowed = current_page.get("controls", {}).get("allowedIntents", [])
+                allowed = current_page.get("controls", {}).get("allowedIntents", []) if current_page else []
 
-                if intent in allowed:
+                modal_active = isinstance(state.get("modal"), dict)
+
+                modal_intents = {
+                    "ui.ok",
+                    "ui.cancel",
+                    "ui.back",
+                    "ui.browse.delta",
+                }
+
+                if intent in allowed or (modal_active and intent in modal_intents):
                     if intent == "ui.page.next":
                         ids = [p["id"] for p in pages]
                         next_page = rotate(ids, state["page"], "next")
@@ -886,7 +911,6 @@ def run_main_loop():
                     elif intent == "ui.focus.next":
                         if is_browse_active(state):
                             continue
-
                         rotation = current_page.get("focusPolicy", {}).get("rotation", [])
                         new_focus = rotate(rotation, state["focus"], "next")
                         if new_focus != state["focus"]:
@@ -897,7 +921,6 @@ def run_main_loop():
                     elif intent == "ui.focus.prev":
                         if is_browse_active(state):
                             continue
-
                         rotation = current_page.get("focusPolicy", {}).get("rotation", [])
                         new_focus = rotate(rotation, state["focus"], "prev")
                         if new_focus != state["focus"]:
@@ -908,7 +931,6 @@ def run_main_loop():
                     elif intent == "ui.focus.set":
                         if is_browse_active(state):
                             continue
-
                         panel = params.get("panel")
                         if panel in current_page.get("focusPolicy", {}).get("rotation", []):
                             if panel != state["focus"]:
@@ -918,14 +940,7 @@ def run_main_loop():
                                 publish_ui_result(r, intent)
 
                     elif intent == "ui.cancel":
-                        modal = as_dict(state.get("modal"))
-                        modal_type = str(modal.get("type") or "").strip()
-
-                        if modal_type == "pota_spot_outcome":
-                            state["modal"] = None
-                            state_changed = True
-                            publish_ui_result(r, intent)
-                        elif state.get("modal") is not None:
+                        if state.get("modal") is not None:
                             state["modal"] = None
                             state_changed = True
                             publish_ui_result(r, intent)
@@ -956,6 +971,7 @@ def run_main_loop():
 
                     elif intent == "ui.ok":
                         modal = state.get("modal")
+
                         if isinstance(modal, dict):
                             modal_type = str(modal.get("type") or "").strip()
 
@@ -965,19 +981,18 @@ def run_main_loop():
 
                                 if node_id == "rt-controller" and step == "warn":
                                     state["modal"] = build_node_reboot_modal(node_id, "armed")
-                                    state_changed = True
-                                    publish_ui_result(r, intent)
                                 else:
                                     if node_id:
                                         publish_intent(r, "node.reboot", {"nodeId": node_id, "confirm": True})
                                     state["modal"] = None
-                                    state_changed = True
-                                    publish_ui_result(r, intent)
+
+                                state_changed = True
+                                publish_ui_result(r, intent)
+
                             elif modal_type == "pota_spot_outcome":
                                 spot_id = str(modal.get("spot_id") or "").strip()
                                 options = as_list(modal.get("options"))
 
-                                selected_option_index = 0
                                 try:
                                     selected_option_index = int(modal.get("selected_option_index", 0))
                                 except Exception:
@@ -1009,7 +1024,6 @@ def run_main_loop():
 
                                 if target_spot is None:
                                     browse = as_dict(state.get("browse"))
-                                    selected_index = 0
                                     try:
                                         selected_index = int(browse.get("selected_index", 0))
                                     except Exception:
@@ -1017,13 +1031,13 @@ def run_main_loop():
                                     target_spot = selected_item_from_model(spots_model, selected_index)
 
                                 if target_spot:
-                                    publish_pota_spot_outcome_intent(r, target_spot, outcome_key)
                                     apply_pota_spot_outcome_state(r, target_spot, outcome_key)
                                     if outcome_key == "worked":
                                         publish_radio_log_qso_intent(r, target_spot)
+
                                 state["modal"] = None
-                                state_changed = True            
-                                publish_ui_result(r, intent)                        
+                                state_changed = True
+                                publish_ui_result(r, intent)
 
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
@@ -1033,7 +1047,6 @@ def run_main_loop():
                             if not model:
                                 continue
 
-                            selected_index = 0
                             try:
                                 selected_index = int(browse.get("selected_index", 0))
                             except Exception:
@@ -1053,6 +1066,20 @@ def run_main_loop():
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
                                 continue
 
+                            elif state["page"] == "pota" and panel_id == "pota_parks_summary":
+                                park_ref = str(
+                                    item.get("reference")
+                                    or item.get("park_ref")
+                                    or item.get("id")
+                                    or ""
+                                ).strip()
+                                if not park_ref:
+                                    continue
+
+                                publish_intent(r, "pota.select_park", {"park_ref": park_ref})
+                                state_changed = True
+                                publish_ui_result(r, intent)
+
                             elif state["page"] == "pota" and panel_id == "pota_bands_summary":
                                 new_band = str(
                                     item.get("band")
@@ -1066,7 +1093,7 @@ def run_main_loop():
 
                                 current_ctx = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
                                 old_band = str(current_ctx.get("selected_band") or current_ctx.get("band") or "").strip()
-                                band_changed = (old_band != new_band)
+                                band_changed = old_band != new_band
 
                                 update_pota_context_selected_band(r, new_band)
                                 pota_context_changed = True
@@ -1081,6 +1108,7 @@ def run_main_loop():
                                     "count": 0,
                                     "updated_at_ms": now_ms(),
                                 }
+
                                 state_changed = True
                                 publish_ui_result(r, intent)
                                 publish_state_changed(r, [POTA_CONTEXT_KEY], source="ui_interaction_state")
@@ -1098,14 +1126,39 @@ def run_main_loop():
                                     if first_spot:
                                         publish_radio_tune_intent(r, first_spot)
                                     state["pending_action"] = None
+
                             elif state["page"] == "pota" and panel_id == "pota_spots_summary":
                                 state["modal"] = build_pota_spot_outcome_modal(item)
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
+                    elif intent == "ui.encoder.press":
+                        # Encoder press is a panel-local shortcut. It must not confirm modals.
+                        if state.get("modal") is not None:
+                            publish_ui_result(r, intent, "ignored_modal_active")
+                            continue
+
+                        if is_browse_active(state):
+                            browse = as_dict(state.get("browse"))
+                            panel_id = str(browse.get("panel") or "").strip()
+
+                            if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                model = resolve_browse_model(r, state["page"], panel_id)
+                                if not model:
+                                    continue
+
+                                try:
+                                    selected_index = int(browse.get("selected_index", 0))
+                                except Exception:
+                                    selected_index = 0
+
+                                item = selected_item_from_model(model, selected_index)
+                                if item:
+                                    publish_radio_tune_intent(r, item)
+                                    publish_ui_result(r, intent)
+
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):
-                            delta = 0
                             try:
                                 delta = int(params.get("delta", 0))
                             except Exception:
@@ -1123,18 +1176,26 @@ def run_main_loop():
                                 if option_count <= 0:
                                     continue
 
-                                current_option_index = 0
                                 try:
                                     current_option_index = int(modal.get("selected_option_index", 0))
                                 except Exception:
                                     current_option_index = 0
 
                                 new_option_index = clamp_index(current_option_index + delta, option_count)
+
                                 if new_option_index != current_option_index:
                                     modal["selected_option_index"] = new_option_index
                                     state["modal"] = modal
                                     state_changed = True
                                     publish_ui_result(r, intent)
+
+                                # CRITICAL: modal movement must publish immediately.
+                                if state_changed:
+                                    # Persist but DO NOT short-circuit loop
+                                    save_state(r, state)
+                                    last_persist_ms = now_ms()
+                                    publish_state_changed(r, [INTERACTION_KEY], source="ui_interaction_state")
+
                                 continue
 
                             model = resolve_browse_model(r, state["page"], state["focus"])
@@ -1147,45 +1208,30 @@ def run_main_loop():
 
                             browse = state.get("browse")
                             panel_id = state["focus"]
-                            
+
                             if not isinstance(browse, dict) or browse.get("panel") != panel_id or not browse.get("active", True):
                                 anchor_index = int(model.get("anchor_index", 0))
                                 if state["page"] == "pota" and panel_id == "pota_spots_summary":
                                     new_index = find_next_browse_index_for_pota_spots(r, model, anchor_index, delta)
                                 else:
                                     new_index = clamp_index(anchor_index + delta, count)
-                                state["browse"] = build_browse_state(
-                                    state["page"],
-                                    panel_id,
-                                    model,
-                                    new_index,
-                                )
-                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                    item = selected_item_from_model(model, new_index)
-                                    if item:
-                                        publish_radio_tune_intent(r, item)                                
+
+                                state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
                                 state_changed = True
+
                             else:
-                                current_index = 0
                                 try:
                                     current_index = int(browse.get("selected_index", 0))
                                 except Exception:
                                     current_index = 0
+
                                 if state["page"] == "pota" and panel_id == "pota_spots_summary":
                                     new_index = find_next_browse_index_for_pota_spots(r, model, current_index, delta)
                                 else:
                                     new_index = clamp_index(current_index + delta, count)
+
                                 if new_index != current_index:
-                                    state["browse"] = build_browse_state(
-                                        state["page"],
-                                        panel_id,
-                                        model,
-                                        new_index,
-                                    )
-                                    if state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                        item = selected_item_from_model(model, new_index)
-                                        if item:
-                                            publish_radio_tune_intent(r, item)                                    
+                                    state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
                                     state_changed = True
 
         now = now_ms()
@@ -1193,7 +1239,6 @@ def run_main_loop():
         modal = state.get("modal")
         if isinstance(modal, dict):
             modal_type = str(modal.get("type") or "").strip()
-            auto_close_at_ms = 0
             try:
                 auto_close_at_ms = int(modal.get("auto_close_at_ms", 0))
             except Exception:

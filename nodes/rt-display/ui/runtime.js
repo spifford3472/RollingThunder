@@ -1103,7 +1103,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     uiProjectionSubscribed = true;
 
     store.subscribe(UI_PROJECTION_TOPIC);
-//    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {    //line 1041 to 1044
+    uiProjectionUnsub = store.on(UI_PROJECTION_TOPIC, () => {    //line 1041 to 1044
       clearUiProjectionRetryTimer();
       void refreshUiProjectionState("bus");
     });

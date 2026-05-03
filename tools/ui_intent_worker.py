@@ -101,6 +101,83 @@ def env_truthy(name: str, default: bool = False) -> bool:
     v = str(v).strip().lower()
     return v in ("1", "true", "yes", "y", "on")
 
+def handle_ui_browse_delta(r: redis.Redis, params: Dict[str, Any]) -> None:
+    delta = int(params.get("delta", 0))
+    panel = str(params.get("panel") or "").strip()
+
+    if delta == 0 or not panel:
+        return
+
+    key = f"rt:ui:browse:{panel}"
+    raw = r.get(key)
+
+    try:
+        state = json.loads(raw) if raw else {}
+    except Exception:
+        state = {}
+
+    # Initialize if needed
+    if not state:
+        state = {
+            "active": True,
+            "panel": panel,
+            "selected_index": 0,
+            "window_start": 0,
+            "window_size": 7
+        }
+
+    selected = int(state.get("selected_index", 0))
+    window_start = int(state.get("window_start", 0))
+    window_size = int(state.get("window_size", 7))
+
+    selected += 1 if delta > 0 else -1
+    selected = max(0, selected)
+
+    # Window tracking
+    if selected < window_start:
+        window_start = selected
+    elif selected >= window_start + window_size:
+        window_start = selected - window_size + 1
+
+    state["selected_index"] = selected
+
+    # --- NEW: auto tune on selection change ---
+    try:
+        # Get spots list for current band
+        spots_key = f"rt:pota:ui:ssb:spots:selected"
+        raw_spots = r.get(spots_key)
+        spots = json.loads(raw_spots) if raw_spots else []
+
+        if isinstance(spots, list) and 0 <= selected < len(spots):
+            spot = spots[selected]
+
+            freq_hz = int(spot.get("freq_hz", 0))
+            mode = str(spot.get("mode", "SSB")).strip()
+            band = str(spot.get("band", "")).strip()
+
+            if freq_hz > 0:
+                intent = {
+                    "intent": "radio.tune",
+                    "params": {
+                        "freq_hz": freq_hz,
+                        "mode": mode,
+                        "band": band,
+                        "autotune": False,
+                        "nodeId": "rt-radio"
+                    }
+                }
+                r.publish("rt:ui:intents", json.dumps(intent, separators=(",", ":")))
+
+    except Exception:
+        pass
+
+    state["window_start"] = window_start
+    state["window_size"] = window_size
+    state["updated_at_ms"] = int(time.time() * 1000)
+
+    r.set(key, json.dumps(state, separators=(",", ":")))
+
+    publish_state_changed(r, [key], source="ui_intent_worker")
 
 def compact_json(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
@@ -905,7 +982,8 @@ def main() -> None:
             continue
 
         if intent == "radio.tune":
-            handle_radio_tune(r, params)
+            if NODE_ID == "rt-radio":
+                handle_radio_tune(r, params)
             continue
 
         if intent == "radio.atas_tune":
@@ -914,6 +992,10 @@ def main() -> None:
 
         if intent == "pota.select_park":
             handle_pota_select_park(r, params)
+            continue
+
+        if intent == "ui.browse.delta":
+            handle_ui_browse_delta(r, params)
             continue
 
 

@@ -278,18 +278,22 @@ def semantic_entry_to_transport(entry: dict[str, Any]) -> dict[str, Any]:
     mode = _string_or_none(entry.get("mode")) or "off"
     period_ms = entry.get("period_ms")
 
-    if mode == "off":
-        return {"mode": "off"}
-    if mode == "on":
-        return {"mode": "on"}
-    if mode == "blink_slow":
-        return {"mode": "blink", "period_ms": int(period_ms or BLINK_SLOW_MS)}
-    if mode == "blink_fast":
-        return {"mode": "blink", "period_ms": int(period_ms or BLINK_FAST_MS)}
-    if mode == "pulse":
-        return {"mode": "pulse", "period_ms": int(period_ms or PULSE_MS)}
+    # IMPORTANT:
+    # The physical console must consume the same semantic LED modes as the
+    # virtual panel. Do not translate blink_slow/blink_fast into generic blink,
+    # or the two panels can disagree.
+    if mode not in {"off", "on", "blink_slow", "blink_fast", "pulse"}:
+        mode = "off"
 
-    return {"mode": "off"}
+    out: dict[str, Any] = {"mode": mode}
+
+    if period_ms is not None:
+        try:
+            out["period_ms"] = int(period_ms)
+        except Exception:
+            pass
+
+    return out
 
 
 def build_transport_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:

@@ -1,9 +1,12 @@
 .rt-app { height: 100vh; display: flex; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; }
 /* Default: stack (top/bottom want this) */
 .rt-region { display:flex; flex-direction:column; gap:12px; }
-.rt-slot { width:100%; box-sizing:border-box; }
 /* Mid stays a row (columns) */
 .rt-mid { flex-direction: row; align-items: stretch; }
+
+
+.rt-slot { width:100%; box-sizing:border-box; }
+
 
 /*.rt-mid { flex: 1 1 auto; align-items: stretch; }*/
 .rt-col { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -291,4 +294,151 @@
 }
 .rt-status-heard-not-worked-text {
   color: #ffd966;
+}
+
+
+/* === RollingThunder fixed viewport layout override === */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#rt_mount {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.rt-app {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Top and bottom are full-width stacked regions */
+.rt-top,
+.rt-bot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Middle must be horizontal columns */
+.rt-mid {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: stretch !important;
+  gap: 8px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Each JSON middle entry becomes one column */
+.rt-mid > .rt-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Panels fill their column */
+.rt-mid > .rt-col > .rt-slot {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Top/bottom panels keep natural height */
+.rt-top > .rt-slot,
+.rt-bot > .rt-slot {
+  flex: 0 0 auto;
+}
+
+/* All panel cards */
+.rt-slot {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Clip body instead of scrolling */
+.rt-slot-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* === POTA fixed viewport tuning === */
+
+/* POTA left column: nearby parks */
+.rt-mid > .rt-col:has(.rt-slot[data-panel-id="pota_parks_summary"]) {
+  flex: 0.9 1 0;
+}
+
+/* POTA right column: bands + spots */
+.rt-mid > .rt-col:has(.rt-slot[data-panel-id="pota_bands_summary"]) {
+  flex: 1.4 1 0;
+}
+
+/* Bands should be compact; spots should get the rest */
+.rt-slot[data-panel-id="pota_bands_summary"] {
+  flex: 0 0 auto;
+}
+
+.rt-slot[data-panel-id="pota_spots_summary"] {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Parks fills its column */
+.rt-slot[data-panel-id="pota_parks_summary"] {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Never let POTA tables create scrollbars */
+.rt-slot[data-panel-id^="pota_"] table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.rt-slot[data-panel-id^="pota_"] th,
+.rt-slot[data-panel-id^="pota_"] td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Replace old "scroll" hint visually */
+.rt-slot[data-panel-id^="pota_"] .rt-hint {
+  display: none;
+}
+
+.rt-spot-cannot-hear {
+  background: rgba(160, 0, 0, 0.75);
+}
+
+.rt-spot-heard-not-worked {
+  background: #ffd54f;  /* softer yellow */
+  color: #000;
+}
+
+.rt-spot-worked {
+  background: rgba(0, 90, 160, 0.65);
 }

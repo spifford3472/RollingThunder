@@ -25,6 +25,7 @@
       "ui.cancel",
       "ui.back",
       "ui.browse.delta",
+      "ui.encoder.press",
       "alert.ack",
       "alert.silence",
       "pota.select_band",

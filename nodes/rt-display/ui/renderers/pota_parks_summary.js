@@ -1,18 +1,8 @@
 // pota_parks_summary.js
-//
-// Browse-capable POTA parks panel.
-// Reads:
-//   - data.context <- rt:pota:context
-//   - data.nearby  <- rt:pota:nearby
-//
-// Emits on OK:
-//   - rt-emit-intent { intent:"ui.ok", params:{} }
-//
-// Notes:
-// - Park selection is controller-owned.
-// - Browse confirmation is controller-owned via ui.ok.
+// Renderer-only POTA nearby parks panel.
+// Park selection and browse movement are controller-owned.
 
-const WINDOW = 6;
+const DEFAULT_WINDOW = 7;
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -27,61 +17,88 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function applyProjectedBrowseCursorToParks(data, list, m) {
-  const browse = data?.ui_browse || data?.__ui?.browse || null;
-  if (!browse || typeof browse !== "object") return;
-  if (String(browse.panel || "") !== "pota_parks_summary") return;
+function unwrapObject(value) {
+  if (!value) return {};
+  if (value && typeof value === "object" && value.value && typeof value.value === "object") {
+    return value.value;
+  }
+  if (typeof value === "object") return value;
+  return {};
+}
 
-  const idx = Number(browse.selected_index);
-  if (!Number.isFinite(idx)) return;
+function parkRef(item) {
+  return String(item?.reference || item?.park_ref || item?.id || "").trim();
+}
 
-  if (!Array.isArray(list) || list.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-    m.selectedRef = null;
-    return;
+function getBrowseForPanel(data, panelId) {
+  const browse = unwrapObject(data?.ui_browse || data?.__ui?.browse || {});
+  if (!browse?.active) return {};
+  if (String(browse.panel || "") !== panelId) return {};
+  return browse;
+}
+
+function getWindowState(data, panelId, total, fallbackSelectedIndex = 0) {
+  const browse = getBrowseForPanel(data, panelId);
+
+  const selected = Number.isFinite(Number(browse.selected_index))
+    ? Number(browse.selected_index)
+    : fallbackSelectedIndex;
+
+  const windowSizeRaw = Number(browse.window_size);
+  const windowSize = Number.isFinite(windowSizeRaw) && windowSizeRaw > 0
+    ? Math.floor(windowSizeRaw)
+    : DEFAULT_WINDOW;
+
+  let windowStart = Number.isFinite(Number(browse.window_start))
+    ? Number(browse.window_start)
+    : 0;
+
+  const clampedSelected = clamp(selected, 0, Math.max(0, total - 1));
+  const maxStart = Math.max(0, total - windowSize);
+
+  windowStart = clamp(windowStart, 0, maxStart);
+
+  if (total > 0) {
+    if (clampedSelected < windowStart) windowStart = clampedSelected;
+    if (clampedSelected >= windowStart + windowSize) {
+      windowStart = clampedSelected - windowSize + 1;
+    }
   }
 
-  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
-  const cur = list[m.cursor];
-  m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
-  ensureCursorInWindow(m, list.length);
+  windowStart = clamp(windowStart, 0, maxStart);
+
+  return {
+    browse,
+    selectedIndex: clampedSelected,
+    windowStart,
+    windowSize,
+  };
 }
 
-function getModel(container) {
-  if (!container.__rtPotaParksModel) {
-    container.__rtPotaParksModel = {
-      cursor: 0,
-      offset: 0,
-      selectedRef: null,
-      lastKey: "",
-      lastList: [],
-    };
+function extractChoices(nearby) {
+  if (Array.isArray(nearby)) return nearby.filter(Boolean).slice();
+
+  if (nearby && typeof nearby === "object") {
+    if (Array.isArray(nearby.choices)) return nearby.choices.filter(Boolean).slice();
+    if (Array.isArray(nearby.parks)) return nearby.parks.filter(Boolean).slice();
+    if (Array.isArray(nearby.items)) return nearby.items.filter(Boolean).slice();
+    if (Array.isArray(nearby.nearby)) return nearby.nearby.filter(Boolean).slice();
+    if (Array.isArray(nearby.value)) return nearby.value.filter(Boolean).slice();
   }
-  return container.__rtPotaParksModel;
+
+  return [];
 }
 
-function computeStableKey(list) {
-  return list.map((x) => String(x?.reference || x?.park_ref || "")).join("|");
-}
+export function renderPotaParksSummary(container, panel, data) {
+  const context = unwrapObject(data?.context || {});
+  const nearby = data?.nearby || {};
+  const choices = extractChoices(nearby);
 
-function ensureCursorInWindow(m, total) {
-  m.cursor = clamp(m.cursor || 0, 0, Math.max(0, total - 1));
-
-  const maxOff = Math.max(0, total - WINDOW);
-  m.offset = clamp(m.offset || 0, 0, maxOff);
-
-  if (m.cursor < m.offset) m.offset = m.cursor;
-  if (m.cursor >= m.offset + WINDOW) m.offset = m.cursor - WINDOW + 1;
-
-  m.offset = clamp(m.offset, 0, maxOff);
-}
-
-function renderParksWindow(container, list, m, context) {
-  const total = list.length;
+  const total = choices.length;
   const selectedRefs = Array.isArray(context?.selected_park_refs)
     ? context.selected_park_refs.map((x) => String(x || "").trim()).filter(Boolean)
     : [];
+
   const selectedRef = String(context?.selected_park_ref || "").trim();
 
   if (total === 0) {
@@ -89,26 +106,30 @@ function renderParksWindow(container, list, m, context) {
     return;
   }
 
-  ensureCursorInWindow(m, total);
-  const off = m.offset;
-  const view = list.slice(off, off + WINDOW);
+  const primarySelectedRef = selectedRefs[0] || selectedRef;
+  const fallbackSelectedIndex = primarySelectedRef
+    ? Math.max(0, choices.findIndex((item) => parkRef(item) === primarySelectedRef))
+    : 0;
 
-  const slot = container.closest(".rt-slot");
-  const browseMode = !!(slot && slot.classList.contains("rt-browse-mode"));
+  const { browse, selectedIndex, windowStart, windowSize } =
+    getWindowState(data, "pota_parks_summary", total, fallbackSelectedIndex);
+
+  const browseActive = !!browse?.active;
+  const view = choices.slice(windowStart, windowStart + windowSize);
 
   const rows = view.map((item, i) => {
-    const absoluteIndex = off + i;
-    const ref = String(item?.reference || item?.park_ref || "").trim();
-    const name = String(item?.name || "").trim() || "(unnamed)";
+    const absoluteIndex = windowStart + i;
+    const ref = parkRef(item);
+    const name = String(item?.name || item?.park_name || "").trim() || "(unnamed)";
     const synthetic = !!item?.synthetic;
     const dist = item?.distance_miles == null ? "" : `${Number(item.distance_miles).toFixed(1)} mi`;
 
-    const isCursor = absoluteIndex === m.cursor;
-    const isSelected = selectedRefs.includes(ref);
+    const isCursor = browseActive && absoluteIndex === selectedIndex;
+    const isSelected = selectedRefs.includes(ref) || (!!selectedRef && ref === selectedRef);
 
     const trClass = [
       "sev-ok",
-      browseMode && isCursor ? "rt-selected" : "",
+      isCursor ? "rt-selected" : "",
       isSelected ? "rt-pota-park-selected" : "",
     ].filter(Boolean).join(" ");
 
@@ -127,9 +148,10 @@ function renderParksWindow(container, list, m, context) {
     `;
   }).join("");
 
-  let footerLeft = `Showing ${Math.min(WINDOW, total)}/${total}`;
-  if (browseMode) {
-    footerLeft = `Cursor ${clamp(m.cursor, 0, total - 1) + 1}/${total}`;
+  let footerLeft = `Showing ${Math.min(windowSize, total)}/${total}`;
+
+  if (browseActive) {
+    footerLeft = `Cursor ${selectedIndex + 1}/${total}`;
   } else if (selectedRefs.length > 0) {
     footerLeft = `Selected parks: ${esc(selectedRefs.join(", "))}`;
   } else if (selectedRef) {
@@ -137,8 +159,6 @@ function renderParksWindow(container, list, m, context) {
   } else {
     footerLeft = `Selected park: Not in a park`;
   }
-
-  const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
 
   container.innerHTML = `
     <table>
@@ -148,129 +168,7 @@ function renderParksWindow(container, list, m, context) {
       <tbody>${rows}</tbody>
     </table>
     <div class="rt-footer">
-      <span class="rt-muted">${footerLeft}</span>${hint}
+      <span class="rt-muted">${footerLeft}</span>
     </div>
   `;
-}
-
-function attachBrowseHandlersOnce(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-  if (slot.__rtPotaParksBrowseAttached) return;
-  slot.__rtPotaParksBrowseAttached = true;
-
-  const onDelta = (ev) => {
-    const delta = Number(ev?.detail?.delta ?? 0);
-    if (!Number.isFinite(delta) || delta === 0) return;
-
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    const total = list.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp((m.cursor ?? 0) + (delta > 0 ? 1 : -1), 0, total - 1);
-    const cur = list[m.cursor];
-    m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
-
-    ensureCursorInWindow(m, total);
-    renderParksWindow(container, list, m, container.__rtPotaParksContext || {});
-  };
-
-  const onOk = () => {
-    slot.dispatchEvent(new CustomEvent("rt-emit-intent", {
-      bubbles: true,
-      detail: {
-        intent: "ui.ok",
-        params: {},
-      },
-    }));
-  };
-
-  slot.addEventListener("rt-browse-delta", onDelta);
-  slot.addEventListener("rt-browse-ok", onOk);
-}
-
-function attachBrowseModeObserverOnce(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-  if (slot.__rtPotaParksBrowseObserverAttached) return;
-  slot.__rtPotaParksBrowseObserverAttached = true;
-
-  const obs = new MutationObserver(() => {
-    const m = getModel(container);
-    const list = Array.isArray(m.lastList) ? m.lastList : [];
-    renderParksWindow(container, list, m, container.__rtPotaParksContext || {});
-  });
-
-  obs.observe(slot, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-
-  slot.__rtPotaParksBrowseObserver = obs;
-}
-
-export function renderPotaParksSummary(container, panel, data) {
-  attachBrowseHandlersOnce(container);
-  attachBrowseModeObserverOnce(container);
-
-  const context = data?.context || {};
-  const nearby = data?.nearby || {};
-  container.__rtPotaParksContext = context;
-
-  const choices = Array.isArray(nearby)
-    ? nearby.filter(Boolean).slice()
-    : Array.isArray(nearby?.choices)
-      ? nearby.choices.filter(Boolean).slice()
-      : Array.isArray(nearby?.parks)
-        ? nearby.parks.filter(Boolean).slice()
-        : Array.isArray(nearby?.items)
-          ? nearby.items.filter(Boolean).slice()
-          : Array.isArray(nearby?.nearby)
-            ? nearby.nearby.filter(Boolean).slice()
-            : [];
-
-  const m = getModel(container);
-
-  const key = computeStableKey(choices);
-  if (m.lastKey !== key) {
-    m.lastKey = key;
-    m.offset = 0;
-
-    const selectedRef = String(context?.selected_park_ref || "").trim();
-    if (selectedRef) {
-      const idx = choices.findIndex(
-        (x) => String(x?.reference || x?.park_ref || "").trim() === selectedRef
-      );
-      m.cursor = idx >= 0 ? idx : 0;
-      m.selectedRef = selectedRef;
-    } else {
-      m.cursor = 0;
-      m.selectedRef = "";
-    }
-  } else if (context?.selected_park_ref) {
-    const selectedRef = String(context.selected_park_ref).trim();
-    const idx = choices.findIndex(
-      (x) => String(x?.reference || x?.park_ref || "").trim() === selectedRef
-    );
-    if (idx >= 0) {
-      m.cursor = idx;
-      m.selectedRef = selectedRef;
-    }
-  }
-
-  m.lastList = choices;
-  applyProjectedBrowseCursorToParks(data, choices, m);
-
-  if (choices.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-    m.selectedRef = null;
-  } else {
-    ensureCursorInWindow(m, choices.length);
-    const cur = choices[m.cursor];
-    m.selectedRef = cur ? String(cur?.reference || cur?.park_ref || "") : null;
-  }
-
-  renderParksWindow(container, choices, m, context);
 }

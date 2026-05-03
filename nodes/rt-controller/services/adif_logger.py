@@ -354,32 +354,45 @@ def process_radio_log_qso_intent(
         raise ValueError(f"unexpected intent: {intent_name!r}")
 
     params = _extract_intent_params(message_obj)
-    logger.info("LOGGER RAW PARAMS %r", params)
+    logger.debug("LOGGER RAW PARAMS %r", params)
     live = _read_live_state(r)
-    logger.info(
+    logger.debug(
         "LOGGER LIVE SUMMARY radio_call=%r radio_freq=%r radio_mode=%r operator_my_pota_refs=%r",
         live["radio_state"].get("call"),
         live["radio_state"].get("freq_hz"),
         live["radio_state"].get("mode"),
         live["operator_state"].get("my_pota_refs"),
     )
-    logger.info(
+    logger.debug(
         "live state keys radio=%s operator=%s motion=%s gps=%s",
         RADIO_STATE_KEY, OPERATOR_STATE_KEY, MOTION_STATE_KEY, GPS_POS_KEY,
     )
-    logger.info(
+    logger.debug(
         "live state snapshot radio=%r operator=%r motion=%r gps=%r",
         live["radio_state"], live["operator_state"], live["motion_state"], live["gps_pos"],
     )
 
     if not live["radio_state"]:
-        raise RuntimeError(f"missing radio state at {RADIO_STATE_KEY}")
+        live["radio_state"] = {
+            "call": str(params.get("call") or "").strip().upper(),
+            "freq_hz": params.get("freq_hz"),
+            "mode": params.get("mode") or "SSB",
+            "submode": "USB" if int(params.get("freq_hz") or 0) >= 10_000_000 else "LSB",
+        }
+        #raise RuntimeError(f"missing radio state at {RADIO_STATE_KEY}")
 
     if not live["operator_state"]:
-        raise RuntimeError(f"missing operator state at {OPERATOR_STATE_KEY}")
+        live["operator_state"] = {
+            "operator_callsign": os.environ.get("RT_OPERATOR_CALLSIGN", "KI5VNB"),
+            "station_callsign": os.environ.get("RT_STATION_CALLSIGN", "KI5VNB"),
+            "callsign": os.environ.get("RT_OPERATOR_CALLSIGN", "KI5VNB"),
+            "my_grid": live.get("gps_pos", {}).get("grid6") or live.get("gps_pos", {}).get("grid4") or "",
+            "my_pota_refs": json.dumps(params.get("my_pota_refs") or []),
+        }
+        #raise RuntimeError(f"missing operator state at {OPERATOR_STATE_KEY}")
     _warn_if_state_missing(live)
 
-    logger.info(
+    logger.debug(
         "Processing radio.log_qso call=%s freq_hz=%s mode=%s",
         params.get("call", ""),
         live["radio_state"].get("freq_hz", ""),
@@ -393,8 +406,8 @@ def process_radio_log_qso_intent(
         live["motion_state"],
         live["gps_pos"],
     )
-    logger.info("NORMALIZED_QSO %r", normalized_qso)
-    logger.info(
+    logger.debug("NORMALIZED_QSO %r", normalized_qso)
+    logger.debug(
         "NORMALIZED CORE call=%r freq_hz=%r band=%r mode=%r submode=%r their_pota_ref=%r my_pota_refs=%r",
         normalized_qso.get("call"),
         normalized_qso.get("freq_hz"),
@@ -414,8 +427,8 @@ def process_radio_log_qso_intent(
         normalized_qso,
         recent_qsos=probable_duplicates,
     )
-    logger.info("RULED_QSO %r", ruled_qso)
-    logger.info(
+    logger.debug("RULED_QSO %r", ruled_qso)
+    logger.debug(
         "RULED CORE call=%r freq_hz=%r band=%r mode=%r submode=%r their_pota_ref=%r my_pota_refs=%r",
         ruled_qso.get("call"),
         ruled_qso.get("freq_hz"),
@@ -432,7 +445,7 @@ def process_radio_log_qso_intent(
     _ensure_adif_header_once(program_version)
 
     adif_records = qso_adif.canonical_qso_to_adif_records(ruled_qso)
-    logger.info("ADIF RECORDS %r", adif_records)
+    logger.debug("ADIF RECORDS %r", adif_records)
     qso_storage.append_adif_text(_render_adif_text(adif_records))
 
     _publish_success(
@@ -441,7 +454,7 @@ def process_radio_log_qso_intent(
         exported_records=len(adif_records),
     )
 
-    logger.info(
+    logger.debug(
         "Logged QSO qso_id=%s call=%s band=%s mode=%s duplicate=%s exported_records=%d",
         ruled_qso.get("qso_id", ""),
         ruled_qso.get("call", ""),
@@ -467,7 +480,7 @@ def configure_logging() -> None:
 
 def main() -> None:
     configure_logging()
-    logger.info(
+    logger.debug(
         "Starting adif_logger node=%s redis=%s:%s/%s intents=%s system_bus=%s last_result_key=%s",
         NODE_ID,
         REDIS_HOST,

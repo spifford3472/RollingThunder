@@ -668,8 +668,8 @@ void updateButton(Button& b) {
     if (b.stablePressed) {
       b.pressedAtMs = now;
       b.holdSent = false;
-      handleButtonPress(b);
       maybeArmFromCombo();
+      handleButtonPress(b);
     } else {
       b.holdSent = false;
     }

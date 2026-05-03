@@ -721,13 +721,37 @@ class UIStateProjector:
         if selected_index is None:
             return None
 
+        count = self._coerce_int(browse.get("count")) or 0
+        window_size = self._coerce_int(browse.get("window_size")) or 7
+        window_start = self._coerce_int(browse.get("window_start")) or 0
+
+        if window_size < 1:
+            window_size = 7
+
+        if count > 0:
+            selected_index = max(0, min(selected_index, count - 1))
+        else:
+            selected_index = 0
+
+        max_window_start = max(0, count - window_size)
+        window_start = max(0, min(window_start, max_window_start))
+
+        if selected_index < window_start:
+            window_start = selected_index
+        elif selected_index >= window_start + window_size:
+            window_start = selected_index - window_size + 1
+
+        window_start = max(0, min(window_start, max_window_start))
+
         return {
             "active": True,
             "page": effective_page,
             "panel": effective_panel,
             "selected_index": selected_index,
             "selected_id": self._normalize_scalar(browse.get("selected_id")),
-            "count": self._coerce_int(browse.get("count")) or 0,
+            "count": count,
+            "window_start": window_start,
+            "window_size": window_size,
             "updated_at_ms": self._coerce_int(browse.get("updated_at_ms")) or now_ms,
         }
 
@@ -1350,15 +1374,15 @@ class UIStateProjector:
             if self._modal_confirmable(modal_obj):
                 if self._is_destructive_modal(modal_obj):
                     if self._destructive_modal_armed(modal_obj):
-                        leds["primary"] = "blink_fast"
+                        leds["primary"] = "blink_fast" 
                         if self._modal_cancelable(modal_obj):
                             leds["cancel"] = "blink_slow"
                     else:
-                        leds["primary"] = "blink_slow"
+                        leds["primary"] = "on" # was "blink_slow"
                         if self._modal_cancelable(modal_obj):
                             leds["cancel"] = "on"
                 else:
-                    leds["primary"] = "blink_slow"
+                    leds["primary"] = "on" #was "blink_slow" <-modal case?
             else:
                 leds["primary"] = "off"
 
@@ -1371,7 +1395,7 @@ class UIStateProjector:
                 if self._is_destructive_modal(modal_obj):
                     leds["primary"] = "blink_fast" if self._destructive_modal_armed(modal_obj) else "blink_slow"
                 else:
-                    leds["primary"] = "blink_slow"
+                    leds["primary"] = "on" #was "blink_slow"
 
             if self._page_navigation_available(page):
                 leds["page"] = "pulse"

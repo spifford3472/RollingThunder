@@ -1,8 +1,8 @@
 // pota_bands_summary.js
 // Renderer-only POTA SSB bands panel.
-// Authoritative selected band comes from data.context.selected_band.
+// Uses controller/projector-owned browse state when active.
 
-const WINDOW = 8;
+const DEFAULT_WINDOW = 7;
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -53,21 +53,89 @@ function bandSortKey(item) {
   return [9999, raw];
 }
 
-function renderBandsWindow(container, list, selectedBandFromContext, browseSelectedId) {
-  if (!Array.isArray(list) || list.length === 0) {
+function getBrowseForPanel(data, panelId) {
+  const browse = unwrapObject(data?.ui_browse || data?.__ui?.browse || {});
+  if (!browse?.active) return {};
+  if (String(browse.panel || "") !== panelId) return {};
+  return browse;
+}
+
+function getWindowState(data, panelId, total, fallbackSelectedIndex = 0) {
+  const browse = getBrowseForPanel(data, panelId);
+
+  const selected = Number.isFinite(Number(browse.selected_index))
+    ? Number(browse.selected_index)
+    : fallbackSelectedIndex;
+
+  const windowSizeRaw = Number(browse.window_size);
+  const windowSize = Number.isFinite(windowSizeRaw) && windowSizeRaw > 0
+    ? Math.floor(windowSizeRaw)
+    : DEFAULT_WINDOW;
+
+  let windowStart = Number.isFinite(Number(browse.window_start))
+    ? Number(browse.window_start)
+    : 0;
+
+  const clampedSelected = clamp(selected, 0, Math.max(0, total - 1));
+  const maxStart = Math.max(0, total - windowSize);
+
+  windowStart = clamp(windowStart, 0, maxStart);
+
+  if (total > 0) {
+    if (clampedSelected < windowStart) windowStart = clampedSelected;
+    if (clampedSelected >= windowStart + windowSize) {
+      windowStart = clampedSelected - windowSize + 1;
+    }
+  }
+
+  windowStart = clamp(windowStart, 0, maxStart);
+
+  return {
+    browse,
+    selectedIndex: clampedSelected,
+    windowStart,
+    windowSize,
+  };
+}
+
+export function renderPotaBandsSummary(container, panel, data) {
+  const bandsRaw = unwrapBinding(data?.bands);
+  const context = unwrapObject(data?.context || {});
+
+  const bands = bandsRaw
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => {
+      const [am, as] = bandSortKey(a);
+      const [bm, bs] = bandSortKey(b);
+      if (am !== bm) return am - bm;
+      return as.localeCompare(bs);
+    });
+
+  if (bands.length === 0) {
     container.innerHTML = `<div class="muted">No POTA SSB bands available.</div>`;
     return;
   }
 
-  const activeBand = String(selectedBandFromContext || "").trim();
-  const cursorBand = String(browseSelectedId || "").trim();
+  const selectedBandFromContext = String(context?.selected_band || "").trim();
 
-  const rows = list.map((item) => {
+  const fallbackSelectedIndex = selectedBandFromContext
+    ? Math.max(0, bands.findIndex((item) => bandName(item) === selectedBandFromContext))
+    : 0;
+
+  const { browse, selectedIndex, windowStart, windowSize } =
+    getWindowState(data, "pota_bands_summary", bands.length, fallbackSelectedIndex);
+
+  const view = bands.slice(windowStart, windowStart + windowSize);
+  const browseActive = !!browse?.active;
+
+  const rows = view.map((item, i) => {
+    const absoluteIndex = windowStart + i;
     const band = bandName(item);
     const count = Number(item?.count || 0);
 
-    const isCursor = cursorBand && band === cursorBand;
-    const isActiveBand = activeBand && band === activeBand;
+    const isCursor = browseActive && absoluteIndex === selectedIndex;
+    const isActiveBand = selectedBandFromContext && band === selectedBandFromContext;
 
     const trClass = [
       "sev-ok",
@@ -90,6 +158,12 @@ function renderBandsWindow(container, list, selectedBandFromContext, browseSelec
     `;
   }).join("");
 
+  const footerLeft = browseActive
+    ? `Cursor ${selectedIndex + 1}/${bands.length}`
+    : selectedBandFromContext
+      ? `Selected band: ${esc(selectedBandFromContext)}`
+      : `Bands: ${bands.length}`;
+
   container.innerHTML = `
     <table>
       <thead>
@@ -97,49 +171,8 @@ function renderBandsWindow(container, list, selectedBandFromContext, browseSelec
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    <div class="rt-footer">
+      <span class="rt-muted">${footerLeft}</span>
+    </div>
   `;
-}
-
-export function renderPotaBandsSummary(container, panel, data) {
-  const bandsRaw = unwrapBinding(data?.bands);
-  const context = unwrapObject(data?.context || {});
-
-  const bands = bandsRaw
-    .filter(Boolean)
-    .slice()
-    .sort((a, b) => {
-      const [am, as] = bandSortKey(a);
-      const [bm, bs] = bandSortKey(b);
-      if (am !== bm) return am - bm;
-      return as.localeCompare(bs);
-    });
-
-  const selectedBandFromContext = String(context?.selected_band || "").trim();
-
-  const browseRaw = data?.ui_browse || data?.__ui?.browse || {};
-  const browse = unwrapObject(browseRaw);
-
-  const browseSelectedId = (() => {
-    if (!browse?.active) return "";
-    if (String(browse?.panel || "") !== "pota_bands_summary") return "";
-
-    // Prefer selected_id if the controller wrote one
-    const byId = String(browse?.selected_id || "").trim();
-    if (byId) return byId;
-
-    // Fall back to resolving selected_index into a band name from the sorted list
-    const idx = Number(browse?.selected_index);
-    if (Number.isFinite(idx) && idx >= 0 && idx < bands.length) {
-      return bandName(bands[idx]);
-    }
-
-    return "";  
-  })();
-
-  renderBandsWindow(
-    container,
-    bands,
-    selectedBandFromContext,
-    browseSelectedId
-  );
 }

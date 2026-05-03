@@ -326,7 +326,7 @@
         <div class="hint">
           Encoder rotation emits <span class="mono">ui.browse.delta</span> with delta
           <span class="mono">-1</span> or <span class="mono">+1</span>.
-          Encoder press emits <span class="mono">ui.ok</span>.
+          Encoder press emits <span class="mono">ui.encoder.press</span>.
         </div>
       </section>
 
@@ -562,7 +562,7 @@
 
       document.getElementById("enc-press").addEventListener("click", async () => {
         try {
-          await sendIntent("ui.ok", {});
+          await sendIntent("ui.encoder.press", {});
         } catch (err) {
           setServerStatus(`Intent error: ${err.message}`, false);
         }
