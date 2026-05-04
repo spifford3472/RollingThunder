@@ -756,6 +756,35 @@ def resolve_pota_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
         "get_id": spot_item_id,
     }
 
+def resolve_alerts_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    raw = get_json_or_value(r, "rt:alerts:active")
+
+    items = []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        items = as_list(
+            raw.get("alerts")
+            or raw.get("items")
+            or raw.get("data")
+        )
+
+    if not items:
+        return None
+
+    normalized_items = [as_dict(item) for item in items if isinstance(item, dict)]
+
+    if not normalized_items:
+        return None
+
+    # IMPORTANT: Do NOT sort — preserve upstream order
+    return {
+        "items": normalized_items,
+        "count": len(normalized_items),
+        "anchor_index": 0,
+        "get_id": lambda x: str(x.get("id") or x.get("alert_id") or ""),
+    }
+
 
 def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[str, Any] | None:
     if page_id == "home":
@@ -764,6 +793,9 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
 
         if panel_id == "controller_services_summary":
             return resolve_home_nodes_browse_model(r)
+        
+        if panel_id == "alerts_overlay":
+            return resolve_alerts_browse_model(r)
 
     if page_id == "pota":
         if panel_id == "pota_parks_summary":
@@ -818,6 +850,43 @@ def rotate(lst, current, direction):
         idx = (idx - 1) % len(lst)
     return lst[idx]
 
+
+def build_alert_detail_modal(alert: Dict[str, Any]) -> Dict[str, Any]:
+    ts = now_ms()
+
+    title = str(alert.get("title") or "Alert").strip()
+
+    message = str(alert.get("message") or "").strip()
+    description = str(alert.get("details") or alert.get("description") or "").strip()
+
+    # Combine cleanly
+    if message and description:
+        full_text = f"{message}\n\n{description}"
+    else:
+        full_text = message or description or "No additional details"
+
+    meta_parts = []
+    if alert.get("kind"):
+        meta_parts.append(str(alert.get("kind")))
+    if alert.get("when"):
+        meta_parts.append(str(alert.get("when")))
+    if alert.get("source"):
+        meta_parts.append(str(alert.get("source")))
+
+    submessage = " • ".join(meta_parts) if meta_parts else None
+
+    return {
+        "active": True,
+        "id": f"alert_detail:{ts}",
+        "type": "alert_detail",
+        "title": title,
+        "message": full_text,
+        "submessage": submessage,
+        "confirmable": False,
+        "cancelable": True,
+        "destructive": False,
+        "opened_at_ms": ts,
+    }
 
 def run_main_loop():
     last_persist_ms = 0
@@ -1065,6 +1134,11 @@ def run_main_loop():
 
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
                                 continue
+
+                            elif state["page"] == "home" and panel_id == "alerts_overlay":
+                                state["modal"] = build_alert_detail_modal(item)
+                                state_changed = True
+                                publish_ui_result(r, intent)
 
                             elif state["page"] == "pota" and panel_id == "pota_parks_summary":
                                 park_ref = str(

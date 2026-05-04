@@ -255,10 +255,7 @@ export function renderControllerServicesSummary(container, panel, data) {
     return as.localeCompare(bs);
   });
 
-  const anyReal = sorted.some(svc => isRealState(svc?.state));
-  const services = anyReal
-    ? sorted.filter(svc => isRealState(svc?.state))
-    : sorted;
+  const services = sorted;
 
   const m = getModel(container);
 

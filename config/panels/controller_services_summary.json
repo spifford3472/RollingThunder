@@ -5,13 +5,18 @@
     "browsable": true
   },
   "focusable": true,
-  "refresh": { "mode": "poll", "intervalMs": 750 },
+  "refresh": { "mode": "push" },
   "bindings": [
     {
       "id": "controller_services",
       "source": "scan",
       "match": "rt:services:*",
       "limit": 200
+    },
+    {
+      "id": "ui_browse",
+      "source": "state",
+      "key": "rt:ui:browse:controller_services_summary"
     }
   ],
   "meta": {

@@ -34,7 +34,11 @@
 
   "focusPolicy": {
     "defaultPanel": "controller_services_summary",
-    "rotation": ["controller_services_summary","node_health_summary"]
+    "rotation": [
+      "controller_services_summary",
+      "node_health_summary",
+      "alerts_overlay"
+    ]
   },
 
   "meta": {

@@ -12,6 +12,10 @@
 .rt-col { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .rt-slot { background: #111826; border: 1px solid #223043; border-radius: 12px; padding: 12px; min-width: 0; }
 
+
+/*------------------------------------------------------------------*/
+/*                          TOPBAR CORE                             */
+/*------------------------------------------------------------------*/
 /* topbar_core */
 .rt-topbar-grid{
   display:grid;
@@ -39,6 +43,9 @@
 .rt-temp{ font-size:12px; opacity:0.85; margin-top:4px; }
 
 
+/*------------------------------------------------------------------*/
+/*                           ALERTS OVERLAY                         */
+/*------------------------------------------------------------------*/
 /* alerts_overlay */
 .rt-alerts { display:flex; flex-direction:column; gap:8px; }
 .rt-alert { padding:10px 12px; border:1px solid #223043; border-radius:10px; background:#0f1623; }
@@ -187,28 +194,82 @@
   opacity: 0.8;
 }
 
-/* Modal */
+/*------------------------------------------------------------------*/
+/*                                Modal                             */
+/*------------------------------------------------------------------*/
 .rt-modal-root { position: relative; }
+
 .rt-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.55);
+  background: rgba(0,0,0,0.65); /* slightly darker for contrast */
   z-index: 999;
 }
+
 .rt-modal {
   position: fixed;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
   z-index: 1000;
+
   background: #111;
-  border: 1px solid rgba(255,255,255,0.2);
-  padding: 14px;
-  min-width: 320px;
+  border: 1px solid rgba(255,255,255,0.25);
+
+  padding: 20px;
+
+  min-width: 420px;
+  max-width: 85vw;
+
+  /* 👇 improves readability while driving */
+  font-size: 22px;
+  line-height: 1.35;
 }
-.rt-modal-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
-.rt-modal-body { margin-bottom: 12px; opacity: 0.95; }
-.rt-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* Title */
+.rt-modal-title {
+  font-size: 30px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  line-height: 1.2;
+}
+
+/* Main body (message text) */
+.rt-modal-body {
+  font-size: 26px;
+  margin-bottom: 14px;
+  opacity: 0.98;
+}
+
+/* Submessage (kind / time / source) */
+.rt-modal-submessage {
+  font-size: 20px;
+  opacity: 0.75;
+  margin-top: 6px;
+}
+
+/* Actions (buttons) */
+.rt-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* Warning title */
+.rt-modal-warning-title {
+  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+/* Destructive modal styling */
+.rt-modal-warning-red {
+  border-color: rgba(255,0,0,0.45);
+  background: rgba(255,0,0,0.12);
+  color: #ff4d4d;
+  font-weight: 800;
+}
+
 .rt-btn { padding: 6px 10px; background: transparent; color: inherit; border: 1px solid rgba(255,255,255,0.25); }
 .rt-btn-ok { font-weight: 700; }
 
@@ -246,18 +307,11 @@
   50% { opacity: 0.2; }
 }
 
-.rt-modal-warning-title {
-  margin-bottom: 10px;
-  font-size: 14px;
-}
 
-.rt-modal-warning-red {
-  border-color: rgba(255,0,0,0.35);
-  background: rgba(255,0,0,0.10);
-  color: #ff4d4d;
-  font-weight: 800;
-}
 
+/*------------------------------------------------------------------*/
+/*                         POTA BAND                                */
+/*------------------------------------------------------------------*/
 /* POTA BAND */
 .rt-pota-band-selected td:first-child {
   color: #4db8ff;
@@ -273,6 +327,10 @@
   font-weight: 700;
 }
 
+
+/*------------------------------------------------------------------*/
+/*                        POTA Spot Status Colors                   */
+/*------------------------------------------------------------------*/
 /* === POTA Spot Status Colors (Colorblind Friendly) === */
 
 .rt-status-cannot-hear {
@@ -298,6 +356,9 @@
 }
 
 
+/*------------------------------------------------------------------*/
+/*                RollingThunder Fixed Viewport                     */
+/*------------------------------------------------------------------*/
 /* === RollingThunder fixed viewport layout override === */
 
 html,
@@ -385,6 +446,10 @@ body {
   overflow: hidden;
 }
 
+
+/*------------------------------------------------------------------*/
+/*                      POTA Fixed Viewport                         */
+/*------------------------------------------------------------------*/
 /* === POTA fixed viewport tuning === */
 
 /* POTA left column: nearby parks */
@@ -444,6 +509,10 @@ body {
   background: rgba(0, 90, 160, 0.65);
 }
 
+
+/*------------------------------------------------------------------*/
+/*                      TOPBAR CPU                                  */
+/*------------------------------------------------------------------*/
 /* === Topbar CPU stacked status === */
 .rt-cpu-stack {
   display: flex;
@@ -485,6 +554,10 @@ body {
   opacity: 0.75;
 }
 
+
+/*------------------------------------------------------------------*/
+/*                    TOPBAR Weather                                */
+/*------------------------------------------------------------------*/
 /* === Weather topbar badge === */
 .rt-wx-badge {
   width: 72px;
@@ -534,6 +607,10 @@ body {
   color: #ff6b6b !important;
 }
 
+
+/*------------------------------------------------------------------*/
+/*                         TOPBAR Logo                              */
+/*------------------------------------------------------------------*/
 /* === RollingThunder simple TRON-style wordmark === */
 .rt-logo-wordmark {
   width: 320px;
@@ -573,4 +650,45 @@ body {
     0 0 8px rgba(56, 230, 255, 0.4);
 
   white-space: nowrap;
+}
+
+/*------------------------------------------------------------------*/
+/*             HOME PAGE FONT SCALING (DRIVING MODE)                */
+/*------------------------------------------------------------------*/
+
+body[data-page="home"] .panel {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+/* Panel titles */
+body[data-page="home"] .panel-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+/* General text */
+body[data-page="home"] .panel div,
+body[data-page="home"] .panel span {
+  font-size: 20px;
+}
+
+/* Tables / rows */
+body[data-page="home"] .panel table,
+body[data-page="home"] .panel td,
+body[data-page="home"] .panel th {
+  font-size: 20px;
+}
+
+/* Secondary text */
+body[data-page="home"] .muted,
+body[data-page="home"] .rt-muted {
+  font-size: 17px;
+  opacity: 0.8;
+}
+
+/* Footer */
+body[data-page="home"] .rt-footer {
+  font-size: 17px;
 }

@@ -2,21 +2,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
   "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
 }[c]));
 
-// Read-only alerts overlay.
-// It only renders what it is given. No inference, no state transitions.
-export function renderAlertsOverlay(container, panel, data) {
-  // Try a few common binding IDs / shapes.
-  // The runtime binding store typically keys by binding.id, e.g. data.alerts or data.noaa, etc.
-  const payload =
-    data?.alerts ??
-    data?.alerts_overlay ??
-    data?.alert ??
-    data?.noaa ??
-    data?.data ??
-    {};
+const WINDOW = 5;
 
-  // Normalize to a list without inventing meaning.
-  // Accept: {items:[...]}, {alerts:[...]}, or [...] directly.
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export function renderAlertsOverlay(container, panel, data) {
+  const payload = data?.alerts ?? {};
   const list =
     Array.isArray(payload) ? payload :
     Array.isArray(payload.items) ? payload.items :
@@ -24,10 +17,29 @@ export function renderAlertsOverlay(container, panel, data) {
     Array.isArray(payload.data) ? payload.data :
     [];
 
-  const count = list.length;
+  const browse = data?.ui_browse || null;
+  const total = list.length;
 
-  // Small helper: pull some display-ish fields if present (but don't require any).
-  const rows = list.slice(0, 6).map((a) => {
+  let selectedIndex = 0;
+  let windowStart = 0;
+  let windowSize = WINDOW;
+
+  if (browse && typeof browse === "object" && String(browse.panel || "") === "alerts_overlay") {
+    selectedIndex = Number.isFinite(Number(browse.selected_index)) ? Number(browse.selected_index) : 0;
+    windowStart = Number.isFinite(Number(browse.window_start)) ? Number(browse.window_start) : 0;
+    windowSize = Number.isFinite(Number(browse.window_size)) ? Number(browse.window_size) : WINDOW;
+  }
+
+  windowSize = clamp(windowSize, 1, WINDOW);
+  selectedIndex = total > 0 ? clamp(selectedIndex, 0, total - 1) : 0;
+  windowStart = clamp(windowStart, 0, Math.max(0, total - windowSize));
+
+  const view = list.slice(windowStart, windowStart + windowSize);
+
+  const rows = view.map((a, i) => {
+    const absoluteIndex = windowStart + i;
+    const selected = absoluteIndex === selectedIndex;
+
     const kind = a.kind ?? a.type ?? a.category ?? "alert";
     const sev = (a.severity ?? a.level ?? "").toString().toLowerCase();
     const title = a.title ?? a.event ?? a.message ?? a.name ?? "(unnamed)";
@@ -40,7 +52,7 @@ export function renderAlertsOverlay(container, panel, data) {
       "rt-alert-warn";
 
     return `
-      <div class="rt-alert ${sevClass}">
+      <div class="rt-alert ${sevClass} ${selected ? "rt-selected" : ""}">
         <div class="rt-alert-title">${esc(title)}</div>
         <div class="rt-alert-meta">${esc(kind)}${when ? " • " + esc(when) : ""}</div>
       </div>
@@ -50,11 +62,13 @@ export function renderAlertsOverlay(container, panel, data) {
   container.innerHTML = `
     <div class="panel">
       <div class="panel-title">Alerts</div>
-      ${count === 0
+      ${total === 0
         ? `<div class="muted">No active alerts.</div>`
         : `<div class="rt-alerts">
-             <div class="small muted" style="margin-bottom:8px;">Showing ${count} alert${count === 1 ? "" : "s"}.</div>
              ${rows}
+             <div class="rt-footer">
+               <span class="rt-muted">Selected ${selectedIndex + 1} of ${total}</span>
+             </div>
            </div>`
       }
     </div>

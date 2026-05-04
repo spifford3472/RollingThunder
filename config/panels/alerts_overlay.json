@@ -2,34 +2,28 @@
   "id": "alerts_overlay",
   "type": "alerts_overlay",
   "interaction": {
-    "browsable": false
+    "browsable": true
   },
   "focusable": true,
-
-  "refresh": { "mode": "push", "topic": "rt/alerts/active", "fallbackPollMs": 1000 },
-
-
+  "refresh": { "mode": "push" },
   "bindings": [
     { "id": "alerts", "source": "state", "key": "rt:alerts:active" },
-    { "id": "focused_alert", "source": "state", "key": "rt:alerts:focused" }
+    { "id": "focused_alert", "source": "state", "key": "rt:alerts:focused" },
+    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:alerts_overlay" }
   ],
-
   "actions": [
     { "intent": "alert.ack", "params": { "scope": "focused" } },
-    { "intent": "alert.ack", "params": { "scope": "all_visible" } },
     { "intent": "alert.silence", "params": { "minutes": 10 } }
   ],
-
   "drivingMode": {
     "allowActions": ["alert.ack"]
   },
-
   "meta": {
-    "purpose": "Cross-page alert UI. Must be safe while driving.",
+    "purpose": "Browsable alert list. Controller owns selection.",
     "title": "Alerts",
     "contract": {
       "requiredBindings": ["alerts"],
-      "allowNull": ["focused_alert"]
+      "allowNull": ["focused_alert", "ui_browse"]
     }
   }
 }

@@ -857,6 +857,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       panelLastData = new Map();
       panelRerender = new Map();
       buildRuntimeShell(root);
+      document.body.dataset.page = "unknown";
       renderPanelError(root, { title: "Unknown page", detail: `No page '${pageId}'` });
       return;
     }
@@ -864,6 +865,8 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     currentPage = page;
     currentPageId = pageId;
     allowedIntents = buildAllowedIntents(page);
+
+    document.body.dataset.page = pageId;
 
     stopAllRefresh();
 
