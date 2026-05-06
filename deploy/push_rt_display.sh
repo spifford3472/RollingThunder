@@ -62,6 +62,9 @@ UNITS=(
   # deploy report publisher
   "rt-display-deploy-report-publisher.timer"
   "rt-display-deploy-report-publisher.service"
+
+  #Service State Publisher runs on all nodes
+  "rt-display-service-state-publisher.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -85,6 +88,7 @@ fail_missing "${SVC_DIR}/rt-display-kiosk-watchdog.sh"
 
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
+fail_missing "${GLOBAL_TOOLS_DIR}/service_state_publisher.py"
 
 fail_missing "${SVC_DIR}/rt-display-ui-intent-worker.py"
 
@@ -220,6 +224,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${UNIT_DST_DIR}/rt-display-ui-intent-worker.service" "644"
 
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-display-service-state-publisher.service" \
+    "${UNIT_DST_DIR}/rt-display-service-state-publisher.service" "644"
+
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-display-deploy-report-publisher.service" \
     "${UNIT_DST_DIR}/rt-display-deploy-report-publisher.service" "644"
 
@@ -309,6 +317,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl --no-pager --full status rt-display-kiosk-watchdog.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-ui-intent-worker.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-display-deploy-report-publisher.timer | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-display-service-state-publisher.service | sed -n '1,40p' || true
     exit 0
   "
 

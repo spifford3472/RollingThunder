@@ -19,7 +19,6 @@ export function renderDeployDriftSummary(container, panel, data) {
         <td class="mono">${esc(n.id)}</td>
         <td>${esc(n.role)}</td>
         <td class="mono">${esc(commit)}</td>
-        <td>${esc(age)}s</td>
         <td class="state">${esc(state)}</td>
         <td class="reasons">${esc(reasons)}</td>
       </tr>
@@ -31,7 +30,7 @@ export function renderDeployDriftSummary(container, panel, data) {
       <div class="panel-title">Deploy / Drift</div>
       <table class="drift-table">
         <thead>
-          <tr><th>Node</th><th>Role</th><th>Commit</th><th>Age</th><th>Drift</th><th>Reasons</th></tr>
+          <tr><th>Node</th><th>Role</th><th>Commit</th><th>Drift</th><th>Reasons</th></tr>
         </thead>
         <tbody>
           ${rows || `<tr><td colspan="6">No deploy reports yet</td></tr>`}

@@ -70,16 +70,21 @@
 /* runtime.css — add near the .rt-slot rules */
 
 .rt-slot { display:flex; flex-direction:column; gap:10px; }
+
+/*
 .rt-slot-hdr {
   padding: 2px 2px 0 2px;
 }
+*/  
 /* put title + browse pill on the same line */
+/*
 .rt-slot-hdr-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
+*/
 /* let the left side shrink cleanly */
 .rt-slot-title {
   font-weight: 700;
@@ -105,6 +110,7 @@
 }
 
 /* browse pill next to panel name, compact */
+/*
 .rt-slot-hdr .rt-pill {
   padding: 2px 8px;
   font-size: 11px;
@@ -112,14 +118,16 @@
   white-space: nowrap;
   margin: 0;
 }
-
+*/
 /* ensure body can’t crush */
 .rt-slot-body { min-width:0; }
 
 /* Panel lifecycle header (driving-safe, calm) */
 .rt-slot { display:flex; flex-direction:column; gap:10px; }
+/*
 .rt-slot-hdr { padding: 2px 2px 0 2px; }
 .rt-slot-hdr-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+*/
 .rt-slot-title { font-weight:700; font-size:13px; opacity:0.92; }
 .rt-slot-right { display:flex; align-items:center; gap:8px; }
 .rt-slot-reason {
@@ -130,6 +138,7 @@
   text-overflow:ellipsis;
   white-space:nowrap;
 }
+
 .rt-slot-body { min-width:0; }
 
 /* Panel for WPSD */
@@ -656,39 +665,124 @@ body {
 /*             HOME PAGE FONT SCALING (DRIVING MODE)                */
 /*------------------------------------------------------------------*/
 
-body[data-page="home"] .panel {
-  font-size: 20px;
+body[data-page="home"] .rt-slot {
+  font-size: 18px;
   line-height: 1.3;
 }
 
-/* Panel titles */
-body[data-page="home"] .panel-title {
-  font-size: 22px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-/* General text */
-body[data-page="home"] .panel div,
-body[data-page="home"] .panel span {
-  font-size: 20px;
-}
-
 /* Tables / rows */
-body[data-page="home"] .panel table,
-body[data-page="home"] .panel td,
-body[data-page="home"] .panel th {
-  font-size: 20px;
+body[data-page="home"] .rt-table,
+body[data-page="home"] .rt-table td,
+body[data-page="home"] .rt-table th {
+  font-size: 18px;
+}
+
+/* Node headers (controller services grouping) */
+body[data-page="home"] .rt-node-header td {
+  font-size: 18px;
+  font-weight: 700;
 }
 
 /* Secondary text */
-body[data-page="home"] .muted,
-body[data-page="home"] .rt-muted {
-  font-size: 17px;
+body[data-page="home"] .rt-muted,
+body[data-page="home"] .rt-footer {
+  font-size: 14px;
   opacity: 0.8;
 }
 
-/* Footer */
-body[data-page="home"] .rt-footer {
-  font-size: 17px;
+/*------------------------------------------------------------------*/
+/*        GLOBAL: REMOVE DUPLICATE PANEL HEADER CHROME              */
+/*------------------------------------------------------------------*/
+
+.rt-slot-hdr {
+  display: none;
+}
+
+.rt-slot {
+  gap: 0;
+}
+
+/*------------------------------------------------------------------*/
+/*        Selected Row Visibility                                   */
+/*------------------------------------------------------------------*/
+/* Strong selected row highlight */
+.rt-row.rt-selected {
+  background: rgba(0, 150, 255, 0.25);
+  outline: 2px solid rgba(0, 150, 255, 0.6);
+}
+
+/* Make text pop */
+.rt-row.rt-selected td {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+/* Tighten rows slightly */
+.rt-table td {
+  padding: 4px 6px;
+}
+
+.rt-table th {
+  padding: 4px 6px;
+}
+
+.rt-node-header td {
+  background: rgba(255,255,255,0.08);
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding-top: 6px;
+  padding-bottom: 4px;
+}
+
+.rt-cell-node {
+  width: 30%;
+}
+
+.rt-cell-name {
+  width: 50%;
+}
+
+.rt-cell-status {
+  width: 20%;
+  text-align: center;
+}
+
+.rt-table {
+  border-collapse: collapse;
+}
+
+.rt-table td,
+.rt-table th {
+  border: none;
+}
+
+/* Fix Deploydrift summary */
+/* Deploy Drift panel font tuning */
+.rt-slot[data-panel-id="deploy_drift_summary"] {
+  font-size: 18px;
+}
+
+.rt-slot[data-panel-id="deploy_drift_summary"] .rt-table,
+.rt-slot[data-panel-id="deploy_drift_summary"] td,
+.rt-slot[data-panel-id="deploy_drift_summary"] th {
+  font-size: 18px;
+}
+.rt-slot[data-panel-id="deploy_drift_summary"] .rt-cell-node {
+  width: 50%;
+}
+
+.rt-slot[data-panel-id="deploy_drift_summary"] .rt-cell-version {
+  width: 50%;
+}
+
+/* Fix Node Health Summary Layout */
+/* Node Health panel font tuning */
+.rt-slot[data-panel-id="node_health_summary"] {
+  font-size: 18px;
+}
+
+.rt-slot[data-panel-id="node_health_summary"] table,
+.rt-slot[data-panel-id="node_health_summary"] td,
+.rt-slot[data-panel-id="node_health_summary"] th {
+  font-size: 18px;
 }

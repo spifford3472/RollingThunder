@@ -36,6 +36,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 POTA_SPOT_STATUS_KEY_PREFIX = "rt:pota:spot_status:"
+NODE_HEALTH_MODEL_KEY = "rt:ui:model:node_health_summary"
 UI_INTERACTION_STATE_KEY = os.environ.get("RT_UI_INTERACTION_STATE_KEY", "rt:interaction:state")
 UI_PAGE_CONTEXT_KEY = os.environ.get("RT_UI_PAGE_CONTEXT_KEY", "rt:pota:context")
 
@@ -86,6 +87,7 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:env:temp",
     "rt:weather:current",
     "rt:radio:state",
+    "rt:ui:model:controller_services_summary",
 }
 
 PROJECTED_KEYS = {
@@ -375,6 +377,8 @@ class UIStateProjector:
                 return True
             if key.startswith(POTA_SPOT_STATUS_KEY_PREFIX):
                 return True
+            if key == "rt:system:nodes" or key.startswith("rt:nodes:"):
+                return True
         return False
 
     def _acquire_writer_lock(self) -> bool:
@@ -508,6 +512,231 @@ class UIStateProjector:
             return values[-1] if values else None
         return None
 
+    def _build_node_health_summary_model(self, now_ms: int) -> Dict[str, Any]:
+        node_ids = self._read_node_ids()
+        items: list[dict[str, Any]] = []
+
+        for node_id in node_ids:
+            node = self._read_node_record(node_id)
+            item = self._normalize_node_health_item(node_id, node, now_ms)
+            if item is not None:
+                items.append(item)
+
+        items.sort(key=lambda item: item.get("id", ""))
+
+        return {
+            "items": items,
+        }
+
+    def _read_node_ids(self) -> list[str]:
+        ids: set[str] = set()
+
+        try:
+            key_type = self.redis_client.type("rt:system:nodes")
+            if key_type == "set":
+                ids.update(
+                    item for item in self.redis_client.smembers("rt:system:nodes")
+                    if isinstance(item, str) and item.strip()
+                )
+            elif key_type == "list":
+                ids.update(
+                    item for item in self.redis_client.lrange("rt:system:nodes", 0, -1)
+                    if isinstance(item, str) and item.strip()
+                )
+            elif key_type == "string":
+                raw = self.redis_client.get("rt:system:nodes")
+                parsed = self._parse_json_value(raw)
+                if isinstance(parsed, list):
+                    ids.update(str(item).strip() for item in parsed if str(item).strip())
+                elif isinstance(raw, str) and raw.strip():
+                    ids.update(part.strip() for part in raw.split(",") if part.strip())
+        except Exception:
+            self.log.exception("failed to read rt:system:nodes")
+
+        if not ids:
+            try:
+                for key in self.redis_client.scan_iter("rt:nodes:*", count=100):
+                    node_id = str(key).split("rt:nodes:", 1)[-1].strip()
+                    if node_id:
+                        ids.add(node_id)
+            except Exception:
+                self.log.exception("failed to scan rt:nodes:*")
+
+        return sorted(ids)
+
+    def _read_node_record(self, node_id: str) -> Dict[str, Any]:
+        key = f"rt:nodes:{node_id}"
+        raw = self._read_key_any(key)
+        obj = self._normalize_object(raw)
+        return obj or {}
+
+    def _normalize_node_health_item(
+        self,
+        node_id: str,
+        node: Mapping[str, Any],
+        now_ms: int,
+    ) -> Optional[Dict[str, Any]]:
+        node_id = self._normalize_scalar(
+            node.get("id")
+            or node.get("node_id")
+            or node_id
+        )
+        if not node_id:
+            return None
+
+        role = self._normalize_scalar(node.get("role")) or ""
+        host = self._normalize_scalar(node.get("hostname") or node.get("host")) or ""
+        ip = self._normalize_scalar(
+            node.get("ip")
+            or node.get("address")
+            or self._nested_get(node, ["net", "ip"])
+            or self._nested_get(node, ["network", "ip"])
+        ) or ""
+
+        raw_status = self._normalize_scalar(
+            node.get("status")
+            or node.get("state")
+            or node.get("health")
+        )
+
+        status = self._derive_node_status(raw_status, node, now_ms)
+        severity = self._severity_for_node_status(status)
+        status_label = self._label_for_node_status(status)
+
+        badges: list[dict[str, str]] = []
+
+        if raw_status and raw_status.lower() not in {"online", "stale", "offline"}:
+            badges.append({
+                "sev": "warn",
+                "severity": "warn",
+                "label": f"unknown_status:{raw_status.lower()}",
+            })
+            if severity == "ok":
+                severity = "warn"
+
+        role_l = role.lower()
+        render_ok = self._coerce_bool(
+            node.get("ui_render_ok")
+            if "ui_render_ok" in node
+            else self._nested_get(node, ["ui", "render_ok"])
+        )
+
+        if role_l == "display" and status in {"online", "stale"}:
+            if render_ok is True:
+                badges.append({"sev": "ok", "severity": "ok", "label": "UI OK"})
+            elif render_ok is False:
+                badges.append({"sev": "warn", "severity": "warn", "label": "UI degraded"})
+                if severity == "ok":
+                    severity = "warn"
+            else:
+                badges.append({"sev": "warn", "severity": "warn", "label": "UI unknown"})
+                if severity == "ok":
+                    severity = "warn"
+
+        publisher_error = self._normalize_scalar(node.get("publisher_error"))
+        if publisher_error:
+            badges.append({"sev": "warn", "severity": "warn", "label": "publisher_error"})
+            if severity == "ok":
+                severity = "warn"
+
+        return {
+            "id": node_id,
+            "node_id": node_id,
+            "role": role,
+            "host": host,
+            "hostname": host,
+            "ip": ip,
+            "status": status,
+            "statusLabel": status_label,
+            "status_label": status_label,
+            "sev": severity,
+            "severity": severity,
+            "badges": badges,
+        }
+
+    def _derive_node_status(
+        self,
+        raw_status: Optional[str],
+        node: Mapping[str, Any],
+        now_ms: int,
+    ) -> str:
+        status = (raw_status or "").strip().lower()
+        if status in {"online", "stale", "offline"}:
+            return status
+
+        last_seen_ms = (
+            self._coerce_int(node.get("last_seen_ms"))
+            or self._coerce_int(node.get("updated_at_ms"))
+            or self._coerce_int(node.get("ts_ms"))
+            or self._coerce_int(node.get("timestamp_ms"))
+        )
+
+        if last_seen_ms is None:
+            return "stale"
+
+        age_ms = max(0, now_ms - last_seen_ms)
+
+        if age_ms <= self.config.stale_ms:
+            return "online"
+
+        if age_ms <= self.config.stale_ms * 6:
+            return "stale"
+
+        return "offline"
+
+    @staticmethod
+    def _severity_for_node_status(status: str) -> str:
+        if status == "online":
+            return "ok"
+        if status == "stale":
+            return "warn"
+        return "bad"
+
+    @staticmethod
+    def _label_for_node_status(status: str) -> str:
+        if status == "online":
+            return "Online"
+        if status == "stale":
+            return "Stale"
+        return "Offline"
+
+    @staticmethod
+    def _parse_json_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return value
+
+    @staticmethod
+    def _nested_get(value: Mapping[str, Any], path: Sequence[str]) -> Any:
+        cur: Any = value
+        for part in path:
+            if not isinstance(cur, Mapping):
+                return None
+            cur = cur.get(part)
+        return cur
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> Optional[bool]:
+        if value is True or value is False:
+            return value
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "y", "on", "ok"}:
+                return True
+            if text in {"0", "false", "no", "n", "off", "bad"}:
+                return False
+        if isinstance(value, (int, float)):
+            return value != 0
+        return None
+
     @staticmethod
     def _normalize_scalar(value: Any) -> Optional[str]:
         if value is None:
@@ -608,10 +837,13 @@ class UIStateProjector:
             breadcrumb=self._breadcrumb_state,
         )
 
+        node_health_model = self._build_node_health_summary_model(now_ms)
+
         projection: Dict[str, str] = {
             PROJECTED_KEYS["layer"]: layer,
             PROJECTED_KEYS["authority"]: self._json(authority),
             PROJECTED_KEYS["led_snapshot"]: self._json_any(led_snapshot),
+            NODE_HEALTH_MODEL_KEY: self._json_any(node_health_model),
         }
         optional_keys: set[str] = set()
 
@@ -994,7 +1226,27 @@ class UIStateProjector:
         self.last_projection = dict(projection)
         self.last_comparison_projection = dict(comparison_projection)
         self.last_optional_keys = set(optional_keys)
-        self._publish_projection_changed(changed_keys, deleted_keys)
+
+        # ----------------------------------------------------------
+        # Detect if change is browse-only (panel-level safe)
+        # ----------------------------------------------------------
+        browse_keys = {
+            "rt:ui:browse",
+        }
+        browse_keys.update(k for k in optional_keys if k.startswith("rt:ui:browse:"))
+
+        is_browse_only = (
+            len(changed_keys) > 0 and
+            all(k in browse_keys for k in changed_keys) and
+            len(deleted_keys) == 0
+        )
+
+        if is_browse_only:
+            # Only notify renderer bindings (no full remount)
+            self._publish_projection_changed(changed_keys, [])
+        else:
+            self._publish_projection_changed(changed_keys, deleted_keys)
+
         self.log.debug("applied ui projection keys=%s deleted=%s", sorted(desired_keys), stale_keys)
         return True
 

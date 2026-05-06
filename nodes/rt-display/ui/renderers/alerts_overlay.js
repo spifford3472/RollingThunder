@@ -57,6 +57,8 @@ export function renderAlertsOverlay(container, panel, data) {
         <div class="rt-alert-meta">${esc(kind)}${when ? " • " + esc(when) : ""}</div>
       </div>
     `;
+
+
   }).join("");
 
   container.innerHTML = `

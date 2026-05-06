@@ -8,13 +8,12 @@
 
   "refresh": { "mode": "push", "topic": "state.changed", "fallbackPollMs": 5000 },
 
-
   "bindings": [
-    {"id": "nodes", "source": "api", "url": "/api/v1/ui/nodes" },
-    {"id": "controller", "source": "state", "key": "rt:nodes:rt-controller" },
-    {"id": "radio","source":"state","key":"rt:nodes:rt-radio"},
-    {"id": "display","source":"state","key":"rt:nodes:rt-display"},
-    {"id": "wpsd", "source": "state", "key": "rt:nodes:rt-wpsd" }
+    {
+      "id": "model",
+      "source": "state",
+      "key": "rt:ui:model:node_health_summary"
+    }
   ],
 
   "actions": [
@@ -23,10 +22,10 @@
 
   "meta": {
     "purpose": "At-a-glance health of nodes/services.",
-    "title": "Nodes",
+    "title": "Node Health Summary",
     "contract": {
-      "requiredBindings": ["nodes"],
-      "allowNull": ["controller", "radio", "display", "wpsd"]
+      "requiredBindings": ["model"],
+      "allowNull": []
     }
   }
 }

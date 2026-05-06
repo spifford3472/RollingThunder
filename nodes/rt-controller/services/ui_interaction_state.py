@@ -32,6 +32,11 @@ NODE_KEY_PREFIX = "rt:nodes:"
 SERVICE_KEY_PREFIX = "rt:services:"
 
 CONFIG_APP_PATH = Path(os.environ.get("RT_APP_CONFIG_PATH", "/opt/rollingthunder/config/app.json"))
+
+HOME_SERVICES_MODEL_KEY = "rt:ui:model:controller_services_summary"
+HOME_SERVICES_REFRESH_HOME_MS = int(os.environ.get("RT_HOME_SERVICES_REFRESH_HOME_MS", "60000"))
+HOME_SERVICES_REFRESH_AWAY_MS = int(os.environ.get("RT_HOME_SERVICES_REFRESH_AWAY_MS", "3600000"))
+
 POTA_CONTEXT_KEY = "rt:pota:context"
 POTA_NEARBY_KEY = "rt:pota:nearby"
 POTA_BANDS_KEY = "rt:pota:ui:ssb:bands"
@@ -442,6 +447,61 @@ def service_item_id(item: Dict[str, Any]) -> str | None:
             return value
     return None
 
+HOME_SERVICE_NODE_ORDER = {
+    "rt-controller": 0,
+    "rt-radio": 1,
+    "rt-wpsd": 2,
+    "rt-display": 3,
+}
+
+SYSTEM_SERVICE_IDS = {
+    "redis_state",
+    "mqtt_bus",
+    "gps_ingest",
+    "logging",
+    "node_health",
+    "noaa_same",
+    "meshtastic_c2",
+}
+
+
+def service_row_item_id(item: Dict[str, Any]) -> str | None:
+    row_type = str(item.get("type") or "").strip()
+
+    if row_type == "node_header":
+        node = str(item.get("node") or "").strip()
+        return f"node:{node}" if node else None
+
+    node = str(item.get("node") or item.get("ownerNode") or "").strip()
+    service = str(item.get("service") or item.get("id") or item.get("name") or "").strip()
+
+    if node and service:
+        return f"service:{node}:{service}"
+
+    return service or None
+
+
+def normalize_service_state(raw: str) -> str:
+    state = str(raw or "").strip().lower()
+    if state in {"active", "running", "ok", "healthy"}:
+        return "active"
+    if state in {"inactive", "stopped"}:
+        return "inactive"
+    if state in {"failed", "error", "degraded"}:
+        return state
+    return state or "unknown"
+
+
+def service_sort_key(item: Dict[str, Any]) -> tuple[int, str, str]:
+    node = str(item.get("node") or item.get("ownerNode") or "").strip()
+    service = str(item.get("service") or item.get("id") or item.get("name") or "").strip()
+
+    return (
+        HOME_SERVICE_NODE_ORDER.get(node, 999),
+        node.lower(),
+        service.lower(),
+    )
+
 def load_pages() -> List[Dict[str, Any]]:
     pages = []
     for f in CONFIG_PAGES_DIR.glob("*.json"):
@@ -599,6 +659,93 @@ def spot_item_id(item: Dict[str, Any]) -> str | None:
         return "|".join([call, park, freq]).strip("|") or None
 
     return None
+
+def resolve_home_services_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    services: List[Dict[str, Any]] = []
+
+    try:
+        for key in r.scan_iter(match=f"{SERVICE_KEY_PREFIX}*"):
+            ks = str(key)
+            if not ks.startswith(SERVICE_KEY_PREFIX):
+                continue
+
+            if r.type(ks) != "hash":
+                continue
+
+            raw = r.hgetall(ks) or {}
+            if not raw:
+                continue
+
+            service_id = str(
+                raw.get("id")
+                or raw.get("service_id")
+                or raw.get("name")
+                or ks[len(SERVICE_KEY_PREFIX):]
+                or ""
+            ).strip()
+
+            node = str(
+                raw.get("ownerNode")
+                or raw.get("node")
+                or raw.get("node_id")
+                or raw.get("host")
+                or ""
+            ).strip()
+
+            if not service_id or not node:
+                continue
+
+            if service_id in SYSTEM_SERVICE_IDS:
+                continue
+
+            services.append({
+                "type": "service",
+                "node": node,
+                "service": service_id,
+                "state": normalize_service_state(str(raw.get("state") or "")),
+                "last_update_ms": raw.get("last_update_ms"),
+            })
+
+    except Exception:
+        services = []
+
+    if not services:
+        return None
+
+    services.sort(key=service_sort_key)
+
+    rows: List[Dict[str, Any]] = []
+    current_node = None
+
+    for svc in services:
+        node = str(svc.get("node") or "").strip()
+        if node != current_node:
+            current_node = node
+            rows.append({
+                "type": "node_header",
+                "node": node,
+                "service": "",
+                "state": "",
+            })
+        rows.append(svc)
+
+    model_payload = {
+        "items": rows,
+        "count": len(rows),
+        "updated_at_ms": now_ms(),
+    }
+
+    r.set(
+        HOME_SERVICES_MODEL_KEY,
+        json.dumps(model_payload, separators=(",", ":"), ensure_ascii=False),
+    )
+
+    return {
+        "items": rows,
+        "count": len(rows),
+        "anchor_index": 0,
+        "get_id": service_row_item_id,
+    }
 
 def resolve_home_nodes_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     items: List[Dict[str, Any]] = []
@@ -792,7 +939,7 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
             return resolve_home_nodes_browse_model(r)
 
         if panel_id == "controller_services_summary":
-            return resolve_home_nodes_browse_model(r)
+            return resolve_home_services_browse_model(r)
         
         if panel_id == "alerts_overlay":
             return resolve_alerts_browse_model(r)
@@ -828,7 +975,6 @@ def build_browse_state(
             selected_id = get_id(as_dict(item))
         else:
             selected_id = get_id(item)
-
     return {
         "active": True,
         "page": page_id,
@@ -836,6 +982,8 @@ def build_browse_state(
         "selected_index": selected_index,
         "selected_id": selected_id,
         "count": count,
+        "window_size": 18,
+        "items": items,   
         "updated_at_ms": now_ms(),
     }
 
@@ -890,6 +1038,7 @@ def build_alert_detail_modal(alert: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_main_loop():
     last_persist_ms = 0
+    last_home_services_refresh_ms = 0
     r = redis_client()
     acquire_lock(r)
 
@@ -1309,6 +1458,25 @@ def run_main_loop():
                                     state_changed = True
 
         now = now_ms()
+
+        # Controller-owned services model refresh cadence.
+        # HOME active: refresh every 60s.
+        # Away from HOME: refresh every 1h.
+        current_page_id = str(state.get("page") or "").strip()
+        services_refresh_interval_ms = (
+            HOME_SERVICES_REFRESH_HOME_MS
+            if current_page_id == "home"
+            else HOME_SERVICES_REFRESH_AWAY_MS
+        )
+
+        if (now - last_home_services_refresh_ms) >= services_refresh_interval_ms:
+            resolve_home_services_browse_model(r)
+            last_home_services_refresh_ms = now
+            publish_state_changed(
+                r,
+                [HOME_SERVICES_MODEL_KEY],
+                source="ui_interaction_state:home_services_refresh",
+            )
 
         modal = state.get("modal")
         if isinstance(modal, dict):

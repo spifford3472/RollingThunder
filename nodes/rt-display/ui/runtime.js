@@ -1049,7 +1049,6 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       if (
         changedKeys.includes("rt:ui:focus") ||
         changedKeys.includes("rt:ui:layer") ||
-        changedKeys.includes("rt:ui:browse") ||
         changedKeys.includes("rt:ui:modal") ||
         changedKeys.includes("rt:ui:page_context") ||
         changedKeys.includes("rt:ui:authority")

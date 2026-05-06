@@ -1,0 +1,26 @@
+[Unit]
+Description=RollingThunder Service State Publisher (systemd -> Redis)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=RT_NODE_ID=rt-display
+Environment=RT_PRUNE_MISSING=1
+Environment=RT_KEY_SERVICE_PREFIX=rt:services:
+Environment=RT_REDIS_HOST=192.168.8.134
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_REDIS_TIMEOUT_SEC=0.35
+Environment=RT_POLL_SEC=5.0
+EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_UNIT_MAP_JSON={"display-presence":"rt-display-presence.service","display-service-state-publisher":"rt-display-service-state-publisher.service","ui-intent-worker":"rt-display-ui-intent-worker.service"}
+
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-display/services/rt-display-service-state-publisher.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

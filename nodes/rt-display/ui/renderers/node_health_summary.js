@@ -15,18 +15,12 @@ const esc = (s) =>
     "'": "&#39;",
   }[c]));
 
-let _cache = { ts: 0, nodes: null, err: null };
-let _inflight = false;
-
 const WINDOW = 8;
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function isCanonicalStatus(s) {
-  return s === "online" || s === "stale" || s === "offline";
-}
 
 function pill(sev, label) {
   const cls =
@@ -34,58 +28,6 @@ function pill(sev, label) {
     sev === "warn" ? "pill warn" :
     "pill bad";
   return `<span class="${cls}">${esc(label)}</span>`;
-}
-
-function classifyNode(n) {
-  const id = n.id || n.node_id || "";
-  const roleRaw = (n.role || "").toString();
-  const role = roleRaw.toLowerCase();
-  const host = n.hostname || "";
-  const ip = n.ip || (n.net && n.net.ip) || "";
-
-  const ageRaw = n.age_sec ?? n.last_seen_age_sec ?? n.age;
-  const ageNum = Number(ageRaw);
-  const age = Number.isFinite(ageNum) ? Math.max(0, Math.floor(ageNum)) : "";
-
-  const statusRaw = String(n.status || "").toLowerCase().trim();
-  let status = statusRaw;
-  if (!isCanonicalStatus(status)) status = "stale";
-
-  let sev =
-    status === "online" ? "ok" :
-    status === "stale"  ? "warn" :
-    "bad";
-
-  const statusLabel =
-    status === "online" ? "Online" :
-    status === "stale"  ? `Stale (${age === "" ? "?" : age}s)` :
-    `Offline (${age === "" ? "?" : age}s)`;
-
-  const badges = [];
-
-  if (statusRaw && statusRaw !== status) {
-    badges.push({ sev: "warn", label: `unknown_status:${statusRaw}` });
-    if (sev === "ok") sev = "warn";
-  }
-
-  const renderOk = (n.ui_render_ok ?? n.ui?.render_ok);
-  if (role === "display" && (status === "online" || status === "stale" || !statusRaw)) {
-    if (renderOk === true) badges.push({ sev: "ok", label: "UI OK" });
-    else if (renderOk === false) {
-      badges.push({ sev: "warn", label: "UI degraded" });
-      if (sev === "ok") sev = "warn";
-    } else {
-      badges.push({ sev: "warn", label: "UI unknown" });
-    }
-  }
-
-  const pubErr = (n.publisher_error ?? "").toString().trim();
-  if (pubErr) {
-    badges.push({ sev: "warn", label: "publisher_error" });
-    if (sev === "ok") sev = "warn";
-  }
-
-  return { id, role: roleRaw, host, ip, age, sev, statusLabel, badges };
 }
 
 function getModel(container) {
@@ -223,7 +165,7 @@ function renderTableWindow(container, list, m) {
   const view = list.slice(off, off + WINDOW);
 
   const rows = view.map((n, i) => {
-    const meta = classifyNode(n);
+    const meta = n; // already fully prepared by controller
     const badgeHtml = meta.badges.length
       ? `<div class="small" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
           ${meta.badges.map(b => pill(b.sev, b.label)).join("")}
@@ -247,10 +189,9 @@ function renderTableWindow(container, list, m) {
         </td>
         <td>
           ${pill(meta.sev, meta.statusLabel)}
-          ${badgeHtml}
+
         </td>
         <td>${esc(meta.ip || "-")}</td>
-        <td>${esc(meta.age === "" ? "-" : meta.age)}</td>
       </tr>
     `;
   }).join("");
@@ -268,7 +209,7 @@ function renderTableWindow(container, list, m) {
   container.innerHTML = `
     <table>
       <thead>
-        <tr><th>Node</th><th>Status</th><th>IP</th><th>Age (sec)</th></tr>
+        <tr><th>Node</th><th>Status</th><th>IP</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -304,22 +245,6 @@ function attachBrowseHandlersOnce(container) {
 
   slot.addEventListener("rt-browse-delta", onDelta);
   slot.__rtNhBrowseV5Handlers = { onDelta };
-}
-
-async function fetchNodesOnce(url) {
-  if (_inflight) return;
-  _inflight = true;
-  try {
-    const resp = await fetch(url, { cache: "no-store" });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const payload = await resp.json();
-    const nodes = payload?.data?.nodes;
-    _cache = { ts: Date.now(), nodes: Array.isArray(nodes) ? nodes : [], err: null };
-  } catch (e) {
-    _cache = { ts: Date.now(), nodes: null, err: String(e?.message || e) };
-  } finally {
-    _inflight = false;
-  }
 }
 
 function applyProjectedBrowseCursorToNodes(data, list, m) {
@@ -399,65 +324,39 @@ function renderControllerOwnedNodeModal(container, data) {
 export function renderNodeHealthSummary(container, panel, data) {
   attachBrowseHandlersOnce(container);
 
-  const fromRuntime = data?.nodes ?? data?.data?.nodes;
-  let nodesList = Array.isArray(fromRuntime) ? fromRuntime : null;
+  const model = data?.model?.items;
 
-  if (!nodesList) {
-    if (Array.isArray(_cache.nodes)) nodesList = _cache.nodes;
-  }
-
-  if (!nodesList) {
-    if (_cache.err) container.innerHTML = `<div class="muted">Nodes unavailable: ${esc(_cache.err)}</div>`;
-    else container.innerHTML = `<div class="muted">Loading nodes…</div>`;
-
-    const url = (panel?.meta?.nodesUrl) || "/api/v1/ui/nodes";
-    if (Date.now() - (_cache.ts || 0) > 2000) {
-      fetchNodesOnce(url).then(() => {
-        if (Array.isArray(_cache.nodes)) renderNodeHealthSummary(container, panel, { nodes: _cache.nodes });
-      });
-    }
+  if (!Array.isArray(model)) {
+    container.innerHTML = `<div class="muted">No node data</div>`;
     return;
   }
 
-  const list = nodesList.filter(Boolean).slice().sort((a, b) =>
-    String(a.id || a.node_id || "").localeCompare(String(b.id || b.node_id || ""))
-  );
-
+  const list = model;
   const m = getModel(container);
 
+  // Stable key (controller owns ordering now)
   const key = computeStableKey(list);
   if (m.lastKey !== key) {
     m.lastKey = key;
     m.offset = 0;
-
-    if (m.selectedId) {
-      const idx = list.findIndex(n => String(n?.id || n?.node_id || "") === String(m.selectedId));
-      m.cursor = idx >= 0 ? idx : 0;
-    } else {
-      m.cursor = 0;
-    }
-  } else {
-    if (m.selectedId) {
-      const idx = list.findIndex(n => String(n?.id || n?.node_id || "") === String(m.selectedId));
-      if (idx >= 0) m.cursor = idx;
-    }
+    m.cursor = 0;
   }
 
   m.lastList = list;
 
-  // Key Phase B fix:
-  // force local visual cursor to follow controller-owned browse state
-  applyProjectedBrowseCursorToNodes(data, list, m);
-
-  if (list.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-  } else {
-    ensureCursorInWindow(m, list.length);
-    const cur = list[m.cursor];
-    m.selectedId = cur ? String(cur?.id || cur?.node_id || "") : null;
+  // Controller owns browse index
+  const browse = data?.ui_browse;
+  if (browse && browse.panel === "node_health_summary") {
+    const idx = Number(browse.selected_index);
+    if (Number.isFinite(idx)) {
+      m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
+    }
   }
+
+  ensureCursorInWindow(m, list.length);
 
   renderTableWindow(container, list, m);
   renderControllerOwnedNodeModal(container, data);
 }
+
+  

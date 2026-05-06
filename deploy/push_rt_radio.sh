@@ -58,6 +58,7 @@ UNITS=(
   "rt-radio-deploy-report-publisher.service"
   "rigctld.service"
   "rt-rigctld-watchdog.service"
+  "rt-radio-service-state-publisher.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -80,10 +81,11 @@ fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
 fail_missing "${SYSTEMD_DIR}/rigctld.service"
 fail_missing "${SYSTEMD_DIR}/rt-rigctld-watchdog.service"
+fail_missing "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service"
 
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
-
+fail_missing "${GLOBAL_TOOLS_DIR}/service_state_publisher.py"
 # radio package files required by shared ui_intent_worker.py on rt-radio
 fail_missing "${SVC_DIR}/radio/__init__.py"
 fail_missing "${SVC_DIR}/radio/config.py"
@@ -246,6 +248,11 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
     "${SYSTEMD_DIR}/rt-rigctld-watchdog.service" \
     "${UNIT_DST_DIR}/rt-rigctld-watchdog.service" "644"
+
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service" \
+    "${UNIT_DST_DIR}/rt-radio-service-state-publisher.service" "644"
+
 else
   echo "[dry] would install units to ${UNIT_DST_DIR}: ${UNITS[*]}"
   echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"
@@ -283,6 +290,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl --no-pager --full status rt-radio-ui-intent-worker.service | sed -n '1,60p' || true
     sudo systemctl --no-pager --full status rigctld.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-radio-service-state-publisher.service | sed -n '1,40p' || true
     exit 0
   "
 

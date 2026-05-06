@@ -9,9 +9,8 @@
   "bindings": [
     {
       "id": "controller_services",
-      "source": "scan",
-      "match": "rt:services:*",
-      "limit": 200
+      "source": "state",
+      "key": "rt:ui:model:controller_services_summary"
     },
     {
       "id": "ui_browse",
@@ -20,6 +19,11 @@
     }
   ],
   "meta": {
-    "purpose": "Service list with browse scrolling (view-only; no restart)."
+    "purpose": "Service list with browse scrolling (view-only; no restart).",
+    "title": "Service Summary",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": ["controller_services", "ui_browse"]
+    }
   }
 }

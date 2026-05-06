@@ -1,0 +1,26 @@
+[Unit]
+Description=RollingThunder Service State Publisher (systemd -> Redis)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi-star
+Environment=RT_NODE_ID=rt-wpsd
+Environment=RT_PRUNE_MISSING=1
+Environment=RT_KEY_SERVICE_PREFIX=rt:services:
+Environment=RT_REDIS_HOST=192.168.8.134
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_REDIS_TIMEOUT_SEC=0.35
+Environment=RT_POLL_SEC=30
+Environment=RT_DISCOVER_SEC=60
+EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_UNIT_MAP_JSON={"dmr_led_controller":"dmr_led_controller.service","nginx":"nginx.service","dmrgateway":"dmrgateway.service","mmdvmhost":"mmdvmhost.service","wpsd-service-state-publisher":"rt-wpsd-service-state-publisher.service","wpsd-ui-intent-worker":"rt-wpsd-ui-intent-worker.service"}
+
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-wpsd/services/rt-wpsd-service-state-publisher.py
+Restart=always
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target

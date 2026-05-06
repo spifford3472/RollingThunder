@@ -1,85 +1,4 @@
-// controller_services_summary.js
-//
-// v5 (controller-owned browse visual sync):
-// - Windowed list: show at most 11 rows at a time
-// - Browse mode:
-//     * renderer still supports local rt-browse-delta fallback
-//     * BUT visual cursor now follows controller-projected browse state
-// - NO restart modal, NO intents (view-only)
-// - Adaptive unknown filtering
-// - Stable sort by id/key
-// - Age ticker updates in-place
-// - Footer:
-//     non-browse: "Showing X/Y" (+ scroll hint if needed)
-//     browse:     "Selected Service #i of N"
-
-const WINDOW = 11;
-
-function pillHtml(kind, label) {
-  const cls =
-    kind === "ok" ? "rt-pill ok" :
-    kind === "warn" ? "rt-pill warn" :
-    "rt-pill bad";
-  return `<span class="${cls}">${label}</span>`;
-}
-
-function stateToPill(state) {
-  const s = String(state || "").toLowerCase();
-  if (s === "running" || s === "active") return pillHtml("ok", "RUN");
-  if (s === "stopped" || s === "inactive") return pillHtml("warn", "STOP");
-  if (s === "failed") return pillHtml("bad", "FAIL");
-  if (s === "missing") return pillHtml("bad", "MISS");
-  if (s === "unknown") return pillHtml("warn", "UNKN");
-  if (!s) return pillHtml("warn", "N/A");
-  return pillHtml("warn", s.slice(0, 5).toUpperCase());
-}
-
-function normState(x) {
-  return String(x ?? "").toLowerCase().trim();
-}
-
-function isRealState(s) {
-  const v = normState(s);
-  return !!v && v !== "unknown";
-}
-
-function ageSecFromMs(ms) {
-  const n = Number(ms ?? NaN);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.max(0, Math.floor((Date.now() - n) / 1000));
-}
-
-function fmtAge(ageSec) {
-  if (ageSec == null) return "—";
-  if (ageSec < 60) return `${ageSec}s`;
-  const m = Math.floor(ageSec / 60);
-  const s = ageSec % 60;
-  return `${m}m${String(s).padStart(2, "0")}s`;
-}
-
-function startAgeTicker(container) {
-  if (container.__rtAgeTimer) {
-    try {
-      clearInterval(container.__rtAgeTimer);
-    } catch (_) {}
-    container.__rtAgeTimer = null;
-  }
-
-  container.__rtAgeTimer = setInterval(() => {
-    const cells = container.querySelectorAll("[data-rt-age-ms]");
-    for (const el of cells) {
-      const ms = el.getAttribute("data-rt-age-ms");
-      const age = ageSecFromMs(ms);
-      el.textContent = fmtAge(age);
-
-      const tr = el.closest("tr");
-      if (tr) {
-        const stale = (age != null && age > 12);
-        tr.classList.toggle("stale", stale);
-      }
-    }
-  }, 1000);
-}
+const WINDOW = 18;
 
 function safeText(s) {
   return String(s ?? "")
@@ -90,207 +9,110 @@ function safeText(s) {
     .replace(/'/g, "&#39;");
 }
 
+function pillHtml(kind, label) {
+  const cls =
+    kind === "ok" ? "rt-pill ok" :
+    kind === "warn" ? "rt-pill warn" :
+    "rt-pill bad";
+
+  return `<span class="${cls}">${safeText(label)}</span>`;
+}
+
+function stateToPill(state) {
+  const s = String(state || "").trim().toLowerCase();
+
+  if (s === "running" || s === "active") return pillHtml("ok", "RUN");
+  if (s === "stopped" || s === "inactive") return pillHtml("warn", "STOP");
+  if (s === "failed" || s === "error") return pillHtml("bad", "FAIL");
+  if (!s) return "";
+
+  return pillHtml("warn", s.slice(0, 5).toUpperCase());
+}
+
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function getModel(container) {
-  if (!container.__rtModel) {
-    container.__rtModel = {
-      offset: 0,
-      cursor: 0,
-      selectedId: null,
-      lastKey: "",
-      lastServices: [],
-    };
+function extractRows(data) {
+  const model = data?.controller_services;
+
+  if (Array.isArray(model?.items)) return model.items;
+  if (Array.isArray(model)) return model;
+
+  return [];
+}
+
+export function renderControllerServicesSummary(container, panel, data) {
+  const rows = extractRows(data);
+  const browse = data?.ui_browse || null;
+  const total = rows.length;
+
+  let selectedIndex = 0;
+  let windowStart = 0;
+  let windowSize = WINDOW;
+
+  if (
+    browse &&
+    typeof browse === "object" &&
+    String(browse.panel || "") === "controller_services_summary"
+  ) {
+    const maybeSelected = Number(browse.selected_index);
+    const maybeWindowStart = Number(browse.window_start);
+    const maybeWindowSize = Number(browse.window_size);
+
+    selectedIndex = Number.isFinite(maybeSelected) ? maybeSelected : 0;
+    windowStart = Number.isFinite(maybeWindowStart) ? maybeWindowStart : 0;
+    windowSize = Number.isFinite(maybeWindowSize) ? maybeWindowSize : WINDOW;
   }
-  return container.__rtModel;
-}
 
-function computeStableKey(list) {
-  return list.map(x => String(x?.id || x?.key || "")).join("|");
-}
+  windowSize = clamp(windowSize, 1, WINDOW);
+  selectedIndex = total > 0 ? clamp(selectedIndex, 0, total - 1) : 0;
+  windowStart = clamp(windowStart, 0, Math.max(0, total - windowSize));
 
-function ensureCursorInWindow(m, total) {
-  m.cursor = clamp(m.cursor || 0, 0, Math.max(0, total - 1));
+  const view = rows.slice(windowStart, windowStart + windowSize);
 
-  const maxOff = Math.max(0, total - WINDOW);
-  m.offset = clamp(m.offset || 0, 0, maxOff);
+  const body = view.map((row, i) => {
+    const absoluteIndex = windowStart + i;
+    const selected = absoluteIndex === selectedIndex;
+    const type = String(row?.type || "service");
 
-  if (m.cursor < m.offset) m.offset = m.cursor;
-  if (m.cursor >= m.offset + WINDOW) m.offset = m.cursor - WINDOW + 1;
-
-  m.offset = clamp(m.offset, 0, maxOff);
-}
-
-function renderWindow(container, services, m) {
-  const total = services.length;
-
-  ensureCursorInWindow(m, total);
-
-  const off = m.offset;
-  const view = services.slice(off, off + WINDOW);
-
-  const rows = view.map((svc, i) => {
-    const id = String(svc?.id || svc?.key || "unknown");
-    const pill = stateToPill(svc?.state);
-
-    const ms = svc?.last_update_ms ?? null;
-    const age = ageSecFromMs(ms);
-    const ageTxt = fmtAge(age);
-
-    const stale = (age != null && age > 12);
-
-    const absoluteIndex = off + i;
-    const isSelected = (absoluteIndex === m.cursor);
-
-    const cls = [
-      "rt-row",
-      stale ? "stale" : "",
-      isSelected ? "rt-selected" : "",
-    ].filter(Boolean).join(" ");
+    if (type === "node_header") {
+      return `
+        <tr class="rt-row rt-node-header ${selected ? "rt-selected" : ""}">
+          <td class="rt-cell-node" colspan="3">${safeText(row?.node || "")}</td>
+        </tr>
+      `;
+    }
 
     return `
-      <tr class="${cls}" data-rt-service-id="${safeText(id)}">
-        <td class="rt-cell-name">${safeText(id)}</td>
-        <td class="rt-cell-status">${pill}</td>
-        <td class="rt-cell-age" data-rt-age-ms="${ms ?? ""}">${ageTxt}</td>
+      <tr class="rt-row ${selected ? "rt-selected" : ""}">
+        <td class="rt-cell-node">${safeText(row?.node || "")}</td>
+        <td class="rt-cell-name">${safeText(row?.service || row?.id || row?.name || "")}</td>
+        <td class="rt-cell-status">${stateToPill(row?.state)}</td>
       </tr>
     `;
   }).join("");
 
-  const selected = (total > 0) ? (clamp(m.cursor ?? 0, 0, total - 1) + 1) : 0;
-
-  let footerLeft = total === 0 ? "Showing 0/0" : `Showing ${Math.min(WINDOW, total)}/${total}`;
-
-  const slot = container.closest(".rt-slot");
-  if (slot && slot.classList.contains("rt-browse-mode")) {
-    footerLeft = total === 0 ? "Selected Service —" : `Selected Service #${selected} of ${total}`;
-  }
-
-  const hint = (total > WINDOW) ? `&nbsp;•&nbsp;<span class="rt-hint">scroll</span>` : "";
+  const selectedText =
+    total > 0 ? `Selected ${selectedIndex + 1} of ${total}` : "No services";
 
   container.innerHTML = `
     <div class="rt-table-wrap">
       <table class="rt-table">
         <thead>
           <tr>
+            <th>Node</th>
             <th>Service</th>
-            <th>Status</th>
-            <th>Age</th>
+            <th>State</th>
           </tr>
         </thead>
         <tbody>
-          ${rows || `<tr><td colspan="3">No services</td></tr>`}
+          ${body || `<tr><td colspan="3">No services</td></tr>`}
         </tbody>
       </table>
       <div class="rt-footer">
-        <span class="rt-muted">${footerLeft}</span>${hint}
+        <span class="rt-muted">${safeText(selectedText)}</span>
       </div>
     </div>
   `;
-
-  startAgeTicker(container);
-}
-
-function attachBrowseHandlersOnce(container) {
-  const slot = container.closest(".rt-slot");
-  if (!slot) return;
-
-  if (slot.__rtCssBrowseV5Attached) return;
-  slot.__rtCssBrowseV5Attached = true;
-
-  const onDelta = (ev) => {
-    const delta = Number(ev?.detail?.delta ?? 0);
-    if (!Number.isFinite(delta) || delta === 0) return;
-
-    const m = getModel(container);
-    const services = Array.isArray(m.lastServices) ? m.lastServices : [];
-    const total = services.length;
-    if (total <= 0) return;
-
-    m.cursor = clamp((m.cursor ?? 0) + (delta > 0 ? 1 : -1), 0, total - 1);
-
-    const cur = services[m.cursor];
-    m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
-
-    ensureCursorInWindow(m, total);
-    renderWindow(container, services, m);
-  };
-
-  slot.addEventListener("rt-browse-delta", onDelta);
-  slot.__rtCssBrowseV5Handlers = { onDelta };
-}
-
-function applyProjectedBrowseCursorToServices(data, list, m) {
-  const browse = data?.ui_browse || data?.__ui?.browse || null;
-  if (!browse || typeof browse !== "object") return;
-
-  if (String(browse.panel || "") !== "controller_services_summary") return;
-
-  const idx = Number(browse.selected_index);
-  if (!Number.isFinite(idx)) return;
-
-  if (!Array.isArray(list) || list.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-    m.selectedId = null;
-    return;
-  }
-
-  m.cursor = clamp(idx, 0, Math.max(0, list.length - 1));
-  const cur = list[m.cursor];
-  m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
-  ensureCursorInWindow(m, list.length);
-}
-
-export function renderControllerServicesSummary(container, panel, data) {
-  attachBrowseHandlersOnce(container);
-
-  const all = Array.isArray(data?.controller_services) ? data.controller_services : [];
-
-  const sorted = all.slice().sort((a, b) => {
-    const as = String(a?.id || a?.key || "");
-    const bs = String(b?.id || b?.key || "");
-    return as.localeCompare(bs);
-  });
-
-  const services = sorted;
-
-  const m = getModel(container);
-
-  const key = computeStableKey(services);
-  if (m.lastKey !== key) {
-    m.lastKey = key;
-    m.offset = 0;
-
-    if (m.selectedId) {
-      const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
-      m.cursor = idx >= 0 ? idx : 0;
-    } else {
-      m.cursor = 0;
-    }
-  } else {
-    if (m.selectedId) {
-      const idx = services.findIndex(s => String(s?.id || s?.key || "") === String(m.selectedId));
-      if (idx >= 0) m.cursor = idx;
-    }
-  }
-
-  m.lastServices = services;
-
-  // This is the key Phase B fix:
-  // force local visual cursor to follow controller-owned browse state
-  applyProjectedBrowseCursorToServices(data, services, m);
-
-  if (services.length <= 0) {
-    m.cursor = 0;
-    m.offset = 0;
-  } else {
-    ensureCursorInWindow(m, services.length);
-    const cur = services[m.cursor];
-    m.selectedId = cur ? String(cur?.id || cur?.key || "") : null;
-  }
-
-  renderWindow(container, services, m);
 }

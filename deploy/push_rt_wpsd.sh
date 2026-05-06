@@ -56,6 +56,7 @@ UNITS=(
   "rt-wpsd-deploy-report-publisher.service"
   "rt-wpsd-deploy-report-publisher.timer"
   "rt-wpsd-ui-intent-worker.service"
+  "rt-wpsd-service-state-publisher.service"
 )
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -77,7 +78,7 @@ fail_missing "${SYSTEMD_SRC_DIR}/rt-wpsd-ui-intent-worker.service"
 fail_missing "${TOOLS_SRC_DIR}/publish_deploy_report.sh"
 fail_missing "${TOOLS_SRC_DIR}/publish_presence.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
-
+fail_missing "${GLOBAL_TOOLS_DIR}/service_state_publisher.py"
 
 # systemd required
 for u in "${UNITS[@]}"; do
@@ -210,6 +211,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set +e
     systemctl status rt-presence-publisher.timer --no-pager | sed -n '1,25p' || true
     systemctl status rt-wpsd-deploy-report-publisher.timer --no-pager | sed -n '1,25p' || true
+    systemctl status rt-wpsd-service-state-publisher.service --no-pager | sed -n '1,25p' || true
     exit 0
   "
 fi

@@ -20,6 +20,7 @@ EnvironmentFile=/etc/rollingthunder/service_state_publisher.env
 # Environment=RT_UNIT_MAP_JSON={"gps_ingest":"rt-gps-ingest.service"}
 
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/service_state_publisher.py
+
 Restart=always
 RestartSec=1
 
