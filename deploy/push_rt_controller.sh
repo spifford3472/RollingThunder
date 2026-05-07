@@ -58,8 +58,6 @@ UI_DST_DIR="/opt/rollingthunder/ui/"
 CFG_DST_DIR="/opt/rollingthunder/config/"
 
 UNITS=(
-  "rollingthunder-controller.service"
-  "rollingthunder-api.service"
   "rt-ui-snapshot-api.service"
   "rt-service-state-publisher.service"
   "rt-node-presence-ingestor.service"
@@ -68,8 +66,6 @@ UNITS=(
   "rt-deploy-report-controller.timer"
   "rt-gps-state-publisher.service"
   "rt-env-temp-publisher.service"
-  "rt-wpsd-log-ingestor.service"
-  "rt-wpsd-poller.service"
   "rt-alerts-reconciler.service"
   "rt-controller-presence.service"
   "rt-ui-intent-worker.service"
@@ -117,6 +113,16 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/data/POTA;
   sudo chmod -R 755 /opt/rollingthunder/data/POTA
 "
+
+# Common rsync excludes
+RSYNC_EXCLUDES=(
+  --exclude='__pycache__/'
+  --exclude='*.pyc'
+  --exclude='.pytest_cache/'
+  --exclude='.venv/'
+  --exclude='.git/'
+  --exclude='.dev/'
+)
 
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
@@ -300,6 +306,16 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     sudo systemctl daemon-reload
 
+    echo "[push] disable/remove obsolete legacy units if present"
+    sudo systemctl stop rollingthunder-controller.service rollingthunder-api.service rt-wpsd-log-ingestor.service 2>/dev/null || true
+    sudo systemctl disable rollingthunder-controller.service rollingthunder-api.service rt-wpsd-log-ingestor.service 2>/dev/null || true
+    sudo rm -f \
+      /etc/systemd/system/rollingthunder-controller.service \
+      /etc/systemd/system/rollingthunder-api.service \
+      /etc/systemd/system/rt-wpsd-log-ingestor.service
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed
+
     # Split template units (like rt-alert@.service) from normal units.
     NORMAL_UNITS=()
     TEMPLATE_UNITS=()
@@ -360,125 +376,91 @@ if [[ -f "${NODE_SRC_DIR}/node_presence_ingestor.py" ]]; then
   exit 2
 fi
 
-
-# Smoke checks
+# ---- SMOKE CHECKS (critical only) ----
 if [[ "${DRY_RUN}" != "1" ]]; then
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "curl" "install with: sudo apt-get update && sudo apt-get install -y curl"
   require_remote_cmd_or_warn "${TARGET_HOST}" "${TARGET_USER}" "redis-cli" "install with: sudo apt-get update && sudo apt-get install -y redis-tools"
 
-  echo "[smoke] api nodes"
-  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
-
-  echo "[smoke] ui index"
-  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/ui/index.html" 5 1.5
-
-  echo "[smoke] config app.json"
-  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/config/app.json" 5 1.5
-
-  echo "[smoke] redis ping"
+  echo "[smoke] no obsolete legacy units active"
   ssh "${TARGET_USER}@${TARGET_HOST}" '
-    set -a
-    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-    set +a
-    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli ping || true
+    set -e
+    for u in rollingthunder-controller.service rollingthunder-api.service rt-wpsd-log-ingestor.service; do
+      state="$(systemctl is-active "$u" 2>/dev/null || true)"
+      if [ "$state" = "active" ] || [ "$state" = "activating" ]; then
+        echo "[error] obsolete unit still active: $u ($state)"
+        exit 1
+      fi
+    done
+    echo "obsolete-units=inactive"
   '
 
-  echo "[smoke] presence key rt:nodes:rt-display"
+  echo "[smoke] critical services active"
   ssh "${TARGET_USER}@${TARGET_HOST}" '
-    set -a
-    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-    set +a
-    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGETALL rt:nodes:rt-display || true
-  '
-
-  echo "[smoke] presence key rt:nodes:rt-controller (3 samples)"
-  ssh "${TARGET_USER}@${TARGET_HOST}" '
-    set -a
-    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-    set +a
-    for i in 1 2 3; do
-      echo "sample=$i"
-      REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HMGET rt:nodes:rt-controller status age_sec last_seen_ms last_update_ms || true
-      sleep 0.8
+    set -e
+    for u in \
+      rt-ui-snapshot-api.service \
+      rt-ui-state-projector.service \
+      rt-service-state-publisher.service \
+      rt-node-presence-ingestor.service \
+      rt-ui-intent-worker.service \
+      rt-ui-interaction-state.service \
+      rt-controller-presence.service
+    do
+      printf "%s: " "$u"
+      systemctl is-active "$u"
     done
   '
 
-  echo "[smoke] deploy report key rt:deploy:report:rt-controller"
+  echo "[smoke] no failed systemd units"
   ssh "${TARGET_USER}@${TARGET_HOST}" '
-    set -a
-    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-    set +a
-    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli GET rt:deploy:report:rt-controller | head -c 200
-    echo
-  ' || true
-else
-  echo "[dry] skipping smoke checks"
-fi
+    set -e
+    failed="$(systemctl --failed --no-legend --plain | wc -l)"
+    if [ "$failed" -ne 0 ]; then
+      systemctl --failed --no-pager --plain
+      exit 1
+    fi
+    echo "failed-units=0"
+  '
 
-echo "[smoke] critical services active"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  set -e
-  for u in \
-    rt-ui-snapshot-api.service \
-    rt-service-state-publisher.service \
-    rt-node-presence-ingestor.service \
-    rt-ui-intent-worker.service \
-    rt-controller-presence.service
-  do
-    printf "%s: " "$u"
-    systemctl is-active "$u"
-  done
-'
-
-echo "[smoke] failed systemd units"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  systemctl --failed --no-pager --plain || true
-'
-
-echo "[smoke] deployed commit marker"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  cat /opt/rollingthunder/.deploy/DEPLOYED_COMMIT || true
-'
-
-echo "[smoke] python service imports"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  cd /opt/rollingthunder/services &&
-  python3 - <<'"'"'PY'"'"'
-import rt_config
-import qso_model
-import qso_normalize
-print("imports=ok")
-PY
-'
-
-echo "[smoke] app.json parse"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  python3 - <<'"'"'PY'"'"'
+  echo "[smoke] app.json parses"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    python3 - <<'"'"'PY'"'"'
 import json
 with open("/opt/rollingthunder/config/app.json", "r", encoding="utf-8") as f:
     data = json.load(f)
 print("app.json=ok")
 print("runtimeVersion=", data.get("runtimeVersion"))
 PY
-'
+  '
 
-echo "[smoke] api nodes JSON parse"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  curl -fsS http://127.0.0.1:8625/api/v1/ui/nodes | python3 -m json.tool >/dev/null &&
-  echo "api-json=ok"
-'
+  echo "[smoke] UI API responds"
+  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
+  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/ui/index.html" 5 1.5
+  curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/config/app.json" 5 1.5
 
-echo "[smoke] rt-controller presence populated"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  set -a
-  [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-  set +a
-  val="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGET rt:nodes:rt-controller status || true)"
-  test -n "$val" && echo "status=$val" || { echo "missing rt-controller status"; exit 1; }
-'
-echo "[smoke] ui api listening"
-ssh "${TARGET_USER}@${TARGET_HOST}" '
-  ss -ltnp | grep ":8625" || true
-'
+  echo "[smoke] Redis auth and controller presence"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -e
+    set -a
+    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+    set +a
 
-echo "[push] Done. Deployed commit ${GIT_SHA}"
+    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli ping | grep -q PONG
+
+    status="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGET rt:nodes:rt-controller status || true)"
+    test -n "$status" || { echo "[error] missing rt:nodes:rt-controller status"; exit 1; }
+
+    model="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli EXISTS rt:ui:model:node_health_summary || true)"
+    test "$model" = "1" || { echo "[error] missing rt:ui:model:node_health_summary"; exit 1; }
+
+    echo "redis=ok controller_status=$status"
+  '
+
+  echo "[smoke] deployed commit marker"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    test -s /opt/rollingthunder/.deploy/DEPLOYED_COMMIT &&
+    echo "deployed_commit=$(cat /opt/rollingthunder/.deploy/DEPLOYED_COMMIT)"
+  '
+else
+  echo "[dry] skipping smoke checks"
+fi

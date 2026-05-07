@@ -6,6 +6,7 @@ Wants=network.target redis.service
 [Service]
 Type=simple
 User=spiff
+EnvironmentFile=-/etc/rollingthunder/redis.env
 ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rt_alerts_reconciler.py
 Restart=always
 RestartSec=2
