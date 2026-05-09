@@ -372,41 +372,21 @@ export function createBindingStore(opts = {}) {
 
       if (src === "scan") {
         const match = String(binding?.match || "").trim();
-        const limit = Math.max(1, Math.min(500, Number(binding?.limit || 50)));
-        const cursor = binding?.cursor != null ? Number(binding.cursor) : undefined;
 
-        if (!match) {
-          return mkResult({
-            ok: false,
-            err: "missing_match",
-            meta: { source: "scan", locator: "", ms: 0 },
-          });
-        }
+        console.warn(
+          "[binding_store] scan binding disabled by architecture rule:",
+          match
+        );
 
-        try {
-          const url = `${stateScanUrl}${qs({ match, limit, cursor })}`;
-          const resp = await fetchJson(url);
-          const keys = resp?.data?.keys;
-          const rows = Array.isArray(keys) ? keys.map(coerceRow) : [];
-
-          const filtered = rows.filter(row => matchFilter(row, binding?.filter));
-          return mkResult({
-            ok: true,
-            value: filtered,
-            meta: {
-              source: "scan",
-              locator: match,
-              ms: Date.now() - started,
-              next_cursor: resp?.data?.next_cursor ?? null,
-            },
-          });
-        } catch (e) {
-          return mkResult({
-            ok: false,
-            err: e?.message || e,
-            meta: { source: "scan", locator: match, ms: Date.now() - started },
-          });
-        }
+        return mkResult({
+          ok: false,
+          err: "scan_binding_disabled",
+          meta: {
+            source: "scan",
+            locator: match,
+            ms: Date.now() - started,
+          },
+        });
       }
 
       if (src === "bus") {

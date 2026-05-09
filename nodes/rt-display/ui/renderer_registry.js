@@ -5,7 +5,6 @@ import { renderAlertsOverlay } from "./renderers/alerts_overlay.js";
 import { renderNodeHealthSummary } from "./renderers/node_health_summary.js";
 import { renderRadioStatus } from "./renderers/radio_status.js";
 import { renderControllerServicesSummary } from  "./renderers/controller_services_summary.js";
-import { renderWpsdStatus } from "./renderers/wpsd_status.js";
 import { renderPotaBandsSummary } from "./renderers/pota_bands_summary.js";
 import { renderPotaSpotsSummary } from "./renderers/pota_spots_summary.js";
 import { renderPotaParksSummary } from "./renderers/pota_parks_summary.js";
@@ -55,10 +54,6 @@ export function createRendererRegistry() {
 
   map.set("radio_status", (container, panel, data) =>
     renderRadioStatus(container, panel, data)
-  );
-
-  map.set("wpsd_status", (container, panel, data) =>
-    renderWpsdStatus(container, panel, data)
   );
 
   // POTA Panels

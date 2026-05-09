@@ -465,20 +465,21 @@ SYSTEM_SERVICE_IDS = {
 }
 
 
-def service_row_item_id(item: Dict[str, Any]) -> str | None:
-    row_type = str(item.get("type") or "").strip()
+def service_row_item_id(row: Dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        return ""
 
-    if row_type == "node_header":
-        node = str(item.get("node") or "").strip()
-        return f"node:{node}" if node else None
+    # Skip headers completely
+    if row.get("type") == "node_header":
+        return ""
 
-    node = str(item.get("node") or item.get("ownerNode") or "").strip()
-    service = str(item.get("service") or item.get("id") or item.get("name") or "").strip()
+    node = str(row.get("node") or "").strip()
+    service = str(row.get("service") or "").strip()
 
-    if node and service:
-        return f"service:{node}:{service}"
+    if not node or not service:
+        return ""
 
-    return service or None
+    return f"{node}:{service}"
 
 
 def normalize_service_state(raw: str) -> str:
@@ -661,13 +662,21 @@ def spot_item_id(item: Dict[str, Any]) -> str | None:
     return None
 
 def resolve_home_services_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
-    services: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
 
+    # Preferred future path: rt:system:services contains full Redis keys.
     try:
-        for key in r.scan_iter(match=f"{SERVICE_KEY_PREFIX}*"):
-            ks = str(key)
-            if not ks.startswith(SERVICE_KEY_PREFIX):
+        keys = r.smembers("rt:system:services") or []
+
+        services: List[Dict[str, Any]] = []
+
+        for ks in keys:
+            ks = str(ks).strip()
+            if not ks:
                 continue
+
+            if not ks.startswith(SERVICE_KEY_PREFIX):
+                ks = f"{SERVICE_KEY_PREFIX}{ks}"
 
             if r.type(ks) != "hash":
                 continue
@@ -706,44 +715,55 @@ def resolve_home_services_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
                 "last_update_ms": raw.get("last_update_ms"),
             })
 
-    except Exception:
-        services = []
+        if services:
+            services.sort(key=service_sort_key)
 
-    if not services:
+            current_node = None
+            for svc in services:
+                node = str(svc.get("node") or "").strip()
+                if node != current_node:
+                    current_node = node
+                    rows.append({
+                        "type": "node_header",
+                        "node": node,
+                        "service": "",
+                        "state": "",
+                    })
+                rows.append(svc)
+
+            model_payload = {
+                "items": rows,
+                "count": len(rows),
+                "updated_at_ms": now_ms(),
+            }
+
+            r.set(
+                HOME_SERVICES_MODEL_KEY,
+                json.dumps(model_payload, separators=(",", ":"), ensure_ascii=False),
+            )
+
+    except Exception:
+        rows = []
+
+    # Fallback: use existing controller_services_summary model.
+    if not rows:
+        cached = get_json_or_value(r, HOME_SERVICES_MODEL_KEY)
+        cached_obj = as_dict(cached)
+        rows = [as_dict(item) for item in as_list(cached_obj.get("items")) if isinstance(item, dict)]
+
+    if not rows:
         return None
 
-    services.sort(key=service_sort_key)
-
-    rows: List[Dict[str, Any]] = []
-    current_node = None
-
-    for svc in services:
-        node = str(svc.get("node") or "").strip()
-        if node != current_node:
-            current_node = node
-            rows.append({
-                "type": "node_header",
-                "node": node,
-                "service": "",
-                "state": "",
-            })
-        rows.append(svc)
-
-    model_payload = {
-        "items": rows,
-        "count": len(rows),
-        "updated_at_ms": now_ms(),
-    }
-
-    r.set(
-        HOME_SERVICES_MODEL_KEY,
-        json.dumps(model_payload, separators=(",", ":"), ensure_ascii=False),
-    )
+    first_valid_index = 0
+    for i, row in enumerate(rows):
+        if row.get("type") == "service":
+            first_valid_index = i
+            break
 
     return {
         "items": rows,
         "count": len(rows),
-        "anchor_index": 0,
+        "anchor_index": first_valid_index,
         "get_id": service_row_item_id,
     }
 
@@ -751,36 +771,36 @@ def resolve_home_nodes_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     items: List[Dict[str, Any]] = []
 
     try:
-        for key in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
-            ks = str(key)
-            if not ks.startswith(NODE_KEY_PREFIX):
+        node_ids = r.smembers("rt:system:nodes") or []
+
+        for node_id in node_ids:
+            key = f"{NODE_KEY_PREFIX}{node_id}"
+
+            if r.type(key) != "hash":
                 continue
 
-            if r.type(ks) != "hash":
-                continue
-
-            item = r.hgetall(ks) or {}
+            item = r.hgetall(key) or {}
             if not item:
                 continue
 
-            node_id = ks[len(NODE_KEY_PREFIX):].strip()
-            if node_id and not item.get("id"):
+            if not item.get("id"):
                 item["id"] = node_id
 
             items.append(item)
+
     except Exception:
         items = []
 
     if not items:
         return None
 
-    items.sort(key=lambda n: str(n.get("id") or n.get("node_id") or "").lower())
+    items.sort(key=lambda n: str(n.get("id") or "").lower())
 
     return {
         "items": items,
         "count": len(items),
         "anchor_index": 0,
-        "get_id": node_item_id,
+        "get_id": lambda x: str(x.get("id") or x.get("node_id") or ""),
     }
 
 def resolve_pota_parks_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
@@ -983,7 +1003,6 @@ def build_browse_state(
         "selected_id": selected_id,
         "count": count,
         "window_size": 18,
-        "items": items,   
         "updated_at_ms": now_ms(),
     }
 
@@ -1379,6 +1398,28 @@ def run_main_loop():
                                 if item:
                                     publish_radio_tune_intent(r, item)
                                     publish_ui_result(r, intent)
+
+                    elif intent == "ui.browse.enter":
+                        panel_id = state.get("focus")
+
+                        model = resolve_browse_model(r, state["page"], panel_id)
+                        if not model:
+                            continue
+
+                        count = int(model.get("count", 0))
+                        if count <= 0:
+                            continue
+
+                        anchor_index = int(model.get("anchor_index", 0))
+
+                        state["browse"] = build_browse_state(
+                            state["page"],
+                            panel_id,
+                            model,
+                            anchor_index,
+                        )
+
+                        state_changed = True
 
                     elif intent == "ui.browse.delta":
                         if state.get("focus"):

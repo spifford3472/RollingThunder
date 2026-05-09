@@ -1016,55 +1016,101 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     rerender(buildRenderDataForPanel(panelId, currentUiState));
   }
 
-  async function refreshAffectedPanelsFromChangedKeys(changedKeys) {
-    const affectedPanelIds = Array.from(slotByPanelId.keys()).filter((panelId) =>
-      panelDependsOnChangedKeys(panelId, changedKeys)
-    );
+  let panelRefreshInflight = false;
+  let panelRefreshQueuedKeys = null;
 
-    await Promise.all(
-      affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
-    );
+  async function refreshAffectedPanelsFromChangedKeys(changedKeys) {
+    if (panelRefreshInflight) {
+      panelRefreshQueuedKeys = changedKeys;
+      return;
+    }
+
+    panelRefreshInflight = true;
+
+    try {
+      const affectedPanelIds = Array.from(slotByPanelId.keys()).filter((panelId) =>
+        panelDependsOnChangedKeys(panelId, changedKeys)
+      );
+
+      if (affectedPanelIds.length === 0) return;
+
+      await Promise.all(
+        affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
+      );
+    } finally {
+      panelRefreshInflight = false;
+
+      if (panelRefreshQueuedKeys) {
+        const nextKeys = panelRefreshQueuedKeys;
+        panelRefreshQueuedKeys = null;
+
+        // run latest only
+        queueMicrotask(() => {
+          refreshAffectedPanelsFromChangedKeys(nextKeys);
+        });
+      }
+    }
   }
 
   async function maybeApplyUiState(uiState, changedKeys = null) {
-    const oldPageId = currentPageId;
-    currentUiState = uiState;
-
     const pageId = String(uiState?.page || "").trim() || "home";
     const focusId = String(uiState?.focus || "").trim() || null;
 
-    const layoutChanged =
-      oldPageId !== pageId ||
+    const keys = Array.isArray(changedKeys)
+      ? changedKeys.map(k => String(k || "").trim()).filter(Boolean)
+      : [];
+
+    const pageChanged =
+      currentPageId !== pageId ||
       !currentPage ||
-      !Array.isArray(changedKeys) ||
-      changedKeys.includes("rt:ui:page");
+      keys.includes("rt:ui:page");
 
-    if (layoutChanged) {
+    currentUiState = uiState;
+
+    if (pageChanged) {
       mountCurrentPage(pageId, focusId);
-    } else {
-      if (focusId) nav.setActivePanel(focusId);
-
       updateLocalUiModeFromProjection(uiState);
 
-      if (
-        changedKeys.includes("rt:ui:focus") ||
-        changedKeys.includes("rt:ui:layer") ||
-        changedKeys.includes("rt:ui:modal") ||
-        changedKeys.includes("rt:ui:page_context") ||
-        changedKeys.includes("rt:ui:authority")
-      ) {
-        rerenderPanelsFromUiState();
+      if (focusId) {
+        nav.setActivePanel(focusId);
       }
 
-      await refreshAffectedPanelsFromChangedKeys(changedKeys);
+      return;
     }
 
-    if (currentPage && focusId) {
+    if (focusId && keys.includes("rt:ui:focus")) {
       nav.setActivePanel(focusId);
     }
 
     updateLocalUiModeFromProjection(uiState);
-  }  
+
+    const browseChanged = keys.some(k =>
+      k === "rt:ui:browse" || k.startsWith("rt:ui:browse:")
+    );
+
+    const nonBrowseUiChanged = keys.some(k =>
+      k === "rt:ui:focus" ||
+      k === "rt:ui:layer" ||
+      k === "rt:ui:modal" ||
+      k === "rt:ui:page_context" ||
+      k === "rt:ui:authority"
+    );
+
+    if (nonBrowseUiChanged) {
+      rerenderPanelsFromUiState();
+    } else if (browseChanged && browsePanelId) {
+      const rerender = panelRerender.get(browsePanelId);
+      if (rerender) {
+        try {
+          rerender(buildRenderDataForPanel(browsePanelId, currentUiState));
+        } catch (e) {
+          console.warn("[rt] browse panel rerender failed", browsePanelId, e);
+        }
+      }
+    }
+
+    await refreshAffectedPanelsFromChangedKeys(keys);
+  }
 
   async function refreshUiProjectionState(reason = "unknown") {
     if (uiProjectionInflight) {

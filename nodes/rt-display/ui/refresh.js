@@ -35,9 +35,42 @@ function renderHdr(slot, panel, life) {
   `;
 }
 
+function extractKeys(msg) {
+  const keys =
+    msg?.payload?.keys ??
+    msg?.payload?.changed_keys ??
+    msg?.data?.payload?.keys ??
+    msg?.data?.payload?.changed_keys;
+
+  return Array.isArray(keys)
+    ? keys.map(k => String(k || "").trim()).filter(Boolean)
+    : [];
+}
+
+function isBrowseKey(k) {
+  return k === "rt:ui:browse" || k.startsWith("rt:ui:browse:");
+}
+
+function stateBindingMatchesKey(binding, changedKey) {
+  const key = String(binding?.key || "").trim();
+  if (!key || !changedKey) return false;
+
+  return (
+    key === changedKey ||
+    changedKey.startsWith(key + ":") ||
+    key.startsWith(changedKey + ":")
+  );
+}
+
+function bindingIsBrowseRelevant(binding, changedKeys) {
+  const key = String(binding?.key || "").trim();
+  if (!key || !key.startsWith("rt:ui:browse")) return false;
+
+  return changedKeys.some(k => stateBindingMatchesKey(binding, k));
+}
+
 export function startPanelRefresh({ slot, panel, bindings, store, render }) {
   const mode = (panel?.refresh?.mode || "push").toLowerCase();
-  const pollIntervalMs = Math.max(250, Number(panel?.refresh?.intervalMs || 1000));
   const list = (Array.isArray(bindings) ? bindings : []).filter(b => b?.id && b?.source);
 
   const topic = String(panel?.refresh?.topic || "").trim();
@@ -54,7 +87,6 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
   let stopped = false;
   let inflight = false;
-  let needsRerun = false;
 
   const panelStateKeys = new Set(
     list
@@ -63,21 +95,33 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       .filter(Boolean)
   );
 
-  async function collectOnce() {
+  async function collectOnce(resolveList = list) {
     const data = {};
+    const prevData = slot.__rtData || {};
+    const prevRt = prevData.__rt || {};
+    const prevBindingResults = prevRt.bindings || {};
 
-    const rt = { bindings: {}, ts_ms: Date.now() };
-    rt.panel = {
-      has_error: false,
-      has_missing: false,
-      slow_bindings: [],
+    const resolveIds = new Set(
+      (Array.isArray(resolveList) ? resolveList : [])
+        .map(b => String(b?.id || ""))
+        .filter(Boolean)
+    );
+
+    const rt = {
+      bindings: { ...prevBindingResults },
+      ts_ms: Date.now(),
+      panel: {
+        has_error: false,
+        has_missing: false,
+        slow_bindings: [],
+      },
     };
 
     let results = null;
 
     try {
-      if (typeof store?.resolveMany === "function") {
-        results = await store.resolveMany(list);
+      if (typeof store?.resolveMany === "function" && resolveList.length > 0) {
+        results = await store.resolveMany(resolveList);
       }
     } catch (_) {
       results = null;
@@ -85,17 +129,21 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
     for (const b of list) {
       const id = String(b.id);
+
+      if (!resolveIds.has(id)) {
+        data[id] = prevData[id] !== undefined ? prevData[id] : null;
+        continue;
+      }
+
       const res = results ? results[id] : await store.resolve(b);
       rt.bindings[id] = res;
 
-      const prev = slot.__rtData?.[id];
+      const prev = prevData[id];
 
-      // Only treat as an error if this binding failed AND we have no last-good value.
       if (res?.ok === false && prev == null) {
         rt.panel.has_error = true;
       }
 
-      // Only treat as missing if the binding succeeded with null AND we have no last-good value.
       if (res?.ok === true && res.value == null && prev == null) {
         rt.panel.has_missing = true;
       }
@@ -108,7 +156,6 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
       if (res?.ok) {
         data[id] = res.value;
       } else if (prev !== undefined) {
-        // Preserve last good value
         data[id] = prev;
       } else {
         data[id] = null;
@@ -124,30 +171,28 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
     return data;
   }
 
-  async function tick() {
+  async function tick(resolveList = list, opts = {}) {
     if (stopped) return;
 
-    if (inflight) {
-      needsRerun = true;
-      return;
-    }
+    // Important: never queue a render backlog. If a refresh is already running,
+    // drop this event. The next bus event will carry current controller state.
+    if (inflight) return;
 
     inflight = true;
     try {
-      const data = await collectOnce();
+      const data = await collectOnce(resolveList);
       slot.__rtData = data;
 
       const life = classifyPanelFromResults(panel, list, data);
       data.__rt.lifecycle = life;
 
-      renderHdr(slot, panel, life);
+      if (opts.updateHeader !== false) {
+        renderHdr(slot, panel, life);
+      }
+
       render(data);
     } finally {
       inflight = false;
-      if (!stopped && needsRerun) {
-        needsRerun = false;
-        tick();
-      }
     }
   }
 
@@ -160,6 +205,30 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
 
     unsub = store.on(topic, (msg) => {
       try {
+        const keys = extractKeys(msg);
+
+        // Malformed or empty payloads must not cause global refresh.
+        if (!Array.isArray(keys) || keys.length === 0) {
+          return;
+        }
+
+        const onlyBrowse = keys.every(isBrowseKey);
+
+        if (onlyBrowse) {
+          const browseBindings = list.filter(b =>
+            String(b?.source || "").toLowerCase() === "state" &&
+            bindingIsBrowseRelevant(b, keys)
+          );
+
+          if (browseBindings.length > 0) {
+            // Lightweight browse update:
+            // resolve only declared browse binding(s), preserve all model data.
+            tick(browseBindings, { updateHeader: false });
+          }
+
+          return;
+        }
+
         const scanPrefixes = list
           .filter(b => String(b?.source || "").toLowerCase() === "scan")
           .map(b => String(b?.match || "").trim())
@@ -167,11 +236,7 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
           .map(m => m.slice(0, -1))
           .filter(Boolean);
 
-        const keys = msg?.payload?.keys ?? msg?.data?.payload?.keys;
-
-        for (const k of (Array.isArray(keys) ? keys : [])) {
-          if (typeof k !== "string") continue;
-
+        for (const k of keys) {
           for (const p of scanPrefixes) {
             if (k.startsWith(p)) {
               tick();
@@ -180,31 +245,25 @@ export function startPanelRefresh({ slot, panel, bindings, store, render }) {
           }
         }
 
-        if (!Array.isArray(keys) || keys.length === 0) {
-          tick();
-          return;
-        }
-
         for (const k of keys) {
-          const ks = (typeof k === "string") ? k.trim() : String(k || "");
-          if (ks && panelStateKeys.has(ks)) {
+          const ks = String(k || "").trim();
+          if (!ks) continue;
+
+          if (
+            panelStateKeys.has(ks) ||
+            [...panelStateKeys].some(pk => ks.startsWith(pk + ":") || pk.startsWith(ks + ":"))
+          ) {
             tick();
             return;
           }
         }
       } catch (_) {
-        // Poll fallback still runs
+        // Event-driven only; no polling fallback.
       }
     });
   }
 
-  // Event-driven only; no panel polling fallback
-  //const fallbackMs =
-  //  mode === "push"
-  //    ? Math.max(1000, Number(panel?.refresh?.fallbackPollMs || 5000))
-  //    : pollIntervalMs;
-  //
-  //const t = setInterval(tick, fallbackMs);
+  // Event-driven only; no panel polling fallback.
   const t = null;
 
   slot.__rtStop = () => {

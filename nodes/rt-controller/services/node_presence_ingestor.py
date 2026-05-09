@@ -2,37 +2,25 @@
 """
 node_presence_ingestor.py — RollingThunder (rt-controller)
 
-Phase 14.4:
-- Subscribe to MQTT presence topics: rt/presence/+
-- Ingest node presence payloads (JSON)
-- Publish derived node presence state into Redis hashes:
-    rt:nodes:<node_id>
-
-Phase 14.5:
-- TTL-based online/offline evaluation (controller-owned judgment)
-- Periodically sweep rt:nodes:* and mark stale nodes offline
-
-Event hardening / noise reduction:
-- Publish state.changed only when semantic node state changes.
-- Keep last_seen fresh for deterministic stale/offline detection.
-- Bound sweep-derived age writes so Redis is not rewritten every sweep.
-
-Constraints:
-- Read-only on MQTT; write-only to Redis for derived state
-- No control actions
-- Bounded payload storage (no dumping unbounded JSON into Redis)
+Optimized:
+- Subscribe to MQTT presence/deploy topics.
+- Maintain node presence in memory.
+- No global Redis SCAN sweeper.
+- No Redis reads for normal heartbeat change detection.
+- Redis writes happen for heartbeat freshness and semantic changes only.
+- state.changed publishes only on semantic/status changes.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
 import time
-from typing import Any, Dict, Optional, Tuple
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 import redis
-import threading
 
 try:
     import paho.mqtt.client as mqtt  # type: ignore
@@ -40,9 +28,6 @@ except Exception:
     mqtt = None  # type: ignore
 
 
-# -----------------------------
-# Env config
-# -----------------------------
 REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("RT_REDIS_PORT", "6379"))
 REDIS_DB = int(os.environ.get("RT_REDIS_DB", "0"))
@@ -60,21 +45,13 @@ DEPLOY_TOPIC_PREFIX = os.environ.get("RT_DEPLOY_TOPIC_PREFIX", "rt/deploy/report
 DEPLOY_KEY_PREFIX = os.environ.get("RT_KEY_DEPLOY_REPORT_PREFIX", "rt:deploy:report:")
 DEPLOY_TTL_SEC = float(os.environ.get("RT_DEPLOY_TTL_SEC", "300"))
 
-# Presence interval on nodes is ~2.5s; TTL should be comfortably larger.
 SWEEP_SEC = float(os.environ.get("RT_PRESENCE_SWEEP_SEC", "2.0"))
 STALE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_STALE_AFTER_SEC", "12.0"))
 OFFLINE_AFTER_SEC = float(os.environ.get("RT_PRESENCE_OFFLINE_AFTER_SEC", "30.0"))
-CONTROLLER_NODE_ID = os.environ.get("RT_CONTROLLER_NODE_ID", "rt-controller")
 
-# Bound sweep-derived age/status writes when only age_sec would change.
-AGE_WRITE_INTERVAL_SEC = float(os.environ.get("RT_PRESENCE_AGE_WRITE_INTERVAL_SEC", "10.0"))
-
-# System bus for state.changed notifications. UI bus is projector-only.
 SYSTEM_BUS_CHANNEL = os.environ.get("RT_SYSTEM_BUS_CHANNEL", "rt:system:bus")
 UI_BUS_MAX_KEYS = int(os.environ.get("RT_UI_BUS_MAX_KEYS", "25"))
 
-# Fields that should wake downstream consumers when they change.
-# Volatile heartbeat fields are intentionally excluded.
 PRESENCE_SEMANTIC_FIELDS = (
     "id",
     "role",
@@ -85,6 +62,10 @@ PRESENCE_SEMANTIC_FIELDS = (
     "publisher_error",
 )
 
+known_nodes: set[str] = set()
+node_cache: Dict[str, Dict[str, str]] = {}
+cache_lock = threading.Lock()
+
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -94,12 +75,13 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def safe_str(v: Any, max_len: int = 200) -> str:
+    s = "" if v is None else str(v)
+    return s[:max_len] if len(s) > max_len else s
+
+
 def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
-    # hard bounds
-    if not keys:
-        return
-    keys = [k for k in keys if isinstance(k, str) and k.startswith("rt:")]
-    keys = keys[:UI_BUS_MAX_KEYS]
+    keys = [k for k in keys if isinstance(k, str) and k.startswith("rt:")][:UI_BUS_MAX_KEYS]
     if not keys:
         return
 
@@ -109,10 +91,21 @@ def publish_state_changed(r: redis.Redis, keys: list[str], source: str) -> None:
         "ts_ms": now_ms(),
         "source": source,
     }
+
     try:
         r.publish(SYSTEM_BUS_CHANNEL, json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         pass
+
+
+def parse_json(payload_bytes: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        obj = json.loads(payload_bytes.decode("utf-8", errors="replace"))
+        if not isinstance(obj, dict):
+            return None, "payload_not_object"
+        return obj, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 def is_deploy_report(msg: Dict[str, Any]) -> bool:
@@ -127,52 +120,34 @@ def store_deploy_report(r: redis.Redis, report: Dict[str, Any]) -> None:
     key = f"{DEPLOY_KEY_PREFIX}{node_id.strip()}"
     payload = json.dumps(report, separators=(",", ":"), ensure_ascii=False)
 
-    try:
-        previous = r.get(key)
-    except Exception:
-        previous = None
+    cache_key = f"deploy:{node_id.strip()}"
+
+    with cache_lock:
+        previous = node_cache.get(cache_key, {}).get("payload")
 
     if previous != payload:
         r.set(key, payload)
         publish_state_changed(r, [key], source="deploy_report_ingestor")
+        with cache_lock:
+            node_cache[cache_key] = {"payload": payload}
 
-    # Refresh TTL whether or not the payload changed.
     try:
         r.expire(key, int(DEPLOY_TTL_SEC))
     except Exception:
         pass
 
 
-def safe_str(v: Any, max_len: int = 200) -> str:
-    s = "" if v is None else str(v)
-    if len(s) > max_len:
-        return s[:max_len]
-    return s
-
-
-def parse_json(payload_bytes: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    try:
-        obj = json.loads(payload_bytes.decode("utf-8", errors="replace"))
-        if not isinstance(obj, dict):
-            return None, "payload_not_object"
-        return obj, None
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
-
-
 def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, str]]:
-    """
-    Extract a bounded subset of fields from a presence payload.
-    Returns (node_id, mapping_for_redis_hash)
-    """
     node_id = msg.get("node_id")
     if not isinstance(node_id, str) or not node_id.strip():
         return None, {"publisher_error": "missing_node_id"}
 
+    node_id_s = node_id.strip()
+
     role = msg.get("role")
     role_s = safe_str(role, 50) if isinstance(role, str) else "unknown"
 
-    ip = None
+    ip = ""
     net = msg.get("net")
     if isinstance(net, dict):
         ip_val = net.get("ip")
@@ -200,7 +175,7 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
     ms = now_ms()
 
     mapping: Dict[str, str] = {
-        "id": node_id.strip(),
+        "id": node_id_s,
         "role": role_s,
         "status": "online",
         "age_sec": "0",
@@ -209,17 +184,16 @@ def derive_node_fields(msg: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, st
         "node_ts": node_ts_s,
         "last_update_ms": str(ms),
         "publisher_error": "",
+        "hostname": hostname_s,
+        "ip": ip,
+        "ui_render_ok": (
+            "true" if render_ok is True
+            else "false" if render_ok is False
+            else ""
+        ),
     }
 
-    mapping["hostname"] = hostname_s
-    mapping["ip"] = ip or ""
-    mapping["ui_render_ok"] = (
-        "true" if render_ok is True
-        else "false" if render_ok is False
-        else ""
-    )
-
-    return node_id.strip(), mapping
+    return node_id_s, mapping
 
 
 def semantic_presence_changed(prev: Dict[str, str], new: Dict[str, str]) -> bool:
@@ -229,70 +203,12 @@ def semantic_presence_changed(prev: Dict[str, str], new: Dict[str, str]) -> bool
     return False
 
 
-def hset_changed_fields(r: redis.Redis, key: str, prev: Dict[str, str], mapping: Dict[str, str]) -> bool:
-    changed_fields = {
+def changed_fields(prev: Dict[str, str], mapping: Dict[str, str]) -> Dict[str, str]:
+    return {
         field: value
         for field, value in mapping.items()
         if (prev.get(field) or "") != (value or "")
     }
-    if not changed_fields:
-        return False
-    r.hset(key, mapping=changed_fields)
-    return True
-
-
-def should_write_sweeper_age(prev: Dict[str, str], ms_now: int) -> bool:
-    try:
-        last_update_ms = int(prev.get("last_update_ms") or "0")
-    except Exception:
-        last_update_ms = 0
-    return (ms_now - last_update_ms) >= int(max(1.0, AGE_WRITE_INTERVAL_SEC) * 1000)
-
-
-def update_presence_status(r: redis.Redis, key: str, stale_after_ms: int, offline_after_ms: int) -> None:
-    """
-    Compute age_sec and controller-derived status for the node hash:
-      - online  (age <= stale_after)
-      - stale   (stale_after < age <= offline_after)
-      - offline (age > offline_after)
-    """
-    try:
-        h = r.hgetall(key)
-        last_seen_ms = h.get("last_seen_ms")
-        if not last_seen_ms:
-            return
-
-        try:
-            last_seen_i = int(last_seen_ms)
-        except Exception:
-            return
-
-        ms_now = now_ms()
-        age_ms = ms_now - last_seen_i
-        age_sec = max(0, int(age_ms / 1000))
-
-        if age_ms <= stale_after_ms:
-            status = "online"
-        elif age_ms <= offline_after_ms:
-            status = "stale"
-        else:
-            status = "offline"
-
-        prev_status = (h.get("status") or "").strip()
-        status_changed = status != prev_status
-
-        if status_changed or should_write_sweeper_age(h, ms_now):
-            r.hset(key, mapping={
-                "status": status,
-                "age_sec": str(age_sec),
-                "last_update_ms": str(ms_now),
-            })
-
-        if status_changed:
-            publish_state_changed(r, [key], source="presence_sweeper")
-
-    except Exception:
-        return
 
 
 def main() -> int:
@@ -345,30 +261,103 @@ def main() -> int:
             return
 
         key = f"{NODE_KEY_PREFIX}{node_id}"
-        try:
-            prev = r.hgetall(key)
-            semantic_changed = semantic_presence_changed(prev, mapping)
 
-            # Always keep last_seen fresh for deterministic TTL handling, but
-            # only publish when stable/semantic fields changed.
-            hset_changed_fields(r, key, prev, mapping)
+        try:
+            with cache_lock:
+                prev = dict(node_cache.get(node_id, {}))
+                known_nodes.add(node_id)
+                try:
+                    r.sadd("rt:system:nodes", node_id)
+                except Exception:
+                    pass
+
+            semantic_changed = semantic_presence_changed(prev, mapping)
+            fields = changed_fields(prev, mapping)
+
+            if fields:
+                r.hset(key, mapping=fields)
+
+                with cache_lock:
+                    updated = dict(prev)
+                    updated.update(fields)
+                    node_cache[node_id] = updated
 
             if semantic_changed:
                 publish_state_changed(r, [key], source="presence_ingestor")
 
         except Exception as e:
+            err_mapping = {
+                "publisher_error": safe_str(f"redis_write_failed: {type(e).__name__}: {e}", 240),
+                "last_update_ms": str(now_ms()),
+            }
+
             try:
-                err_mapping = {
-                    "publisher_error": safe_str(f"redis_write_failed: {type(e).__name__}: {e}", 240),
-                    "last_update_ms": str(now_ms()),
-                }
-                prev = r.hgetall(key)
-                error_changed = semantic_presence_changed(prev, err_mapping)
-                hset_changed_fields(r, key, prev, err_mapping)
-                if error_changed:
+                with cache_lock:
+                    prev = dict(node_cache.get(node_id, {}))
+
+                if semantic_presence_changed(prev, err_mapping):
+                    r.hset(key, mapping=err_mapping)
                     publish_state_changed(r, [key], source="presence_ingestor")
+
+                    with cache_lock:
+                        updated = dict(prev)
+                        updated.update(err_mapping)
+                        node_cache[node_id] = updated
             except Exception:
                 pass
+
+    def sweeper_loop() -> None:
+        while True:
+            try:
+                ms_now = now_ms()
+
+                with cache_lock:
+                    nodes = list(known_nodes)
+                    snapshots = {node_id: dict(node_cache.get(node_id, {})) for node_id in nodes}
+
+                for node_id, h in snapshots.items():
+                    try:
+                        last_seen_ms = h.get("last_seen_ms")
+                        if not last_seen_ms:
+                            continue
+
+                        last_seen_i = int(last_seen_ms)
+                        age_ms = ms_now - last_seen_i
+                        age_sec = max(0, int(age_ms / 1000))
+
+                        if age_ms <= stale_after_ms:
+                            status = "online"
+                        elif age_ms <= offline_after_ms:
+                            status = "stale"
+                        else:
+                            status = "offline"
+
+                        prev_status = (h.get("status") or "").strip()
+
+                        if status != prev_status:
+                            key = f"{NODE_KEY_PREFIX}{node_id}"
+                            update = {
+                                "status": status,
+                                "age_sec": str(age_sec),
+                                "last_update_ms": str(ms_now),
+                            }
+
+                            r.hset(key, mapping=update)
+
+                            with cache_lock:
+                                cached = dict(node_cache.get(node_id, {}))
+                                cached.update(update)
+                                node_cache[node_id] = cached
+
+                            publish_state_changed(r, [key], source="presence_sweeper")
+
+                    except Exception:
+                        continue
+
+            except Exception:
+                pass
+
+            time.sleep(SWEEP_SEC)
 
     client = mqtt.Client()
     client.on_connect = on_connect
@@ -385,15 +374,6 @@ def main() -> int:
                 break
             except Exception:
                 continue
-
-    def sweeper_loop() -> None:
-        while True:
-            try:
-                for k in r.scan_iter(match=f"{NODE_KEY_PREFIX}*"):
-                    update_presence_status(r, k, stale_after_ms, offline_after_ms)
-            except Exception:
-                pass
-            time.sleep(SWEEP_SEC)
 
     t = threading.Thread(target=sweeper_loop, name="presence-sweeper", daemon=True)
     t.start()

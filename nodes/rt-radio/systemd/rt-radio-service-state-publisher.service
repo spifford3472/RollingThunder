@@ -13,7 +13,7 @@ Environment=RT_REDIS_HOST=192.168.8.134
 Environment=RT_REDIS_PORT=6379
 Environment=RT_REDIS_DB=0
 Environment=RT_REDIS_TIMEOUT_SEC=0.35
-Environment=RT_POLL_SEC=5.0
+Environment=RT_POLL_SEC=15.0
 EnvironmentFile=/etc/rollingthunder/redis.env
 Environment=RT_UNIT_MAP_JSON={"rigctld":"rigctld.service","rigctld-watchdog":"rt-rigctld-watchdog.service","radio-presence":"rt-radio-presence.service","service-state-publisher":"rt-radio-service-state-publisher.service","ui-intent-worker":"rt-radio-ui-intent-worker.service"}
 

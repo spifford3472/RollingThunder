@@ -112,7 +112,7 @@ UI_PROJECTION_CHANGED_TOPIC = os.environ.get("RT_UI_PROJECTION_CHANGED_TOPIC", "
 # publish a state.changed event.
 DEFAULT_EVENT_TIMEOUT_MS = int(os.environ.get("UI_PROJECTOR_EVENT_TIMEOUT_MS", "5000"))
 DEFAULT_INTENT_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_INTENT_DEBOUNCE_MS", "75"))
-DEFAULT_STATE_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", "75"))
+DEFAULT_STATE_DEBOUNCE_MS = int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", "125"))
 
 CONTROL_NAMES = ("back", "page", "primary", "cancel", "mode", "info")
 
@@ -149,6 +149,8 @@ class Config:
     system_health_keys: Sequence[str]
     event_timeout_ms: int
     intent_debounce_ms: int
+    state_debounce_ms: int
+    state_debounce_ms=int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", str(DEFAULT_STATE_DEBOUNCE_MS)))
 
 
 class UIStateProjector:
@@ -235,6 +237,8 @@ class UIStateProjector:
             self.config.event_timeout_ms,
         )
 
+        state_debounce_interval = max(0.0, self.config.state_debounce_ms / 1000.0)
+
         # Initial projection at startup, then event-driven refreshes after that.
         self._project_once(reason="startup")
 
@@ -265,7 +269,7 @@ class UIStateProjector:
                         pending_projection_at = now + debounce_interval
                         pending_reason = "intent"
                     else:
-                        pending_projection_at = now
+                        pending_projection_at = now + state_debounce_interval
                         pending_reason = "state.changed"
 
                 if pending_projection_at is not None and now >= pending_projection_at:
@@ -529,40 +533,26 @@ class UIStateProjector:
         }
 
     def _read_node_ids(self) -> list[str]:
-        ids: set[str] = set()
-
         try:
             key_type = self.redis_client.type("rt:system:nodes")
+
             if key_type == "set":
-                ids.update(
+                return sorted([
                     item for item in self.redis_client.smembers("rt:system:nodes")
                     if isinstance(item, str) and item.strip()
-                )
-            elif key_type == "list":
-                ids.update(
+                ])
+
+            if key_type == "list":
+                return sorted([
                     item for item in self.redis_client.lrange("rt:system:nodes", 0, -1)
                     if isinstance(item, str) and item.strip()
-                )
-            elif key_type == "string":
-                raw = self.redis_client.get("rt:system:nodes")
-                parsed = self._parse_json_value(raw)
-                if isinstance(parsed, list):
-                    ids.update(str(item).strip() for item in parsed if str(item).strip())
-                elif isinstance(raw, str) and raw.strip():
-                    ids.update(part.strip() for part in raw.split(",") if part.strip())
+                ])
+
         except Exception:
             self.log.exception("failed to read rt:system:nodes")
 
-        if not ids:
-            try:
-                for key in self.redis_client.scan_iter("rt:nodes:*", count=100):
-                    node_id = str(key).split("rt:nodes:", 1)[-1].strip()
-                    if node_id:
-                        ids.add(node_id)
-            except Exception:
-                self.log.exception("failed to scan rt:nodes:*")
-
-        return sorted(ids)
+        # 🚫 NO SCAN FALLBACK
+        return []
 
     def _read_node_record(self, node_id: str) -> Dict[str, Any]:
         key = f"rt:nodes:{node_id}"
