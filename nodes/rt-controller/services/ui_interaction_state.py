@@ -1341,14 +1341,17 @@ def run_main_loop():
                                 pota_context_changed = True
 
                                 state["focus"] = "pota_spots_summary"
-                                state["browse"] = {
-                                    "active": True,
-                                    "page": "pota",
-                                    "panel": "pota_spots_summary",
-                                    "selected_index": 0,
-                                    "selected_id": None,
-                                    "count": 0,
-                                    "updated_at_ms": now_ms(),
+
+                                state["focus"] = "pota_spots_summary"
+
+                                # CLEAR browse so UI does not use stale selection
+                                state["browse"] = None
+
+                                # Mark that we need to rebuild browse when spots update
+                                state["pending_action"] = {
+                                    "type": "enter_spots_browse_after_band_change",
+                                    "band": new_band,
+                                    "ts_ms": now_ms(),
                                 }
 
                                 state_changed = True
@@ -1497,6 +1500,21 @@ def run_main_loop():
                                 if new_index != current_index:
                                     state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
                                     state_changed = True
+
+        pending_action = as_dict(state.get("pending_action"))
+
+        if pending_action.get("type") == "enter_spots_browse_after_band_change":
+            spots_model = resolve_pota_spots_browse_model(r)
+
+            if spots_model:
+                state["browse"] = build_browse_state(
+                    "pota",
+                    "pota_spots_summary",
+                    spots_model,
+                    0,
+                )
+                state["pending_action"] = None
+                state_changed = True
 
         now = now_ms()
 

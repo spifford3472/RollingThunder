@@ -786,3 +786,36 @@ body[data-page="home"] .rt-footer {
 .rt-slot[data-panel-id="node_health_summary"] th {
   font-size: 18px;
 }
+
+/*------------------------------------------------------------------*/
+/* POTA readability pass - mobile/kiosk friendly                    */
+/*------------------------------------------------------------------*/
+.page[data-page-id="pota"],
+body[data-page="pota"] {
+  font-size: 20px;
+}
+
+.page[data-page-id="pota"] .panel,
+body[data-page="pota"] .panel {
+  font-size: 20px;
+}
+
+.page[data-page-id="pota"] table,
+body[data-page="pota"] table {
+  font-size: 20px;
+}
+
+.page[data-page-id="pota"] th,
+.page[data-page-id="pota"] td,
+body[data-page="pota"] th,
+body[data-page="pota"] td {
+  font-size: 20px;
+  line-height: 1.35;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.page[data-page-id="pota"] .panel-title,
+body[data-page="pota"] .panel-title {
+  font-size: 24px;
+}

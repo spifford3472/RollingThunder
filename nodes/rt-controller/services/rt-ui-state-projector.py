@@ -1596,56 +1596,51 @@ class UIStateProjector:
         leds: dict[str, str] = {name: "off" for name in CONTROL_NAMES}
         return_button = self._string_or_none(self._as_dict(breadcrumb).get("return_button"))
 
-        if self._page_navigation_available(page):
-            leds["page"] = "on"
+        if not browse_active and not modal_active:
+            if self._page_navigation_available(page):
+                leds["page"] = "on"
 
-        if self._back_available(page, modal_active, browse_active):
-            leds["back"] = "on"
+            if self._back_available(page, modal_active, browse_active):
+                leds["back"] = "on"
 
-        if self._focus_navigation_available(focus, modal_active) and self._browse_capable_focus(page, focus):
-            leds["mode"] = "pulse"
+            if self._focus_navigation_available(focus, modal_active) and self._browse_capable_focus(page, focus):
+                leds["mode"] = "pulse"
+                leds["info"] = "pulse"
 
-        leds["primary"] = "off"
+            if recent_result and not (degraded or stale):
+                leds["info"] = "pulse"
 
-        if recent_result and not (degraded or stale):
-            leds["info"] = "pulse"
-
-        if not modal_active and not browse_active and not (degraded or stale or not controller_authoritative):
-            if return_button == "back" and leds["back"] != "off":
-                leds["back"] = "pulse"
-            elif return_button == "page" and leds["page"] != "off":
-                leds["page"] = "pulse"
+            if not (degraded or stale or not controller_authoritative):
+                if return_button == "back" and leds["back"] != "off":
+                    leds["back"] = "pulse"
+                elif return_button == "page" and leds["page"] != "off":
+                    leds["page"] = "pulse"
 
         if browse_active or layer == "browse":
-            leds["mode"] = "on"
+            leds["page"] = "off"
+            leds["mode"] = "off"
+            leds["info"] = "off"
             leds["back"] = "on"
             leds["cancel"] = "on"
-            if self._has_browse_selection(browse_obj):
-                leds["primary"] = "on"
-            else:
-                leds["primary"] = "off"
+            leds["primary"] = "on" if self._has_browse_selection(browse_obj) else "off"
 
         if modal_active or layer == "modal":
+            leds["page"] = "off"
             leds["mode"] = "off"
+            leds["info"] = "off"
             leds["back"] = "on"
-
-            if self._modal_cancelable(modal_obj):
-                leds["cancel"] = "on"
-            else:
-                leds["cancel"] = "off"
+            leds["cancel"] = "on" if self._modal_cancelable(modal_obj) else "off"
 
             if self._modal_confirmable(modal_obj):
                 if self._is_destructive_modal(modal_obj):
                     if self._destructive_modal_armed(modal_obj):
-                        leds["primary"] = "blink_fast" 
+                        leds["primary"] = "blink_fast"
                         if self._modal_cancelable(modal_obj):
                             leds["cancel"] = "blink_slow"
                     else:
-                        leds["primary"] = "on" # was "blink_slow"
-                        if self._modal_cancelable(modal_obj):
-                            leds["cancel"] = "on"
+                        leds["primary"] = "on"
                 else:
-                    leds["primary"] = "on" #was "blink_slow" <-modal case?
+                    leds["primary"] = "on"
             else:
                 leds["primary"] = "off"
 
@@ -1654,13 +1649,7 @@ class UIStateProjector:
             leds["primary"] = "off"
             leds["mode"] = "off"
 
-            if modal_active and self._modal_confirmable(modal_obj):
-                if self._is_destructive_modal(modal_obj):
-                    leds["primary"] = "blink_fast" if self._destructive_modal_armed(modal_obj) else "blink_slow"
-                else:
-                    leds["primary"] = "on" #was "blink_slow"
-
-            if self._page_navigation_available(page):
+            if self._page_navigation_available(page) and not browse_active and not modal_active:
                 leds["page"] = "pulse"
 
             if self._back_available(page, modal_active, browse_active):
@@ -1670,7 +1659,7 @@ class UIStateProjector:
                 leds["cancel"] = "pulse" if not modal_active else leds["cancel"]
 
         return leds
-
+    
     def _build_led_snapshot(
         self,
         page: str | None,
