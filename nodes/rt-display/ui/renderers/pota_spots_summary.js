@@ -91,7 +91,22 @@ export function renderPotaSpotsSummary(container, panel, data) {
   // UI display cap only (does NOT change controller state)
   const windowSize = Math.max(1, Math.min(projectedWindowSize, WINDOW));
 
-  const visible = items.slice(windowStart, windowStart + windowSize);
+  let displayWindowStart = windowStart;
+
+  if (selected < displayWindowStart) {
+    displayWindowStart = selected;
+  }
+
+  if (selected >= displayWindowStart + windowSize) {
+    displayWindowStart = selected - windowSize + 1;
+  }
+
+  displayWindowStart = Math.max(
+    0,
+    Math.min(displayWindowStart, Math.max(0, items.length - windowSize))
+  );
+
+  const visible = items.slice(displayWindowStart, displayWindowStart + windowSize);
   const total = items.length;
 
   if (total === 0) {
@@ -145,7 +160,7 @@ export function renderPotaSpotsSummary(container, panel, data) {
   // Update existing rows instead of rebuilding the table.
   visible.forEach((item, i) => {
     const tr = tbody.children[i];
-    const absoluteIndex = windowStart + i;
+    const absoluteIndex = displayWindowStart + i;
     const isSelected = absoluteIndex === selected;
 
     const call = String(item?.call || item?.callsign || "").trim() || "?";
@@ -174,5 +189,5 @@ export function renderPotaSpotsSummary(container, panel, data) {
   });
 
   footer.textContent =
-    `${selected + 1}/${total} • showing ${windowStart + 1}-${Math.min(windowStart + windowSize, total)}`;
+    `${selected + 1}/${total} • showing ${displayWindowStart + 1}-${Math.min(displayWindowStart + windowSize, total)}`;
 }
