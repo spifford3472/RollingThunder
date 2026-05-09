@@ -93,6 +93,13 @@ def get_pota_spot_status_for_item(r: redis.Redis, item: Dict[str, Any]) -> str |
     status = str(entry.get("status") or "").strip()
     return status or None
 
+def is_browse_skippable_pota_spot_fast(
+    item: Dict[str, Any],
+    status_map: Dict[str, Any],
+) -> bool:
+    spot_id = spot_item_id(item)
+    status = status_map.get(spot_id)
+    return status == "worked"
 
 def is_browse_skippable_pota_spot(r: redis.Redis, item: Dict[str, Any]) -> bool:
     status = get_pota_spot_status_for_item(r, item)
@@ -110,6 +117,15 @@ def find_next_browse_index_for_pota_spots(
     if count <= 0:
         return current_index
 
+    # 🔥 NEW: resolve band once
+    band = None
+    if items:
+        band = str(as_dict(items[0]).get("band") or "").lower()
+
+    # 🔥 NEW: load status ONCE
+    status_state = load_pota_spot_status_state(r, band)
+    status_map = as_dict(status_state.get("spots"))
+
     direction = 1 if delta > 0 else -1
     start = clamp_index(current_index, count)
 
@@ -118,7 +134,8 @@ def find_next_browse_index_for_pota_spots(
         item = as_dict(items[idx])
         if not item:
             continue
-        if not is_browse_skippable_pota_spot(r, item):
+
+        if not is_browse_skippable_pota_spot_fast(item, status_map):
             return idx
 
     return start
