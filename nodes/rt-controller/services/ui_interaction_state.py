@@ -98,7 +98,8 @@ def is_browse_skippable_pota_spot_fast(
     status_map: Dict[str, Any],
 ) -> bool:
     spot_id = spot_item_id(item)
-    status = status_map.get(spot_id)
+    entry = as_dict(status_map.get(spot_id))
+    status = str(entry.get("status") or "").strip()
     return status == "worked"
 
 def is_browse_skippable_pota_spot(r: redis.Redis, item: Dict[str, Any]) -> bool:
@@ -1611,18 +1612,20 @@ def run_main_loop():
                     state["pending_action"] = None
                     state_changed = True
 
-        if state_changed or (now - last_persist_ms) >= INTERACTION_HEARTBEAT_MS:
+        if state_changed:
             save_state(r, state)
             last_persist_ms = now
 
-            changed_keys = []
-            if state_changed:
-                changed_keys.append(INTERACTION_KEY)
+            changed_keys = [INTERACTION_KEY]
             if pota_context_changed:
                 changed_keys.append(POTA_CONTEXT_KEY)
 
-            if changed_keys:
-                publish_state_changed(r, changed_keys, source="ui_interaction_state")
+            publish_state_changed(r, changed_keys, source="ui_interaction_state")
+
+        elif (now - last_persist_ms) >= INTERACTION_HEARTBEAT_MS:
+            # Keep writer lock alive without rewriting unchanged interaction state.
+            r.pexpire(WRITER_LOCK_KEY, 10000)
+            last_persist_ms = now
 
         time.sleep(0.05)
 
