@@ -1355,16 +1355,17 @@ def run_main_loop():
                                 state["focus"] = "pota_spots_summary"
 
                                 # Build browse immediately so encoder works on first tick
-                                state["browse"] = {
-                                    "active": True,
-                                    "page": "pota",
-                                    "panel": "pota_spots_summary",
-                                    "selected_index": 0,
-                                    "selected_id": None,  # projector will resolve
-                                    "count": 0,
-                                    "window_size": 18,
-                                    "updated_at_ms": now_ms(),
-                                }
+                                state["browse"] = None
+                                #state["browse"] = {
+                                #    "active": True,
+                                #    "page": "pota",
+                                #    "panel": "pota_spots_summary",
+                                #    "selected_index": 0,
+                                #    "selected_id": None,  # projector will resolve
+                                #    "count": 0,
+                                #    "window_size": 18,
+                                #    "updated_at_ms": now_ms(),
+                                #}
 
                                 state["pending_action"] = {
                                     "type": "tune_first_spot_after_band_select",
@@ -1617,7 +1618,9 @@ def main():
             print(f"ui_interaction_state: Redis error, reconnecting: {type(e).__name__}: {e}", flush=True)
             time.sleep(1)
         except Exception as e:
+            import traceback
             print(f"ui_interaction_state: fatal loop error, restarting: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
             time.sleep(1)
 
 
