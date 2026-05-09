@@ -1591,72 +1591,54 @@ class UIStateProjector:
         controller_authoritative = bool(authority_obj.get("controller_authoritative"))
         modal_active = self._truthy(modal_obj)
         browse_active = self._truthy(browse_obj)
-        recent_result = self._has_recent_result(last_result_obj)
 
         leds: dict[str, str] = {name: "off" for name in CONTROL_NAMES}
-        return_button = self._string_or_none(self._as_dict(breadcrumb).get("return_button"))
 
-        if not browse_active and not modal_active:
-            if self._page_navigation_available(page):
-                leds["page"] = "on"
+        # Info is reserved for future use.
+        leds["info"] = "off"
 
-            if self._back_available(page, modal_active, browse_active):
-                leds["back"] = "on"
+        locked = degraded or stale or not controller_authoritative
 
+        # Default page state: Page and Back are always paired.
+        if page and not modal_active and not browse_active and not locked:
+            leds["page"] = "on"
+            leds["back"] = "on"
+
+        # Mode only advertises focus/browse capability in normal page state.
+        if not modal_active and not browse_active and not locked:
             if self._focus_navigation_available(focus, modal_active) and self._browse_capable_focus(page, focus):
-                leds["mode"] = "pulse"
-                leds["info"] = "pulse"
+                leds["mode"] = "on"
 
-            if recent_result and not (degraded or stale):
-                leds["info"] = "pulse"
-
-            if not (degraded or stale or not controller_authoritative):
-                if return_button == "back" and leds["back"] != "off":
-                    leds["back"] = "pulse"
-                elif return_button == "page" and leds["page"] != "off":
-                    leds["page"] = "pulse"
-
+        # Browse state.
         if browse_active or layer == "browse":
             leds["page"] = "off"
+            leds["back"] = "off"
             leds["mode"] = "off"
             leds["info"] = "off"
-            leds["back"] = "on"
             leds["cancel"] = "on"
             leds["primary"] = "on" if self._has_browse_selection(browse_obj) else "off"
 
+        # Modal state.
         if modal_active or layer == "modal":
             leds["page"] = "off"
+            leds["back"] = "off"
             leds["mode"] = "off"
             leds["info"] = "off"
-            leds["back"] = "on"
             leds["cancel"] = "on" if self._modal_cancelable(modal_obj) else "off"
 
             if self._modal_confirmable(modal_obj):
-                if self._is_destructive_modal(modal_obj):
-                    if self._destructive_modal_armed(modal_obj):
-                        leds["primary"] = "blink_fast"
-                        if self._modal_cancelable(modal_obj):
-                            leds["cancel"] = "blink_slow"
-                    else:
-                        leds["primary"] = "on"
-                else:
-                    leds["primary"] = "on"
+                leds["primary"] = "on"
             else:
                 leds["primary"] = "off"
 
-        if degraded or stale or not controller_authoritative or layer == "degraded":
-            leds["info"] = "blink_slow"
-            leds["primary"] = "off"
+        # Degraded state: fail quiet except info remains off by request.
+        if locked or layer == "degraded":
+            leds["page"] = "off"
+            leds["back"] = "off"
             leds["mode"] = "off"
-
-            if self._page_navigation_available(page) and not browse_active and not modal_active:
-                leds["page"] = "pulse"
-
-            if self._back_available(page, modal_active, browse_active):
-                leds["back"] = "pulse"
-
-            if self._modal_cancelable(modal_obj) or browse_active or (page and page != "home"):
-                leds["cancel"] = "pulse" if not modal_active else leds["cancel"]
+            leds["info"] = "off"
+            leds["primary"] = "off"
+            leds["cancel"] = "off"
 
         return leds
     

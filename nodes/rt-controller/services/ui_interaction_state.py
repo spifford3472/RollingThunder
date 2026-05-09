@@ -1349,7 +1349,7 @@ def run_main_loop():
 
                                 # Mark that we need to rebuild browse when spots update
                                 state["pending_action"] = {
-                                    "type": "enter_spots_browse_after_band_change",
+                                    "type": "tune_first_spot_after_band_select",
                                     "band": new_band,
                                     "ts_ms": now_ms(),
                                 }
@@ -1365,12 +1365,6 @@ def run_main_loop():
                                         "band": new_band,
                                         "ts_ms": now_ms(),
                                     }
-                                else:
-                                    spots_model = resolve_pota_spots_browse_model(r)
-                                    first_spot = selected_item_from_model(spots_model, 0) if spots_model else None
-                                    if first_spot:
-                                        publish_radio_tune_intent(r, first_spot)
-                                    state["pending_action"] = None
 
                             elif state["page"] == "pota" and panel_id == "pota_spots_summary":
                                 state["modal"] = build_pota_spot_outcome_modal(item)
@@ -1503,16 +1497,24 @@ def run_main_loop():
 
         pending_action = as_dict(state.get("pending_action"))
 
-        if pending_action.get("type") == "enter_spots_browse_after_band_change":
+        if pending_action.get("type") == "tune_first_spot_after_band_select":
             spots_model = resolve_pota_spots_browse_model(r)
 
             if spots_model:
+                # Enter browse correctly
+                state["focus"] = "pota_spots_summary"
                 state["browse"] = build_browse_state(
                     "pota",
                     "pota_spots_summary",
                     spots_model,
                     0,
                 )
+
+                # Tune first spot (ONLY here)
+                first_spot = selected_item_from_model(spots_model, 0)
+                if first_spot:
+                    publish_radio_tune_intent(r, first_spot)
+
                 state["pending_action"] = None
                 state_changed = True
 
@@ -1549,14 +1551,24 @@ def run_main_loop():
                 state["modal"] = None
 
                 pending = as_dict(state.get("pending_action"))
-                if pending.get("type") == "tune_first_spot_after_reminder":
+                if pending.get("type") == "tune_first_spot_after_band_select":
                     spots_model = resolve_pota_spots_browse_model(r)
-                    first_spot = selected_item_from_model(spots_model, 0) if spots_model else None
-                    if first_spot:
-                        publish_radio_tune_intent(r, first_spot)
-                    state["pending_action"] = None
 
-                state_changed = True
+                    if spots_model:
+                        state["focus"] = "pota_spots_summary"
+                        state["browse"] = build_browse_state(
+                            "pota",
+                            "pota_spots_summary",
+                            spots_model,
+                            0,
+                        )
+
+                        first_spot = selected_item_from_model(spots_model, 0)
+                        if first_spot:
+                            publish_radio_tune_intent(r, first_spot)
+
+                    state["pending_action"] = None
+                    state_changed = True
 
         if state_changed or (now - last_persist_ms) >= INTERACTION_HEARTBEAT_MS:
             save_state(r, state)
