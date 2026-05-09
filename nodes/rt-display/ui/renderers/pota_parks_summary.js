@@ -160,15 +160,69 @@ export function renderPotaParksSummary(container, panel, data) {
     footerLeft = `Selected park: Not in a park`;
   }
 
-  container.innerHTML = `
-    <table>
-      <thead>
-        <tr><th>Park</th><th>Ref</th><th>Dist</th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="rt-footer">
-      <span class="rt-muted">${footerLeft}</span>
-    </div>
-  `;
+  // Initialize DOM once; after that, only update rows/classes/text.
+  if (!container.__rtPotaParksInit) {
+    container.innerHTML = `
+      <table>
+        <thead>
+          <tr><th>Park</th><th>Ref</th><th>Dist</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="rt-footer">
+        <span class="rt-muted"></span>
+      </div>
+    `;
+    container.__rtPotaParksInit = true;
+  }
+
+  const tbody = container.querySelector("tbody");
+  const footer = container.querySelector(".rt-footer .rt-muted");
+
+  // Ensure enough reusable rows.
+  while (tbody.children.length < view.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="rt-park-name"></td>
+      <td class="rt-park-ref"></td>
+      <td class="rt-park-dist"></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Remove extra rows if the visible window shrinks.
+  while (tbody.children.length > view.length) {
+    tbody.removeChild(tbody.lastChild);
+  }
+
+  // Update existing rows instead of rebuilding the table.
+  view.forEach((item, i) => {
+    const tr = tbody.children[i];
+
+    const absoluteIndex = windowStart + i;
+    const ref = parkRef(item);
+    const name = String(item?.name || item?.park_name || "").trim() || "(unnamed)";
+    const synthetic = !!item?.synthetic;
+    const dist = item?.distance_miles == null ? "" : `${Number(item.distance_miles).toFixed(1)} mi`;
+
+    const isCursor = browseActive && absoluteIndex === selectedIndex;
+    const isSelected = selectedRefs.includes(ref) || (!!selectedRef && ref === selectedRef);
+
+    tr.className = [
+      "sev-ok",
+      isCursor ? "rt-selected" : "",
+      isSelected ? "rt-pota-park-selected" : "",
+    ].filter(Boolean).join(" ");
+
+    const nameEl = tr.querySelector(".rt-park-name");
+    const refEl = tr.querySelector(".rt-park-ref");
+    const distEl = tr.querySelector(".rt-park-dist");
+
+    nameEl.textContent = isSelected ? `📡 ${name}` : name;
+    nameEl.style.fontWeight = isSelected ? "700" : "";
+    refEl.textContent = synthetic ? "" : ref;
+    distEl.textContent = dist;
+  });
+
+  footer.textContent = footerLeft;
 }

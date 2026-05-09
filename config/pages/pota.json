@@ -41,7 +41,8 @@
     "rotation": [
       "pota_parks_summary",
       "pota_bands_summary",
-      "pota_spots_summary"
+      "pota_spots_summary",
+      "alerts_overlay"
     ]
   },
 

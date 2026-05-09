@@ -850,7 +850,12 @@ class UIStateProjector:
             projection[indexed_key] = browse_json
             optional_keys.add(indexed_key)
         if page_context is not None:
-            projection[PROJECTED_KEYS["page_context"]] = self._json(page_context)
+            page_context_json = self._json(page_context)
+            projection[PROJECTED_KEYS["page_context"]] = page_context_json
+
+            # Also project the source context key so panels bound directly to
+            # rt:pota:context refresh immediately when band/park context changes.
+            projection["rt:pota:context"] = page_context_json
         if last_result is not None:
             projection[PROJECTED_KEYS["last_result"]] = self._json(last_result)
 

@@ -164,15 +164,71 @@ export function renderPotaBandsSummary(container, panel, data) {
       ? `Selected band: ${esc(selectedBandFromContext)}`
       : `Bands: ${bands.length}`;
 
-  container.innerHTML = `
-    <table>
-      <thead>
-        <tr><th>Band</th><th>Spots</th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="rt-footer">
-      <span class="rt-muted">${footerLeft}</span>
-    </div>
-  `;
+  // Initialize once
+  if (!container.__rtInit) {
+    container.innerHTML = `
+      <table>
+        <thead>
+          <tr><th>Band</th><th>Spots</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="rt-footer">
+        <span class="rt-muted"></span>
+      </div>
+    `;
+    container.__rtInit = true;
+  }
+
+  const tbody = container.querySelector("tbody");
+  const footer = container.querySelector(".rt-muted");
+
+  // Ensure correct number of rows (reuse when possible)
+  while (tbody.children.length < view.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>
+        <span style="display:flex; align-items:center;">
+          <span class="rt-icon" style="width:1.6em; text-align:center;"></span>
+          <strong class="rt-band"></strong>
+        </span>
+      </td>
+      <td class="rt-count"></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Remove extra rows if window shrinks
+  while (tbody.children.length > view.length) {
+    tbody.removeChild(tbody.lastChild);
+  }
+
+  // Update rows (NO rebuild)
+  view.forEach((item, i) => {
+    const tr = tbody.children[i];
+
+    const absoluteIndex = windowStart + i;
+    const band = bandName(item);
+    const count = Number(item?.count || 0);
+
+    const isCursor = browseActive && absoluteIndex === selectedIndex;
+    const isActiveBand = selectedBandFromContext && band === selectedBandFromContext;
+
+    tr.className = [
+      "sev-ok",
+      isCursor ? "rt-selected" : "",
+      isActiveBand ? "rt-pota-band-selected" : "",
+    ].filter(Boolean).join(" ");
+
+    const iconEl = tr.querySelector(".rt-icon");
+    const bandEl = tr.querySelector(".rt-band");
+    const countEl = tr.querySelector(".rt-count");
+
+    iconEl.innerHTML = isActiveBand ? "▶" : "&nbsp;";
+    bandEl.textContent = band;
+    countEl.textContent = count;
+  });
+
+  // Update footer only
+  footer.textContent = footerLeft;
 }

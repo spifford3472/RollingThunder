@@ -1,6 +1,8 @@
 // pota_spots_summary.js
 // PURE RENDERER — NO STATE, NO LOGIC
 
+const WINDOW = 7;
+
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;",
@@ -80,11 +82,14 @@ export function renderPotaSpotsSummary(container, panel, data) {
       ? Number(browse.window_start)
       : 0;
 
-  const windowSize = Number.isFinite(Number(data.window_size))
+  const projectedWindowSize = Number.isFinite(Number(data.window_size))
     ? Number(data.window_size)
     : Number.isFinite(Number(browse.window_size))
       ? Number(browse.window_size)
-      : 8;
+      : WINDOW;
+
+  // UI display cap only (does NOT change controller state)
+  const windowSize = Math.max(1, Math.min(projectedWindowSize, WINDOW));
 
   const visible = items.slice(windowStart, windowStart + windowSize);
   const total = items.length;
@@ -100,7 +105,46 @@ export function renderPotaSpotsSummary(container, panel, data) {
     data.context?.spot_statuses ||
     {};
 
-  const rows = visible.map((item, i) => {
+  // Initialize DOM once; after that, only update rows/classes/text.
+  if (!container.__rtPotaSpotsInit) {
+    container.innerHTML = `
+      <table>
+        <thead>
+          <tr><th>Call</th><th>MHz</th><th>Park</th><th>Mode</th><th>Age</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="rt-footer">
+        <span class="rt-muted"></span>
+      </div>
+    `;
+    container.__rtPotaSpotsInit = true;
+  }
+
+  const tbody = container.querySelector("tbody");
+  const footer = container.querySelector(".rt-footer .rt-muted");
+
+  // Ensure enough reusable rows.
+  while (tbody.children.length < visible.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong class="rt-spot-call"></strong></td>
+      <td class="rt-spot-freq"></td>
+      <td class="rt-spot-park"></td>
+      <td class="rt-spot-mode"></td>
+      <td class="rt-spot-age"></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Remove extra rows if the visible window shrinks.
+  while (tbody.children.length > visible.length) {
+    tbody.removeChild(tbody.lastChild);
+  }
+
+  // Update existing rows instead of rebuilding the table.
+  visible.forEach((item, i) => {
+    const tr = tbody.children[i];
     const absoluteIndex = windowStart + i;
     const isSelected = absoluteIndex === selected;
 
@@ -120,28 +164,15 @@ export function renderPotaSpotsSummary(container, panel, data) {
     if (status === "heard_not_worked") rowClasses.push("rt-spot-heard-not-worked");
     if (status === "worked") rowClasses.push("rt-spot-worked");
 
-    return `
-      <tr class="${rowClasses.join(" ")}">
-        <td><strong>${esc(call)}</strong></td>
-        <td>${esc(freq)}</td>
-        <td>${esc(park)}</td>
-        <td>${esc(mode)}</td>
-        <td>${esc(age)}</td>
-      </tr>
-    `;
-  }).join("");
+    tr.className = rowClasses.join(" ");
 
-  container.innerHTML = `
-    <table>
-      <thead>
-        <tr><th>Call</th><th>MHz</th><th>Park</th><th>Mode</th><th>Age</th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="rt-footer">
-      <span class="rt-muted">
-        ${selected + 1}/${total} &nbsp; • &nbsp; showing ${windowStart + 1}-${Math.min(windowStart + windowSize, total)}
-      </span>
-    </div>
-  `;
+    tr.querySelector(".rt-spot-call").textContent = call;
+    tr.querySelector(".rt-spot-freq").textContent = freq;
+    tr.querySelector(".rt-spot-park").textContent = park;
+    tr.querySelector(".rt-spot-mode").textContent = mode;
+    tr.querySelector(".rt-spot-age").textContent = age;
+  });
+
+  footer.textContent =
+    `${selected + 1}/${total} • showing ${windowStart + 1}-${Math.min(windowStart + windowSize, total)}`;
 }

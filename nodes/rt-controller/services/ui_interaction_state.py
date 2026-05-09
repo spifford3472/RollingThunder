@@ -1323,15 +1323,27 @@ def run_main_loop():
                                 publish_ui_result(r, intent)
 
                             elif state["page"] == "pota" and panel_id == "pota_bands_summary":
-                                new_band = str(
-                                    item.get("band")
-                                    or item.get("id")
-                                    or item.get("name")
-                                    or item
-                                    or ""
-                                ).strip()
+                                # Resolve band from ACTIVE browse state (authoritative)
+                                browse = as_dict(state.get("browse"))
+
+                                selected_id = str(browse.get("selected_id") or "").strip()
+
+                                new_band = selected_id
+
+                                # Fallback ONLY if browse is missing (should not happen)
+                                if not new_band:
+                                    new_band = str(
+                                        item.get("band")
+                                        or item.get("id")
+                                        or item.get("name")
+                                        or item
+                                        or ""
+                                    ).strip()
                                 if not new_band:
                                     continue
+                                # Clear any stale band-select/tune action before applying the newly selected band.
+                                state["modal"] = None
+                                state["pending_action"] = None
 
                                 current_ctx = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
                                 old_band = str(current_ctx.get("selected_band") or current_ctx.get("band") or "").strip()
@@ -1342,16 +1354,21 @@ def run_main_loop():
 
                                 state["focus"] = "pota_spots_summary"
 
-                                state["focus"] = "pota_spots_summary"
+                                # Build browse immediately so encoder works on first tick
+                                state["browse"] = {
+                                    "active": True,
+                                    "page": "pota",
+                                    "panel": "pota_spots_summary",
+                                    "selected_index": 0,
+                                    "selected_id": None,  # projector will resolve
+                                    "count": 0,
+                                    "window_size": 18,
+                                    "updated_at_ms": now_ms(),
+                                }
 
-                                # CLEAR browse so UI does not use stale selection
-                                state["browse"] = None
-
-                                # Mark that we need to rebuild browse when spots update
                                 state["pending_action"] = {
                                     "type": "tune_first_spot_after_band_select",
                                     "band": new_band,
-                                    "ts_ms": now_ms(),
                                 }
 
                                 state_changed = True
@@ -1497,7 +1514,13 @@ def run_main_loop():
 
         pending_action = as_dict(state.get("pending_action"))
 
-        if pending_action.get("type") == "tune_first_spot_after_band_select":
+        if (
+            pending_action.get("type") == "tune_first_spot_after_band_select"
+            or (
+                pending_action.get("type") == "tune_first_spot_after_reminder"
+                and state.get("modal") is None
+            )
+        ):
             spots_model = resolve_pota_spots_browse_model(r)
 
             if spots_model:
@@ -1551,7 +1574,7 @@ def run_main_loop():
                 state["modal"] = None
 
                 pending = as_dict(state.get("pending_action"))
-                if pending.get("type") == "tune_first_spot_after_band_select":
+                if pending.get("type") in ("tune_first_spot_after_band_select", "tune_first_spot_after_reminder"):
                     spots_model = resolve_pota_spots_browse_model(r)
 
                     if spots_model:
