@@ -35,6 +35,11 @@ ALLOW_NODE_REBOOT = (
     or os.environ.get("RT_ALLOW_NODE_REBOOT", "0").strip() == "1"
 )
 
+# HF UI context keys in Redis, used by both the context manager and the UI intent worker.
+HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
+HF_SPOTS_SELECTED_KEY = os.environ.get("RT_HF_SPOTS_SELECTED_KEY", "rt:hf:spots:selected")
+HF_SELECTED_DETAIL_KEY = os.environ.get("RT_HF_SELECTED_DETAIL_KEY", "rt:hf:spots:selected_detail")
+
 # POTA UI context key in Redis, used by both the context manager and the UI intent worker.
 POTA_CONTEXT_KEY = os.environ.get("RT_POTA_CONTEXT_KEY", "rt:pota:context")
 
@@ -93,6 +98,63 @@ def _load_radio_runtime() -> Dict[str, Any]:
         _radio_runtime_error = f"{type(e).__name__}:{e}"
         raise
 
+
+#   ADDED FOR HF PAGE                                                          
+def _json_get(r, key, default=None):
+    try:
+        raw = r.get(key)
+        if not raw:
+            return default
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw)
+    except Exception:
+        return default
+
+
+def _json_set(r, key, value):
+    r.set(key, json.dumps(value, separators=(",", ":")))
+
+
+def _hf_selected_spot(spots_model, selected_id=None):
+    items = (spots_model or {}).get("items") or []
+    if not items:
+        return None
+
+    if selected_id:
+        for item in items:
+            if item.get("id") == selected_id:
+                return item
+
+    return items[0]
+
+
+def _hf_mode_for_freq(freq_hz, band=None):
+    try:
+        freq_hz = int(freq_hz)
+    except Exception:
+        return "USB"
+
+    if band in {"160m", "80m", "60m", "40m"}:
+        return "LSB"
+
+    if freq_hz < 10000000:
+        return "LSB"
+
+    return "USB"
+
+
+def _hf_publish_state_changed(r, keys):
+    payload = {
+        "type": "state.changed",
+        "source": "ui_interaction_state:hf",
+        "keys": keys,
+        "timestamp": int(time.time() * 1000),
+    }
+    r.publish("rt:system:bus", json.dumps(payload, separators=(",", ":")))
+#=================================================================================
+#   END OF HF PAGE ADDITIONS                                                      
+#=================================================================================
 
 def env_truthy(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -998,6 +1060,142 @@ def main() -> None:
             handle_ui_browse_delta(r, params)
             continue
 
+        if intent == "hf.select_band":
+
+            params = obj.get("params") or {}
+            band = params.get("band") or params.get("id") or params.get("selected_id")
+
+            if not band:
+                continue
+
+            HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
+
+            ctx = load_json_object(r, HF_CONTEXT_KEY) or {}
+            ctx["selected_band"] = band
+            ctx["selection_ts"] = now_ms()
+
+            r.set(HF_CONTEXT_KEY, compact_json(ctx))
+
+            # Load spots
+            spots_key = f"rt:hf:spots:{band}"
+            spots_model = _json_get(r, spots_key)
+
+            if not spots_model:
+                spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+
+            items = spots_model.get("items") or []
+            selected = items[0] if items else None
+
+            if not selected:
+                continue
+
+            selected_id = selected.get("id")
+
+            ctx["selected_spot_id"] = selected_id
+            r.set(HF_CONTEXT_KEY, compact_json(ctx))
+
+            spots_model["selected_id"] = selected_id
+            spots_model["band"] = band
+
+            detail = dict(selected)
+            detail["band"] = band
+            detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
+
+            _json_set(r, "rt:hf:spots:selected", spots_model)
+            _json_set(r, "rt:hf:spots:selected_detail", detail)
+
+            _hf_publish_state_changed(r, [
+                "rt:hf:context",
+                "rt:hf:spots:selected",
+                "rt:hf:spots:selected_detail",
+            ])
+
+            freq = selected.get("freq_hz")
+
+            if freq:
+
+                r.publish("rt:ui:intents", json.dumps({
+                    "intent": "radio.tune",
+                    "params": {
+                        "freq_hz": int(freq),
+                        "band": band,
+                        "mode": detail["mode"],
+                        "source": "hf",
+                        "spot_id": selected_id,
+                        "callsign": selected.get("callsign"),
+                        "nodeId": "rt-radio"
+                    },
+                    "source": {
+                        "type": "ui_intent_worker",
+                        "node": "rt-controller"
+                    },
+                    "timestamp": now_ms()
+                }))
+
+            continue
+
+        if intent == "hf.select_spot":
+            params = obj.get("params") or {}
+
+            selected_id = (
+                params.get("spot_id")
+                or params.get("id")
+                or params.get("selected_id")
+            )
+
+            context = _json_get(r, "rt:hf:context", {}) or {}
+            band = params.get("band") or context.get("selected_band")
+
+            spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+            selected = _hf_selected_spot(spots_model, selected_id)
+
+            if not selected:
+                return
+
+            selected_id = selected.get("id")
+            band = band or spots_model.get("band") or selected.get("band")
+
+            context["selected_band"] = band
+            context["selected_spot_id"] = selected_id
+            context["selection_ts"] = int(time.time() * 1000)
+
+            spots_model["selected_id"] = selected_id
+
+            detail = dict(selected)
+            detail["band"] = band
+            detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
+
+            _json_set(r, "rt:hf:context", context)
+            _json_set(r, "rt:hf:spots:selected", spots_model)
+            _json_set(r, "rt:hf:spots:selected_detail", detail)
+
+            _hf_publish_state_changed(r, [
+                "rt:hf:context",
+                "rt:hf:spots:selected",
+                "rt:hf:spots:selected_detail",
+            ])
+
+            if detail.get("freq_hz"):
+                tune_payload = {
+                    "intent": "radio.tune",
+                    "params": {
+                        "freq_hz": int(detail["freq_hz"]),
+                        "band": band,
+                        "mode": detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band),
+                        "source": "hf",
+                        "spot_id": selected_id,
+                        "callsign": detail.get("callsign"),
+                        "nodeId": "rt-radio",
+                    },
+                    "source": {
+                        "type": "ui_interaction_state",
+                        "node": "rt-controller",
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }
+                r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
+
+            return            
 
 if __name__ == "__main__":
     main()

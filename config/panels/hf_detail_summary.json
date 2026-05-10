@@ -1,0 +1,31 @@
+{
+  "id": "hf_detail_summary",
+  "type": "hf_detail_summary",
+
+  "interaction": {
+    "browsable": false
+  },
+
+  "focusable": false,
+
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+
+  "bindings": [
+    { "id": "qrz", "source": "state", "key": "rt:hf:qrz:selected" },
+    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" }
+  ],
+
+  "actions": [],
+
+  "meta": {
+    "purpose": "Display QRZ-enriched details for selected callsign.",
+    "title": "Callsign Detail",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": ["qrz", "spot"]
+    }
+  }
+}

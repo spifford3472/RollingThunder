@@ -6,13 +6,14 @@
   "layout": {
     "top": ["topbar_core"],
     "middle": [
-      ["hf_status"]
+      ["hf_bands_summary","hf_spots_summary"],
+      ["hf_map_summary", "hf_detail_summary"]
     ],
     "bottom": ["alerts_overlay"]
   },
 
   "requires": ["redis_state", "mqtt_bus"],
-  "optional": ["hf_radio_proxy", "logging", "noaa_same", "meshtastic_c2"],
+  "optional": ["logging", "node_health"],
 
   "controls": {
     "allowedIntents": [
@@ -23,17 +24,29 @@
       "ui.ok",
       "ui.cancel",
       "ui.back",
+      "ui.browse.delta",
+      "ui.encoder.press",
       "alert.ack",
-      "radio.hf.query"
+      "alert.silence",
+      "hf.select_band",
+      "hf.select_spot",
+      "hf.refresh_spots",
+      "hf.spot.outcome",
+      "radio.tune",
+      "radio.log_qso"
     ]
   },
 
   "focusPolicy": {
-    "defaultPanel": "hf_status",
-    "rotation": ["hf_status"]
+    "defaultPanel": "hf_bands_summary",
+    "rotation": [
+      "hf_bands_summary",
+      "hf_spots_summary",
+      "alerts_overlay"
+    ]
   },
 
   "meta": {
-    "purpose": "HF status page. Read-only by default."
+    "purpose": "Workable general HF DX spotting page using DXSpider and QRZ enrichment."
   }
 }

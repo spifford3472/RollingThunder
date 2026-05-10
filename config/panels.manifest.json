@@ -2,9 +2,12 @@
 "alerts_overlay.json", 
 "node_health_summary.json", 
 "deploy_drift_summary.json", 
-"hf_status.json",
 "controller_services_summary.json",
 "pota_bands_summary.json",
 "pota_spots_summary.json",
-"pota_parks_summary.json"
+"pota_parks_summary.json",
+"hf_bands_summary.json",
+"hf_spots_summary.json",
+"hf_map_summary.json",
+"hf_detail_summary.json"
 ] }

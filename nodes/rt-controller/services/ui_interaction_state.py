@@ -527,9 +527,8 @@ def load_pages() -> List[Dict[str, Any]]:
         try:
             data = json.loads(f.read_text())
             pages.append(data)
-        except Exception:
+        except Exception as e:
             continue
-
     pages.sort(key=lambda p: int(p.get("order", 9999)))
     return pages
 
@@ -1093,7 +1092,6 @@ def run_main_loop():
 
     ps = r.pubsub(ignore_subscribe_messages=True)
     ps.subscribe(INTENTS_CH)
-    print(f"ui_interaction_state: subscribed to {INTENTS_CH}", flush=True)
 
     def persist_now(changed_keys: list[str]) -> None:
         nonlocal last_persist_ms
@@ -1632,7 +1630,6 @@ def run_main_loop():
 def main():
     while True:
         try:
-            print("ui_interaction_state: starting interaction loop", flush=True)
             run_main_loop()
         except redis.exceptions.RedisError as e:
             print(f"ui_interaction_state: Redis error, reconnecting: {type(e).__name__}: {e}", flush=True)

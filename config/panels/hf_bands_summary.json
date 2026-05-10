@@ -1,0 +1,34 @@
+{
+  "id": "hf_bands_summary",
+  "type": "hf_bands_summary",
+
+  "interaction": {
+    "browsable": true
+  },
+
+  "focusable": true,
+
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed",
+    "fallbackPollMs": 5000
+  },
+
+  "bindings": [
+    { "id": "bands", "source": "state", "key": "rt:hf:bands" },
+    { "id": "context", "source": "state", "key": "rt:hf:context" },
+    { "id": "ui_browse", "source": "state", "key": "rt:ui:browse:hf_bands_summary" },
+    { "id": "interaction", "source": "state", "key": "rt:interaction:state" }
+  ],
+
+  "actions": [],
+
+  "meta": {
+    "purpose": "Browse available HF bands with active DX spots.",
+    "title": "HF Bands",
+    "contract": {
+      "requiredBindings": ["bands", "context"],
+      "allowNull": ["ui_browse"]
+    }
+  }
+}

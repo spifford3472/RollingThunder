@@ -1,0 +1,30 @@
+{
+  "id": "hf_map_summary",
+  "type": "hf_map_summary",
+
+  "interaction": {
+    "browsable": false
+  },
+
+  "focusable": false,
+
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+
+  "bindings": [
+    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" }
+  ],
+
+  "actions": [],
+
+  "meta": {
+    "purpose": "Display approximate location of selected HF station.",
+    "title": "Location",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": ["spot"]
+    }
+  }
+}
