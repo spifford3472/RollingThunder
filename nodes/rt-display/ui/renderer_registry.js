@@ -8,6 +8,10 @@ import { renderControllerServicesSummary } from  "./renderers/controller_service
 import { renderPotaBandsSummary } from "./renderers/pota_bands_summary.js";
 import { renderPotaSpotsSummary } from "./renderers/pota_spots_summary.js";
 import { renderPotaParksSummary } from "./renderers/pota_parks_summary.js";
+import { renderHfBandsSummary } from "./renderers/hf_bands_summary.js";
+import { renderHfSpotsSummary } from "./renderers/hf_spots_summary.js";
+import { renderHfMapSummary } from "./renderers/hf_map_summary.js";
+import { renderHfDetailSummary } from "./renderers/hf_detail_summary.js";
 
 /**
  * createRendererRegistry()
@@ -67,6 +71,22 @@ export function createRendererRegistry() {
 
   map.set("pota_parks_summary", (container, panel, data) =>
     renderPotaParksSummary(container, panel, data)
+  );
+
+  map.set("hf_bands_summary", (container, panel, data) =>
+    renderHfBandsSummary(container, panel, data)
+  );
+
+  map.set("hf_spots_summary", (container, panel, data) =>
+    renderHfSpotsSummary(container, panel, data)
+  );
+
+  map.set("hf_map_summary", (container, panel, data) =>
+    renderHfMapSummary(container, panel, data)
+  );
+
+  map.set("hf_detail_summary", (container, panel, data) =>
+    renderHfDetailSummary(container, panel, data)
   );
 
   return map;

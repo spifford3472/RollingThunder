@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
+from datetime import datetime, timezone
 
 import redis
 
@@ -99,7 +100,9 @@ def _load_radio_runtime() -> Dict[str, Any]:
         raise
 
 
-#   ADDED FOR HF PAGE                                                          
+#=================================================================================
+#   HF HELPERS                                                      
+#=================================================================================                                                 
 def _json_get(r, key, default=None):
     try:
         raw = r.get(key)
@@ -152,6 +155,49 @@ def _hf_publish_state_changed(r, keys):
         "timestamp": int(time.time() * 1000),
     }
     r.publish("rt:system:bus", json.dumps(payload, separators=(",", ":")))
+
+
+def _utc_date_str():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def _hf_status_hash_key():
+    return f"rt:hf:spot_status:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+
+def _hf_status_map(r: redis.Redis):
+    key = _hf_status_hash_key()
+    raw = r.hgetall(key) or {}
+    out = {}
+    for k, v in raw.items():
+        try:
+            out[k] = json.loads(v)
+        except Exception:
+            continue
+    return out
+
+def _hf_spot_key(spot, fallback_band=""):
+    call = str(spot.get("callsign") or "").strip().upper()
+    freq = int(spot.get("freq_hz") or 0)
+    band = str(spot.get("band") or fallback_band or "").strip()
+    return f"{call}|{freq}|{band}"
+
+
+def _hf_apply_status(spots_model, status_map):
+    items = spots_model.get("items") or []
+    fallback_band = str(spots_model.get("band") or "").strip()
+
+    for item in items:
+        key = _hf_spot_key(item, fallback_band)
+        status_obj = status_map.get(key) or {}
+        status = status_obj.get("status")
+
+        item["band"] = item.get("band") or fallback_band
+
+        if status in {"worked", "heard", "cannot_hear"}:
+            item["status"] = status
+            item["row_style"] = status
+        else:
+            item["status"] = ""
+            item["row_style"] = "default"
 #=================================================================================
 #   END OF HF PAGE ADDITIONS                                                      
 #=================================================================================
@@ -995,6 +1041,70 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
         "selected_park_refs": selected_refs,
     })
 
+#=================================================================================
+# HF HANDLEERS and PROCEDURES
+#=================================================================================
+def handle_hf_spot_outcome(r: redis.Redis, params: Dict[str, Any]) -> None:
+    status = str(params.get("status") or "").strip()
+
+    if status not in {"worked", "heard", "cannot_hear"}:
+        return
+
+    # --- enrich from selected detail if missing ---
+    detail = _json_get(r, HF_SELECTED_DETAIL_KEY, {}) or {}
+
+    callsign = params.get("callsign") or detail.get("callsign") or ""
+    freq_hz = int(params.get("freq_hz") or detail.get("freq_hz") or 0)
+    band = params.get("band") or detail.get("band") or ""
+    mode = params.get("mode") or detail.get("mode") or _hf_mode_for_freq(freq_hz, band)
+
+    ts_utc = params.get("timestamp_utc") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    date_key = _utc_date_str()
+    redis_key = f"rt:hf:spot_status:{date_key}"
+
+    spot_key = f"{callsign}|{freq_hz}|{band}"
+
+    value = {
+        "status": status,
+        "callsign": callsign,
+        "freq_hz": freq_hz,
+        "band": band,
+        "mode": mode,
+        "timestamp_utc": ts_utc,
+        "source": "hf"
+    }
+
+    r.hset(redis_key, spot_key, json.dumps(value, separators=(",", ":")))
+
+    # --- publish state change ---
+    _hf_publish_state_changed(r, [redis_key])
+
+    # --- only log contacts when worked ---
+    if status == "worked":
+        intent = {
+            "intent": "radio.log_qso",
+            "params": {
+                "call": callsign,
+                "band": band,
+                "freq_hz": freq_hz,
+                "mode": mode,
+                "timestamp_utc": ts_utc,
+                "comment": "HF contact",
+                "source": "hf"
+            },
+            "source": {
+                "type": "hf",
+                "node": NODE_ID
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+
+        r.publish(INTENTS_CH, json.dumps(intent, separators=(",", ":")))
+
+#=================================================================================
+# END OF HF PROCEDURES
+#================================================================================
 
 def main() -> None:
     r = redis_client()
@@ -1039,13 +1149,23 @@ def main() -> None:
             handle_node_reboot(r, params)
             continue
 
-        if intent == "pota.select_band":
-            handle_pota_select_band(r, params)
+        if intent == "ui.browse.delta":
+            handle_ui_browse_delta(r, params)
             continue
 
+#=================================================================================
+# Radio intents
+#=================================================================================
         if intent == "radio.tune":
             if NODE_ID == "rt-radio":
                 handle_radio_tune(r, params)
+            continue
+
+#=================================================================================
+# POTA intents
+#=================================================================================        
+        if intent == "pota.select_band":
+            handle_pota_select_band(r, params)
             continue
 
         if intent == "radio.atas_tune":
@@ -1056,10 +1176,9 @@ def main() -> None:
             handle_pota_select_park(r, params)
             continue
 
-        if intent == "ui.browse.delta":
-            handle_ui_browse_delta(r, params)
-            continue
-
+#=================================================================================
+# HF intents
+#=================================================================================
         if intent == "hf.select_band":
 
             params = obj.get("params") or {}
@@ -1083,6 +1202,10 @@ def main() -> None:
             if not spots_model:
                 spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
 
+            spots_model["band"] = band
+
+            status_map = _hf_status_map(r)
+            _hf_apply_status(spots_model, status_map)
             items = spots_model.get("items") or []
             selected = items[0] if items else None
 
@@ -1147,6 +1270,13 @@ def main() -> None:
             band = params.get("band") or context.get("selected_band")
 
             spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+
+            if band:
+                spots_model["band"] = band
+
+            status_map = _hf_status_map(r)
+            _hf_apply_status(spots_model, status_map)
+
             selected = _hf_selected_spot(spots_model, selected_id)
 
             if not selected:
@@ -1195,7 +1325,10 @@ def main() -> None:
                 }
                 r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
 
-            return            
+            return   
+
+        elif intent == "hf.spot.outcome":
+            handle_hf_spot_outcome(r, params)                 
 
 if __name__ == "__main__":
     main()

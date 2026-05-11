@@ -51,8 +51,10 @@ import { renderPanelError } from "./renderers/panel_error.js";
     });
   }
 
-  loadCSS("/shared/controller-overlay.css");
-  loadJS("/shared/controller-overlay.js")
+  // loadCSS("/shared/controller-overlay.css");
+  loadCSS("/ui/controller-overlay.css");
+  //loadJS("/shared/controller-overlay.js")
+  loadJS("/ui/controller-overlay.js")
     .then(() => console.log("[rt] controller overlay loaded"))
     .catch((err) => console.error("[rt] controller overlay failed to load", err));
 })();
