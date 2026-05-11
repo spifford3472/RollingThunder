@@ -147,14 +147,24 @@ def _hf_mode_for_freq(freq_hz, band=None):
     return "USB"
 
 
-def _hf_publish_state_changed(r, keys):
-    payload = {
-        "type": "state.changed",
-        "source": "ui_interaction_state:hf",
-        "keys": keys,
-        "timestamp": int(time.time() * 1000),
-    }
-    r.publish("rt:system:bus", json.dumps(payload, separators=(",", ":")))
+def _hf_publish_state_changed(r: redis.Redis, keys: list[str]) -> None:
+    clean_keys = [str(k).strip() for k in keys if str(k).strip()]
+    if not clean_keys:
+        return
+
+    ts = now_ms()
+
+    r.publish(
+        "rt:system:bus",
+        json.dumps({
+            "topic": "state.changed",
+            "payload": {
+                "keys": clean_keys,
+            },
+            "source": "ui_intent_worker:hf",
+            "ts_ms": ts,
+        })
+    )
 
 
 def _utc_date_str():

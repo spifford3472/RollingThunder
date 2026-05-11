@@ -88,6 +88,11 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:weather:current",
     "rt:radio:state",
     "rt:ui:model:controller_services_summary",
+    "rt:hf:bands",
+    "rt:hf:context",
+    "rt:hf:spots:selected",
+    "rt:hf:spots:selected_detail",
+    "rt:hf:qrz:selected",
 }
 
 PROJECTED_KEYS = {

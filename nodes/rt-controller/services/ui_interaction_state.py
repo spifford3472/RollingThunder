@@ -322,6 +322,145 @@ def publish_radio_tune_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
 
     publish_intent(r, "radio.tune", params)
 
+def hf_band_item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(
+            item.get("id")
+            or item.get("band")
+            or item.get("label")
+            or item.get("name")
+            or ""
+        ).strip()
+
+    return str(item or "").strip()
+
+
+def hf_spot_item_id(item: Any) -> str:
+    item = as_dict(item)
+
+    explicit_id = str(item.get("id") or item.get("spot_id") or "").strip()
+    if explicit_id:
+        return explicit_id
+
+    band = str(item.get("band") or "").strip()
+    freq_hz = str(item.get("freq_hz") or item.get("frequency") or "").strip()
+    callsign = str(item.get("callsign") or item.get("call") or "").strip().lower()
+
+    return f"{band}-{freq_hz}-{callsign}".strip("-")
+
+
+def publish_hf_select_band_intent(r: redis.Redis, item: Any) -> None:
+    band = hf_band_item_id(item)
+    if not band:
+        return
+
+    publish_intent(
+        r,
+        "hf.select_band",
+        {
+            "band": band,
+            "band_id": band,
+            "selected_band": band,
+        },
+    )
+
+
+def publish_hf_select_spot_intent(r: redis.Redis, item: Dict[str, Any]) -> None:
+    item = as_dict(item)
+    spot_id = hf_spot_item_id(item)
+
+    try:
+        freq_hz = int(item.get("freq_hz") or item.get("frequency") or 0)
+    except Exception:
+        freq_hz = 0
+
+    publish_intent(
+        r,
+        "hf.select_spot",
+        {
+            "spot_id": spot_id,
+            "id": spot_id,
+            "selected_spot_id": spot_id,
+            "callsign": str(item.get("callsign") or item.get("call") or "").strip(),
+            "freq_hz": freq_hz,
+            "band": str(item.get("band") or "").strip(),
+            "mode": str(item.get("mode") or "").strip(),
+        },
+    )
+
+
+def build_hf_spot_outcome_modal(spot: Dict[str, Any]) -> Dict[str, Any]:
+    spot = as_dict(spot)
+    ts = now_ms()
+
+    callsign = str(spot.get("callsign") or spot.get("call") or "").strip() or "HF Spot"
+    freq = str(spot.get("freq") or "").strip()
+
+    if not freq:
+        try:
+            freq_hz = int(spot.get("freq_hz") or spot.get("frequency") or 0)
+        except Exception:
+            freq_hz = 0
+        if freq_hz > 0:
+            freq = f"{freq_hz / 1000000:.3f}"
+
+    mode = str(spot.get("mode") or "").strip()
+    band = str(spot.get("band") or "").strip()
+
+    subtitle = " • ".join([x for x in [freq, mode, band] if x])
+
+    return {
+        "active": True,
+        "id": f"hf_spot_outcome:{ts}",
+        "type": "hf_spot_outcome",
+        "title": callsign,
+        "message": subtitle or "HF spot outcome",
+        "spot_id": hf_spot_item_id(spot),
+        "callsign": callsign,
+        "freq_hz": spot.get("freq_hz") or spot.get("frequency"),
+        "band": band,
+        "mode": mode,
+        "selected_option_index": 0,
+        "options": [
+            {"key": "worked", "label": "Worked"},
+            {"key": "heard_not_worked", "label": "Heard"},
+            {"key": "cannot_hear", "label": "Cannot hear"},
+            {"key": "default", "label": "Clear"},
+        ],
+        "confirmable": True,
+        "cancelable": True,
+        "destructive": False,
+        "opened_at_ms": ts,
+    }
+
+
+def publish_hf_spot_outcome_intent(
+    r: redis.Redis,
+    spot: Dict[str, Any],
+    outcome_key: str,
+) -> None:
+    spot = as_dict(spot)
+    outcome_key = str(outcome_key or "").strip()
+    if not outcome_key:
+        return
+
+    try:
+        freq_hz = int(spot.get("freq_hz") or spot.get("frequency") or 0)
+    except Exception:
+        freq_hz = 0
+
+    publish_intent(
+        r,
+        "hf.spot.outcome",
+        {
+            "spot_id": hf_spot_item_id(spot),
+            "status": outcome_key,
+            "callsign": str(spot.get("callsign") or spot.get("call") or "").strip(),
+            "freq_hz": freq_hz,
+            "band": str(spot.get("band") or "").strip(),
+            "mode": str(spot.get("mode") or "").strip(),
+        },
+    )
 
 def build_band_tune_reminder_modal(band: str) -> Dict[str, Any]:
     ts = now_ms()
@@ -940,6 +1079,91 @@ def resolve_pota_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
         "get_id": spot_item_id,
     }
 
+def resolve_hf_bands_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    raw = r.get("rt:hf:bands")
+    model = json.loads(raw) if raw else None
+    if not isinstance(model, dict):
+        return None
+
+    items = as_list(model.get("items"))
+    if not items:
+        return None
+
+    selected_id = str(model.get("selected_id") or "").strip()
+
+    if not selected_id:
+        ctx_raw = r.get("rt:hf:context")
+        ctx = json.loads(ctx_raw) if ctx_raw else {}
+        if isinstance(ctx, dict):
+            selected_id = str(ctx.get("selected_band") or "").strip()
+
+    def get_id(item: Dict[str, Any]) -> str:
+        item = as_dict(item)
+        return str(
+            item.get("id")
+            or item.get("band")
+            or item.get("label")
+            or item.get("name")
+            or ""
+        ).strip()
+
+    anchor_index = 0
+    if selected_id:
+        for i, item in enumerate(items):
+            if get_id(item) == selected_id:
+                anchor_index = i
+                break
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": anchor_index,
+        "window_size": int(model.get("window_size") or 8),
+        "get_id": get_id,
+    }
+
+
+
+def resolve_hf_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    raw = r.get("rt:hf:spots:selected")
+    model = json.loads(raw) if raw else None
+    if not isinstance(model, dict):
+        return None
+
+    items = as_list(model.get("items"))
+    if not items:
+        return None
+
+    selected_id = str(model.get("selected_id") or "").strip()
+
+    if not selected_id:
+        ctx_raw = r.get("rt:hf:context")
+        ctx = json.loads(ctx_raw) if ctx_raw else {}
+        if isinstance(ctx, dict):
+            selected_id = str(ctx.get("selected_spot_id") or "").strip()
+
+    def get_id(item: Dict[str, Any]) -> str:
+        item = as_dict(item)
+        return str(
+            item.get("id")
+            or f"{item.get('band')}-{item.get('freq_hz')}-{item.get('callsign')}"
+        ).strip()
+
+    anchor_index = 0
+    if selected_id:
+        for i, item in enumerate(items):
+            if get_id(item) == selected_id:
+                anchor_index = i
+                break
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": anchor_index,
+        "window_size": int(model.get("window_size") or 10),
+        "get_id": get_id,
+    }
+
 def resolve_alerts_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     raw = get_json_or_value(r, "rt:alerts:active")
 
@@ -970,14 +1194,18 @@ def resolve_alerts_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     }
 
 
+
 def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[str, Any] | None:
+    page_id = str(page_id or "").strip()
+    panel_id = str(panel_id or "").strip()
+
     if page_id == "home":
         if panel_id == "node_health_summary":
             return resolve_home_nodes_browse_model(r)
 
         if panel_id == "controller_services_summary":
             return resolve_home_services_browse_model(r)
-        
+
         if panel_id == "alerts_overlay":
             return resolve_alerts_browse_model(r)
 
@@ -990,6 +1218,13 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
 
         if panel_id == "pota_spots_summary":
             return resolve_pota_spots_browse_model(r)
+
+    if page_id == "hf":
+        if panel_id == "hf_bands_summary":
+            return resolve_hf_bands_browse_model(r)
+
+        if panel_id == "hf_spots_summary":
+            return resolve_hf_spots_browse_model(r)
 
     return None
 
@@ -1071,6 +1306,7 @@ def build_alert_detail_modal(alert: Dict[str, Any]) -> Dict[str, Any]:
         "destructive": False,
         "opened_at_ms": ts,
     }
+
 
 def run_main_loop():
     last_persist_ms = 0
@@ -1292,6 +1528,52 @@ def run_main_loop():
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
+                            elif modal_type == "hf_spot_outcome":
+                                spot_id = str(modal.get("spot_id") or "").strip()
+                                options = as_list(modal.get("options"))
+
+                                try:
+                                    selected_option_index = int(modal.get("selected_option_index", 0))
+                                except Exception:
+                                    selected_option_index = 0
+
+                                selected_option_index = clamp_index(selected_option_index, len(options))
+                                selected_option = as_dict(options[selected_option_index]) if options else {}
+                                outcome_key = str(selected_option.get("key") or "").strip()
+
+                                if not outcome_key:
+                                    continue
+
+                                spots_model = resolve_hf_spots_browse_model(r)
+                                if not spots_model:
+                                    state["modal"] = None
+                                    state_changed = True
+                                    publish_ui_result(r, intent)
+                                    continue
+
+                                target_spot = None
+                                for candidate in as_list(spots_model.get("items")):
+                                    candidate_dict = as_dict(candidate)
+                                    candidate_spot_id = hf_spot_item_id(candidate_dict)
+                                    if candidate_spot_id and candidate_spot_id == spot_id:
+                                        target_spot = candidate_dict
+                                        break
+
+                                if target_spot is None:
+                                    browse = as_dict(state.get("browse"))
+                                    try:
+                                        selected_index = int(browse.get("selected_index", 0))
+                                    except Exception:
+                                        selected_index = 0
+                                    target_spot = selected_item_from_model(spots_model, selected_index)
+
+                                if target_spot:
+                                    publish_hf_spot_outcome_intent(r, target_spot, outcome_key)
+
+                                state["modal"] = None
+                                state_changed = True
+                                publish_ui_result(r, intent)
+
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
                             panel_id = str(browse.get("panel") or "").strip()
@@ -1405,6 +1687,26 @@ def run_main_loop():
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
+                            elif state["page"] == "hf" and panel_id == "hf_bands_summary":
+                                band = hf_band_item_id(item)
+                                if not band:
+                                    continue
+
+                                publish_hf_select_band_intent(r, item)
+
+                                state["focus"] = "hf_spots_summary"
+                                state["browse"] = None
+                                state_changed = True
+                                publish_ui_result(r, intent)
+
+                            elif state["page"] == "hf" and panel_id == "hf_spots_summary":
+                                publish_hf_select_spot_intent(r, item)
+                                publish_radio_tune_intent(r, item)
+
+                                state["modal"] = build_hf_spot_outcome_modal(item)
+                                state_changed = True
+                                publish_ui_result(r, intent)                                
+
                     elif intent == "ui.encoder.press":
                         # Encoder press is a panel-local shortcut. It must not confirm modals.
                         if state.get("modal") is not None:
@@ -1428,6 +1730,44 @@ def run_main_loop():
                                 item = selected_item_from_model(model, selected_index)
                                 if item:
                                     publish_radio_tune_intent(r, item)
+                                    publish_ui_result(r, intent)
+
+                            elif state["page"] == "hf" and panel_id == "hf_bands_summary":
+                                model = resolve_browse_model(r, state["page"], panel_id)
+                                if not model:
+                                    continue
+
+                                try:
+                                    selected_index = int(browse.get("selected_index", 0))
+                                except Exception:
+                                    selected_index = 0
+
+                                item = selected_item_from_model(model, selected_index)
+                                if item:
+                                    publish_hf_select_band_intent(r, item)
+
+                                    state["focus"] = "hf_spots_summary"
+                                    state["browse"] = None
+                                    state_changed = True
+                                    publish_ui_result(r, intent)
+
+                            elif state["page"] == "hf" and panel_id == "hf_spots_summary":
+                                model = resolve_browse_model(r, state["page"], panel_id)
+                                if not model:
+                                    continue
+
+                                try:
+                                    selected_index = int(browse.get("selected_index", 0))
+                                except Exception:
+                                    selected_index = 0
+
+                                item = selected_item_from_model(model, selected_index)
+                                if item:
+                                    publish_hf_select_spot_intent(r, item)
+                                    publish_radio_tune_intent(r, item)
+
+                                    state["modal"] = build_hf_spot_outcome_modal(item)
+                                    state_changed = True
                                     publish_ui_result(r, intent)
 
                     elif intent == "ui.browse.enter":
@@ -1465,7 +1805,7 @@ def run_main_loop():
                             modal = as_dict(state.get("modal"))
                             modal_type = str(modal.get("type") or "").strip()
 
-                            if modal_type == "pota_spot_outcome":
+                            if modal_type in ("pota_spot_outcome", "hf_spot_outcome"):
                                 options = as_list(modal.get("options"))
                                 option_count = len(options)
                                 if option_count <= 0:
