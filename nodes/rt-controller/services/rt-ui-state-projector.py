@@ -1585,6 +1585,7 @@ class UIStateProjector:
             "ui.focus.prev": "info",
         }.get(intent)
 
+
     def _derive_semantic_leds(
         self,
         page: str | None,
@@ -1598,7 +1599,15 @@ class UIStateProjector:
     ) -> dict[str, str]:
         degraded = bool(authority_obj.get("degraded"))
         stale = bool(authority_obj.get("stale"))
-        controller_authoritative = bool(authority_obj.get("controller_authoritative"))
+
+        # Treat missing controller_authoritative as True for backward compatibility.
+        # Older interaction-state snapshots only provide degraded/stale/reason.
+        controller_authoritative = authority_obj.get("controller_authoritative")
+        if controller_authoritative is None:
+            controller_authoritative = True
+        else:
+            controller_authoritative = bool(controller_authoritative)
+
         modal_active = self._truthy(modal_obj)
         browse_active = self._truthy(browse_obj)
 
@@ -1635,20 +1644,35 @@ class UIStateProjector:
             leds["mode"] = "off"
             leds["info"] = "off"
             leds["cancel"] = "on" if self._modal_cancelable(modal_obj) else "off"
+            leds["primary"] = "on" if self._modal_confirmable(modal_obj) else "off"
 
-            if self._modal_confirmable(modal_obj):
-                leds["primary"] = "on"
-            else:
-                leds["primary"] = "off"
-
-        # Degraded state: fail quiet except info remains off by request.
+        # Degraded/stale state must never look like a dead panel when we still
+        # have a valid page/focus. Show a visible degraded navigation pattern.
         if locked or layer == "degraded":
-            leds["page"] = "off"
-            leds["back"] = "off"
-            leds["mode"] = "off"
             leds["info"] = "off"
             leds["primary"] = "off"
             leds["cancel"] = "off"
+            leds["mode"] = "off"
+
+            if page and focus:
+                leds["page"] = "on"
+                leds["back"] = "on"
+                if self._browse_capable_focus(page, focus):
+                    leds["mode"] = "on"
+            else:
+                # Truly no usable UI state. Still avoid all-off.
+                leds["cancel"] = "on"
+
+        # Hard safety fallback: a valid page/focus should never project all LEDs off.
+        if (
+            page
+            and focus
+            and all(str(v or "off") == "off" for v in leds.values())
+        ):
+            leds["page"] = "on"
+            leds["back"] = "on"
+            if self._browse_capable_focus(page, focus):
+                leds["mode"] = "on"
 
         return leds
     

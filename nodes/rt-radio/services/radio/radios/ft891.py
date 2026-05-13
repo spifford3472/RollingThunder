@@ -154,13 +154,16 @@ class FT891RadioBackend:
         # Step 0: best-effort explicit band select
         # Safe fallback: if unsupported or raw CAT passthrough is unavailable,
         # we continue with the prior behavior.
-        if band_norm is not None:
-            try:
-                self._select_band(band_norm)
-            except Exception:
-                # Conservative: never fail the tune solely because explicit band
-                # select was unavailable.
-                pass
+        #if band_norm is not None:
+        #    try:
+        #        self._select_band(band_norm)
+        #    except Exception:
+        #        # Conservative: never fail the tune solely because explicit band
+        #        # select was unavailable.
+        #        pass
+
+        # Step 0 intentionally disabled.
+        # Setting exact frequency is sufficient and avoids FT-891 band-stack/VFO side effects.
 
         # Step 1: set frequency
         self.hamlib.set_freq(freq_hz)

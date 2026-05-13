@@ -1701,7 +1701,19 @@ def run_main_loop():
 
                             elif state["page"] == "hf" and panel_id == "hf_spots_summary":
                                 publish_hf_select_spot_intent(r, item)
-                                publish_radio_tune_intent(r, item)
+                                publish_intent(
+                                    r,
+                                    "radio.tune",
+                                    {
+                                        "freq_hz": int(item.get("freq_hz") or item.get("frequency") or 0),
+                                        "band": str(item.get("band") or "").strip(),
+                                        "mode": str(item.get("mode") or "").strip(),
+                                        "source": "hf",
+                                        "spot_id": hf_spot_item_id(item),
+                                        "callsign": str(item.get("callsign") or item.get("call") or "").strip(),
+                                        "nodeId": "rt-radio",
+                                    },
+                                )
 
                                 state["modal"] = build_hf_spot_outcome_modal(item)
                                 state_changed = True
@@ -1764,12 +1776,25 @@ def run_main_loop():
                                 item = selected_item_from_model(model, selected_index)
                                 if item:
                                     publish_hf_select_spot_intent(r, item)
-                                    publish_radio_tune_intent(r, item)
 
-                                    state["modal"] = build_hf_spot_outcome_modal(item)
+                                    # Tune only. Do not open outcome modal on encoder press.
+                                    # hf.select_spot also updates selected detail; this direct tune keeps response fast.
+                                    publish_intent(
+                                        r,
+                                        "radio.tune",
+                                        {
+                                            "freq_hz": int(item.get("freq_hz") or item.get("frequency") or 0),
+                                            "band": str(item.get("band") or "").strip(),
+                                            "mode": str(item.get("mode") or "").strip(),
+                                            "source": "hf",
+                                            "spot_id": hf_spot_item_id(item),
+                                            "callsign": str(item.get("callsign") or item.get("call") or "").strip(),
+                                            "nodeId": "rt-radio",
+                                        },
+                                    )
+
                                     state_changed = True
                                     publish_ui_result(r, intent)
-
                     elif intent == "ui.browse.enter":
                         panel_id = state.get("focus")
 

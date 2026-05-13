@@ -25,7 +25,7 @@ ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/tools/ui_inte
 # (Hardening tuned for what you actually need; your reboot path will need privileges)
 NoNewPrivileges=true
 PrivateTmp=true
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

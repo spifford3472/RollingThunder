@@ -260,34 +260,34 @@ def handle_ui_browse_delta(r: redis.Redis, params: Dict[str, Any]) -> None:
     state["selected_index"] = selected
 
     # --- NEW: auto tune on selection change ---
-    try:
-        # Get spots list for current band
-        spots_key = f"rt:pota:ui:ssb:spots:selected"
-        raw_spots = r.get(spots_key)
-        spots = json.loads(raw_spots) if raw_spots else []
-
-        if isinstance(spots, list) and 0 <= selected < len(spots):
-            spot = spots[selected]
-
-            freq_hz = int(spot.get("freq_hz", 0))
-            mode = str(spot.get("mode", "SSB")).strip()
-            band = str(spot.get("band", "")).strip()
-
-            if freq_hz > 0:
-                intent = {
-                    "intent": "radio.tune",
-                    "params": {
-                        "freq_hz": freq_hz,
-                        "mode": mode,
-                        "band": band,
-                        "autotune": False,
-                        "nodeId": "rt-radio"
-                    }
-                }
-                r.publish("rt:ui:intents", json.dumps(intent, separators=(",", ":")))
-
-    except Exception:
-        pass
+#    try:
+#        # Get spots list for current band
+#        spots_key = f"rt:pota:ui:ssb:spots:selected"
+#        raw_spots = r.get(spots_key)
+#        spots = json.loads(raw_spots) if raw_spots else []
+#
+#        if isinstance(spots, list) and 0 <= selected < len(spots):
+#            spot = spots[selected]
+#
+#            freq_hz = int(spot.get("freq_hz", 0))
+#            mode = str(spot.get("mode", "SSB")).strip()
+#            band = str(spot.get("band", "")).strip()
+#
+#            if freq_hz > 0:
+#                intent = {
+#                    "intent": "radio.tune",
+#                    "params": {
+#                        "freq_hz": freq_hz,
+#                        "mode": mode,
+#                        "band": band,
+#                        "autotune": False,
+#                        "nodeId": "rt-radio"
+#                    }
+#                }
+#                r.publish("rt:ui:intents", json.dumps(intent, separators=(",", ":")))
+#
+#    except Exception:
+#        pass
 
     state["window_start"] = window_start
     state["window_size"] = window_size
@@ -413,24 +413,45 @@ def publish_state_changed(r: redis.Redis, keys: list[str], source: str = "ui_int
 
 
 def publish_last_result(r: redis.Redis, payload: Dict[str, Any]) -> None:
-    obj = dict(payload)
+    ts = int(time.time() * 1000)
 
-    result = "ok" if bool(obj.get("ok")) else "error"
-    reason = obj.get("msg") or obj.get("message") or obj.get("error") or obj.get("status")
+    page = str(
+        payload.get("page")
+        or payload.get("source")
+        or payload.get("source_page")
+        or ""
+    ).strip()
+
+    if page not in ("home", "pota", "hf"):
+        page = None
+
+    focused_panel = payload.get("focused_panel")
+    if focused_panel is None:
+        focused_panel = payload.get("panel") or payload.get("focusedPanel")
 
     last_result = {
-        "result": result,
-        "intent": str(obj.get("topic") or ""),
-        "reason": str(reason or ""),
-        "execution_id": str(obj.get("ts_ms") or now_ms()),
-        "page": "pota",
-        "focused_panel": None,
-        "ts_ms": int(obj.get("ts_ms") or now_ms()),
+        "result": "ok" if payload.get("ok") else "error",
+        "intent": payload.get("topic") or payload.get("intent") or "unknown",
+        "reason": payload.get("msg") or payload.get("reason"),
+        "execution_id": str(payload.get("execution_id") or ts),
+        "page": page,
+        "focused_panel": focused_panel,
+        "ts_ms": int(payload.get("ts_ms") or ts),
     }
 
     r.set(LAST_RESULT_KEY, json.dumps(last_result, separators=(",", ":")), px=5000)
-    publish_state_changed(r, [LAST_RESULT_KEY], source="ui_intent_worker")
 
+    r.publish(
+        SYSTEM_BUS_CH,
+        json.dumps({
+            "topic": "state.changed",
+            "payload": {
+                "keys": [LAST_RESULT_KEY],
+            },
+            "ts_ms": ts,
+            "source": "ui_intent_worker",
+        })
+    )
 
 def _truthy(x: Any) -> bool:
     if x is True:
@@ -444,11 +465,25 @@ def _truthy(x: Any) -> bool:
 
 def _radio_result_base(params: Dict[str, Any]) -> Dict[str, Any]:
     target = str(params.get("nodeId") or params.get("node_id") or "rt-radio").strip()
+
+    page = str(
+        params.get("page")
+        or params.get("source")
+        or params.get("source_page")
+        or ""
+    ).strip()
+
+    if page not in ("home", "pota", "hf"):
+        page = None
+
     return {
         "topic": "ui.radio.tune.result",
         "node": NODE_ID,
         "target": target,
         "ts_ms": now_ms(),
+        "page": page,
+        "source": params.get("source"),
+        "focused_panel": params.get("focused_panel") or params.get("panel"),
         "freq_hz": params.get("freq_hz"),
         "band": str(params.get("band") or "").strip(),
         "mode": str(params.get("mode") or "").strip(),
@@ -1189,156 +1224,160 @@ def main() -> None:
 #=================================================================================
 # HF intents
 #=================================================================================
-        if intent == "hf.select_band":
+        if intent in ("hf.select_band", "hf.select_spot", "hf.spot.outcome"):
+            if NODE_ID != "rt-controller":
+                continue    
+            if intent == "hf.select_band":
 
-            params = obj.get("params") or {}
-            band = params.get("band") or params.get("id") or params.get("selected_id")
+                params = obj.get("params") or {}
+                band = params.get("band") or params.get("id") or params.get("selected_id")
 
-            if not band:
-                continue
+                if not band:
+                    continue
 
-            HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
+                HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
 
-            ctx = load_json_object(r, HF_CONTEXT_KEY) or {}
-            ctx["selected_band"] = band
-            ctx["selection_ts"] = now_ms()
+                ctx = load_json_object(r, HF_CONTEXT_KEY) or {}
+                ctx["selected_band"] = band
+                ctx["selection_ts"] = now_ms()
 
-            r.set(HF_CONTEXT_KEY, compact_json(ctx))
+                r.set(HF_CONTEXT_KEY, compact_json(ctx))
 
-            # Load spots
-            spots_key = f"rt:hf:spots:{band}"
-            spots_model = _json_get(r, spots_key)
+                # Load spots
+                spots_key = f"rt:hf:spots:{band}"
+                spots_model = _json_get(r, spots_key)
 
-            if not spots_model:
-                spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+                if not spots_model:
+                    spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
 
-            spots_model["band"] = band
-
-            status_map = _hf_status_map(r)
-            _hf_apply_status(spots_model, status_map)
-            items = spots_model.get("items") or []
-            selected = items[0] if items else None
-
-            if not selected:
-                continue
-
-            selected_id = selected.get("id")
-
-            ctx["selected_spot_id"] = selected_id
-            r.set(HF_CONTEXT_KEY, compact_json(ctx))
-
-            spots_model["selected_id"] = selected_id
-            spots_model["band"] = band
-
-            detail = dict(selected)
-            detail["band"] = band
-            detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
-
-            _json_set(r, "rt:hf:spots:selected", spots_model)
-            _json_set(r, "rt:hf:spots:selected_detail", detail)
-
-            _hf_publish_state_changed(r, [
-                "rt:hf:context",
-                "rt:hf:spots:selected",
-                "rt:hf:spots:selected_detail",
-            ])
-
-            freq = selected.get("freq_hz")
-
-            if freq:
-
-                r.publish("rt:ui:intents", json.dumps({
-                    "intent": "radio.tune",
-                    "params": {
-                        "freq_hz": int(freq),
-                        "band": band,
-                        "mode": detail["mode"],
-                        "source": "hf",
-                        "spot_id": selected_id,
-                        "callsign": selected.get("callsign"),
-                        "nodeId": "rt-radio"
-                    },
-                    "source": {
-                        "type": "ui_intent_worker",
-                        "node": "rt-controller"
-                    },
-                    "timestamp": now_ms()
-                }))
-
-            continue
-
-        if intent == "hf.select_spot":
-            params = obj.get("params") or {}
-
-            selected_id = (
-                params.get("spot_id")
-                or params.get("id")
-                or params.get("selected_id")
-            )
-
-            context = _json_get(r, "rt:hf:context", {}) or {}
-            band = params.get("band") or context.get("selected_band")
-
-            spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
-
-            if band:
                 spots_model["band"] = band
 
-            status_map = _hf_status_map(r)
-            _hf_apply_status(spots_model, status_map)
+                status_map = _hf_status_map(r)
+                _hf_apply_status(spots_model, status_map)
+                items = spots_model.get("items") or []
+                selected = items[0] if items else None
 
-            selected = _hf_selected_spot(spots_model, selected_id)
+                if not selected:
+                    continue
 
-            if not selected:
-                return
+                selected_id = selected.get("id")
 
-            selected_id = selected.get("id")
-            band = band or spots_model.get("band") or selected.get("band")
+                ctx["selected_spot_id"] = selected_id
+                r.set(HF_CONTEXT_KEY, compact_json(ctx))
 
-            context["selected_band"] = band
-            context["selected_spot_id"] = selected_id
-            context["selection_ts"] = int(time.time() * 1000)
+                spots_model["selected_id"] = selected_id
+                spots_model["band"] = band
 
-            spots_model["selected_id"] = selected_id
+                detail = dict(selected)
+                detail["band"] = band
+                detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
 
-            detail = dict(selected)
-            detail["band"] = band
-            detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
+                _json_set(r, "rt:hf:spots:selected", spots_model)
+                _json_set(r, "rt:hf:spots:selected_detail", detail)
 
-            _json_set(r, "rt:hf:context", context)
-            _json_set(r, "rt:hf:spots:selected", spots_model)
-            _json_set(r, "rt:hf:spots:selected_detail", detail)
+                _hf_publish_state_changed(r, [
+                    "rt:hf:context",
+                    "rt:hf:spots:selected",
+                    "rt:hf:spots:selected_detail",
+                ])
 
-            _hf_publish_state_changed(r, [
-                "rt:hf:context",
-                "rt:hf:spots:selected",
-                "rt:hf:spots:selected_detail",
-            ])
+                freq = selected.get("freq_hz")
 
-            if detail.get("freq_hz"):
-                tune_payload = {
-                    "intent": "radio.tune",
-                    "params": {
-                        "freq_hz": int(detail["freq_hz"]),
-                        "band": band,
-                        "mode": detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band),
-                        "source": "hf",
-                        "spot_id": selected_id,
-                        "callsign": detail.get("callsign"),
-                        "nodeId": "rt-radio",
-                    },
-                    "source": {
-                        "type": "ui_interaction_state",
-                        "node": "rt-controller",
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-                r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
+                if freq:
 
-            return   
+                    r.publish("rt:ui:intents", json.dumps({
+                        "intent": "radio.tune",
+                        "params": {
+                            "freq_hz": int(freq),
+                            "band": band,
+                            "mode": detail["mode"],
+                            "source": "hf",
+                            "spot_id": selected_id,
+                            "callsign": selected.get("callsign"),
+                            "nodeId": "rt-radio"
+                        },
+                        "source": {
+                            "type": "ui_intent_worker",
+                            "node": "rt-controller"
+                        },
+                        "timestamp": now_ms()
+                    }))
 
-        elif intent == "hf.spot.outcome":
-            handle_hf_spot_outcome(r, params)                 
+                continue
+
+            if intent == "hf.select_spot":
+                params = obj.get("params") or {}
+
+                selected_id = (
+                    params.get("spot_id")
+                    or params.get("id")
+                    or params.get("selected_id")
+                )
+
+                context = _json_get(r, "rt:hf:context", {}) or {}
+                band = params.get("band") or context.get("selected_band")
+
+                spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+
+                if band:
+                    spots_model["band"] = band
+
+                status_map = _hf_status_map(r)
+                _hf_apply_status(spots_model, status_map)
+
+                selected = _hf_selected_spot(spots_model, selected_id)
+
+                if not selected:
+                    return
+
+                selected_id = selected.get("id")
+                band = band or spots_model.get("band") or selected.get("band")
+
+                context["selected_band"] = band
+                context["selected_spot_id"] = selected_id
+                context["selection_ts"] = int(time.time() * 1000)
+
+                spots_model["selected_id"] = selected_id
+
+                detail = dict(selected)
+                detail["band"] = band
+                detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
+
+                _json_set(r, "rt:hf:context", context)
+                _json_set(r, "rt:hf:spots:selected", spots_model)
+                _json_set(r, "rt:hf:spots:selected_detail", detail)
+
+                _hf_publish_state_changed(r, [
+                    "rt:hf:context",
+                    "rt:hf:spots:selected",
+                    "rt:hf:spots:selected_detail",
+                ])
+
+                if detail.get("freq_hz"):
+                    tune_payload = {
+                        "intent": "radio.tune",
+                        "params": {
+                            "freq_hz": int(detail["freq_hz"]),
+                            "band": band,
+                            "mode": detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band),
+                            "source": "hf",
+                            "spot_id": selected_id,
+                            "callsign": detail.get("callsign"),
+                            "nodeId": "rt-radio",
+                        },
+                        "source": {
+                            "type": "ui_interaction_state",
+                            "node": "rt-controller",
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                    r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
+
+                return   
+
+            elif intent == "hf.spot.outcome":
+                handle_hf_spot_outcome(r, params)                 
+    
 
 if __name__ == "__main__":
     main()

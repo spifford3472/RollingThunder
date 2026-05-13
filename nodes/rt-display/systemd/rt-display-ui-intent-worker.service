@@ -25,5 +25,9 @@ ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/tools/ui_inte
 NoNewPrivileges=false  #Don't turn true 
 PrivateTmp=true
 
+# Restart policy
+Restart=always
+RestartSec=2
+
 [Install]
 WantedBy=multi-user.target
