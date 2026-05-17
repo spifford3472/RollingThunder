@@ -23,6 +23,7 @@ Environment=RT_REDIS_DB=0
 # Projector inputs
 Environment=RT_UI_INTERACTION_STATE_KEY=rt:interaction:state
 Environment=RT_UI_PAGE_CONTEXT_KEY=rt:pota:context
+Environment=UI_PROJECTOR_STALE_MS=20000
 
 # MQTT
 Environment=RT_MQTT_HOST=127.0.0.1

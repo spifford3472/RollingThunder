@@ -1307,12 +1307,17 @@ class UIStateProjector:
             return False
 
         pipe = self.redis_client.pipeline(transaction=False)
-        for key, value in sorted(projection.items()):
-            pipe.set(key, value)
-        if PROJECTED_KEYS["last_result"] in projection:
+
+        for key in sorted(changed_keys):
+            if key in projection:
+                pipe.set(key, projection[key])
+
+        if PROJECTED_KEYS["last_result"] in changed_keys and PROJECTED_KEYS["last_result"] in projection:
             pipe.pexpire(PROJECTED_KEYS["last_result"], 5000)
+
         for key in stale_keys:
             pipe.delete(key)
+
         pipe.execute()
 
         self.last_projection = dict(projection)
