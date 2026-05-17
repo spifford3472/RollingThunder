@@ -14,7 +14,8 @@
   },
 
   "bindings": [
-    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" }
+    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" },
+    { "id": "map", "source": "state", "key": "rt:hf:map:selected" }
   ],
 
   "actions": [],
@@ -24,7 +25,7 @@
     "title": "Location",
     "contract": {
       "requiredBindings": [],
-      "allowNull": ["spot"]
+      "allowNull": ["spot", "map"]
     }
   }
 }

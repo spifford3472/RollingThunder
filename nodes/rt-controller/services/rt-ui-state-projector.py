@@ -94,6 +94,7 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:hf:spots:selected_detail",
     "rt:hf:qrz:selected",
     "rt:hf:qso_history:selected",
+    "rt:hf:map:selected",
 }
 
 PROJECTED_KEYS = {

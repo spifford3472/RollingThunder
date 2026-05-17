@@ -1,6 +1,11 @@
 // hf_map_summary.js
-// PURE RENDERER — placeholder for controller/projector-owned HF map/location data.
-// No browser geocoding, no location calculation, no Redis writes, no intent execution.
+// PURE RENDERER — displays controller/projector-owned HF map/location data.
+// No browser geocoding.
+// No QRZ calls.
+// No map API calls.
+// No flag derivation.
+// No Redis access.
+// No intent execution.
 
 function unwrapObject(value) {
   if (!value) return {};
@@ -19,40 +24,133 @@ function unwrapObject(value) {
   return {};
 }
 
+function text(value, fallback = "") {
+  const s = String(value ?? "").trim();
+  return s || fallback;
+}
+
+function safeImageUrl(value) {
+  const s = String(value ?? "").trim();
+
+  // Renderer-only safety: render only URLs already projected by controller/service.
+  // Allow local UI paths, absolute http(s), and data images if a future service uses them.
+  if (
+    s.startsWith("/") ||
+    s.startsWith("http://") ||
+    s.startsWith("https://") ||
+    s.startsWith("data:image/")
+  ) {
+    return s;
+  }
+
+  return "";
+}
+
+function renderFallback(symbol, label, extraClass = "") {
+  return `
+    <div class="rt-hf-map-fallback ${extraClass}">
+      <div class="rt-hf-map-fallback-symbol">${symbol}</div>
+      <div class="rt-hf-map-fallback-label">${label}</div>
+    </div>
+  `;
+}
+
+function renderFlag(mapModel, country) {
+  const flag = unwrapObject(mapModel?.flag);
+  const status = text(flag.status).toLowerCase();
+  const url = safeImageUrl(flag.url);
+  const label = text(flag.label, country || "FLAG UNAVAILABLE");
+
+  if (status === "ok" && url) {
+    return `
+      <div class="rt-hf-map-flag-wrap">
+        <img class="rt-hf-map-flag" src="${url}" alt="${label}">
+      </div>
+    `;
+  }
+
+  return renderFallback("⚑", "FLAG UNAVAILABLE", "rt-hf-map-flag-missing");
+}
+
+function renderMap(mapModel) {
+  const map = unwrapObject(mapModel?.map);
+  const status = text(map.status).toLowerCase();
+  const url = safeImageUrl(map.url);
+  const label = text(map.label, "MAP UNAVAILABLE");
+
+  if (status === "ok" && url) {
+    const altParts = [
+      text(mapModel?.callsign),
+      text(mapModel?.country),
+      text(map.provider)
+    ].filter(Boolean);
+
+    const alt = altParts.length ? altParts.join(" • ") : "HF station map";
+
+    return `
+      <div class="rt-hf-map-image-wrap">
+        <img class="rt-hf-map-image" src="${url}" alt="${alt}">
+      </div>
+    `;
+  }
+
+  // Phase 1: no browser-side drawing or coordinate math.
+  // If a future service wants a pin, it should project a ready-to-render image URL
+  // or a simple explicit render model.
+  return renderFallback("⌕", label || "MAP UNAVAILABLE", "rt-hf-map-map-missing");
+}
+
 export function renderHfMapSummary(container, panel, data) {
   const spot = unwrapObject(data?.spot);
+  const mapModel = unwrapObject(data?.map);
 
-  const callsign = String(spot?.callsign || spot?.call || "").trim();
+  const spotCallsign = text(spot?.callsign || spot?.call);
+  const mapCallsign = text(mapModel?.callsign);
+  const callsign = mapCallsign || spotCallsign;
 
   if (!callsign) {
     container.innerHTML = `<div class="rt-muted">No selected station</div>`;
+    container.__rtHfMapLastKey = "";
     return;
   }
 
-  const band = String(spot?.band || "").trim();
-  const freq = String(spot?.freq || "").trim();
-  const mode = String(spot?.mode || "").trim();
+  const country = text(
+    mapModel?.country ||
+      mapModel?.country_name ||
+      unwrapObject(mapModel?.flag)?.label,
+    "Unknown country"
+  );
 
-  if (!container.__rtHfMapInit) {
-    container.innerHTML = `
-      <div class="rt-detail">
-        <div class="rt-hf-map-call" style="font-size:1.3em; font-weight:700;"></div>
-        <div class="rt-muted">Location panel pending controller-provided map data.</div>
+  const status = text(mapModel?.status, "pending");
+  const message = text(mapModel?.message);
 
-        <table style="margin-top:.5rem;">
-          <tbody>
-            <tr><th>Band</th><td class="rt-hf-map-band"></td></tr>
-            <tr><th>Freq</th><td class="rt-hf-map-freq"></td></tr>
-            <tr><th>Mode</th><td class="rt-hf-map-mode"></td></tr>
-          </tbody>
-        </table>
+  const renderKey = JSON.stringify({
+    callsign,
+    country,
+    status,
+    message,
+    flag: mapModel?.flag || {},
+    map: mapModel?.map || {},
+    updated_at_ms: mapModel?.updated_at_ms || ""
+  });
+
+  if (container.__rtHfMapLastKey === renderKey) return;
+  container.__rtHfMapLastKey = renderKey;
+
+  const flagHtml = renderFlag(mapModel, country);
+  const mapHtml = renderMap(mapModel);
+
+  container.innerHTML = `
+    <div class="rt-hf-map-panel">
+      <div class="rt-hf-map-left">
+        <div class="rt-hf-map-call">${callsign}</div>
+        ${flagHtml}
+        <div class="rt-hf-map-country">${country}</div>
       </div>
-    `;
-    container.__rtHfMapInit = true;
-  }
 
-  container.querySelector(".rt-hf-map-call").textContent = callsign;
-  container.querySelector(".rt-hf-map-band").textContent = band || "-";
-  container.querySelector(".rt-hf-map-freq").textContent = freq || "-";
-  container.querySelector(".rt-hf-map-mode").textContent = mode || "-";
+      <div class="rt-hf-map-right">
+        ${mapHtml}
+      </div>
+    </div>
+  `;
 }

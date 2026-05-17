@@ -859,3 +859,116 @@ body[data-page="pota"] .panel-title {
   line-height: 1.25;
 }
 
+/* HF map/location panel — renderer-only display of projected model */
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-panel {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 34% 66%;
+  gap: 0.75rem;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-left,
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-right {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-left {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  justify-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem;
+  box-sizing: border-box;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-call {
+  font-size: 1.25rem;
+  line-height: 1.1;
+  font-weight: 800;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-flag-wrap,
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-image-wrap {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-flag {
+  max-width: 96%;
+  max-height: 96%;
+  object-fit: contain;
+  border-radius: 0.35rem;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-country {
+  font-size: 1.25rem;
+  line-height: 1.1;
+  font-weight: 800;
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-right {
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 0.45rem;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-fallback {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  text-align: center;
+  opacity: 0.9;
+  box-sizing: border-box;
+  border: 2px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-fallback-symbol {
+  font-size: 3.5rem;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-fallback-label {
+  font-size: 1.1rem;
+  line-height: 1.05;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-map-missing .rt-hf-map-fallback-symbol {
+  font-size: 5rem;
+}
