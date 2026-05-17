@@ -102,7 +102,7 @@ function modalIdsDiffer(a, b) {
 function buildProjectedModalBodyHtml(modalObj) {
   const modalType = String(modalObj?.type || "").trim();
 
-  if (modalType === "pota_spot_outcome") {
+  if (modalType === "pota_spot_outcome" || modalType === "hf_spot_outcome") {
     const options = Array.isArray(modalObj?.options) ? modalObj.options : [];
     const selectedIndex = Number.isInteger(modalObj?.selected_option_index)
       ? modalObj.selected_option_index

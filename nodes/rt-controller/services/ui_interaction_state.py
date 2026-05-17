@@ -420,13 +420,17 @@ def build_hf_spot_outcome_modal(spot: Dict[str, Any]) -> Dict[str, Any]:
         "freq_hz": spot.get("freq_hz") or spot.get("frequency"),
         "band": band,
         "mode": mode,
-        "selected_option_index": 0,
+
+        # Match POTA outcome ordering:
+        # 0 = Can't Hear, 1 = Worked, 2 = Heard not Worked
+        "selected_option_index": 1,
         "options": [
+            {"key": "cannot_hear", "label": "Can't Hear"},
             {"key": "worked", "label": "Worked"},
-            {"key": "heard_not_worked", "label": "Heard"},
-            {"key": "cannot_hear", "label": "Cannot hear"},
-            {"key": "default", "label": "Clear"},
+            {"key": "heard_not_worked", "label": "Heard not Worked"},
         ],
+
+        # Keep physical/virtual OK and Cancel semantics.
         "confirmable": True,
         "cancelable": True,
         "destructive": False,

@@ -1150,16 +1150,17 @@ def handle_pota_select_park(r: redis.Redis, params: Dict[str, Any]) -> None:
 def handle_hf_spot_outcome(r: redis.Redis, params: Dict[str, Any]) -> None:
     status = str(params.get("status") or "").strip()
 
-    if status not in {"worked", "heard", "cannot_hear"}:
+    # HF uses the same status keys as the POTA-style modal.
+    if status not in {"worked", "heard_not_worked", "cannot_hear"}:
         return
 
     # --- enrich from selected detail if missing ---
     detail = _json_get(r, HF_SELECTED_DETAIL_KEY, {}) or {}
 
-    callsign = params.get("callsign") or detail.get("callsign") or ""
+    callsign = str(params.get("callsign") or detail.get("callsign") or detail.get("call") or "").strip()
     freq_hz = int(params.get("freq_hz") or detail.get("freq_hz") or 0)
-    band = params.get("band") or detail.get("band") or ""
-    mode = params.get("mode") or detail.get("mode") or _hf_mode_for_freq(freq_hz, band)
+    band = str(params.get("band") or detail.get("band") or "").strip()
+    mode = str(params.get("mode") or detail.get("mode") or _hf_mode_for_freq(freq_hz, band) or "").strip()
 
     ts_utc = params.get("timestamp_utc") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -1175,13 +1176,65 @@ def handle_hf_spot_outcome(r: redis.Redis, params: Dict[str, Any]) -> None:
         "band": band,
         "mode": mode,
         "timestamp_utc": ts_utc,
-        "source": "hf"
+        "source": "hf",
     }
 
     r.hset(redis_key, spot_key, json.dumps(value, separators=(",", ":")))
 
-    # --- publish state change ---
-    _hf_publish_state_changed(r, [redis_key])
+    changed_keys = [redis_key]
+
+    # Update currently selected HF spot model immediately so the row color changes
+    # without waiting for a band reselect or poller refresh.
+    spots_model = _json_get(r, "rt:hf:spots:selected", {}) or {}
+    changed_selected_model = False
+
+    def matches_current_spot(item: Dict[str, Any]) -> bool:
+        try:
+            item_freq_hz = int(item.get("freq_hz") or item.get("frequency") or 0)
+        except Exception:
+            item_freq_hz = 0
+
+        item_callsign = str(item.get("callsign") or item.get("call") or "").strip()
+        item_band = str(item.get("band") or "").strip()
+
+        return (
+            item_callsign == callsign
+            and item_freq_hz == freq_hz
+            and item_band == band
+        )
+
+    for list_key in ("items", "spots"):
+        items = spots_model.get(list_key)
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if matches_current_spot(item):
+                item["status"] = status
+                item["row_style"] = status
+                changed_selected_model = True
+
+    if changed_selected_model:
+        _json_set(r, "rt:hf:spots:selected", spots_model)
+        changed_keys.append("rt:hf:spots:selected")
+
+    selected_detail = _json_get(r, HF_SELECTED_DETAIL_KEY, {}) or {}
+    if isinstance(selected_detail, dict):
+        try:
+            detail_freq_hz = int(selected_detail.get("freq_hz") or 0)
+        except Exception:
+            detail_freq_hz = 0
+
+        detail_callsign = str(selected_detail.get("callsign") or selected_detail.get("call") or "").strip()
+        detail_band = str(selected_detail.get("band") or "").strip()
+
+        if detail_callsign == callsign and detail_freq_hz == freq_hz and detail_band == band:
+            selected_detail["status"] = status
+            selected_detail["row_style"] = status
+            _json_set(r, HF_SELECTED_DETAIL_KEY, selected_detail)
+            changed_keys.append(HF_SELECTED_DETAIL_KEY)
 
     # --- only log contacts when worked ---
     if status == "worked":
@@ -1194,16 +1247,18 @@ def handle_hf_spot_outcome(r: redis.Redis, params: Dict[str, Any]) -> None:
                 "mode": mode,
                 "timestamp_utc": ts_utc,
                 "comment": "HF contact",
-                "source": "hf"
+                "source": "hf",
             },
             "source": {
                 "type": "hf",
-                "node": NODE_ID
+                "node": NODE_ID,
             },
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(time.time() * 1000),
         }
 
         r.publish(INTENTS_CH, json.dumps(intent, separators=(",", ":")))
+
+    _hf_publish_state_changed(r, changed_keys)
 
 #=================================================================================
 # END OF HF PROCEDURES
