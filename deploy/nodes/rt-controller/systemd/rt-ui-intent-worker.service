@@ -35,6 +35,8 @@ Environment=RT_UI_BUS_CHANNEL=rt:ui:bus
 Environment=RT_CONFIG_PATH=/opt/rollingthunder/config/app.json
 Environment=RT_SYSTEMCTL_TIMEOUT_SEC=8.0
 
+EnvironmentFile=-/etc/rollingthunder/qrz.env
+
 # Optional: allow admin overrides without editing the unit
 EnvironmentFile=-/etc/default/rollingthunder
 

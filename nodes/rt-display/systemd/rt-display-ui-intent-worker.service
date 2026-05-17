@@ -19,6 +19,7 @@ Environment=RT_REDIS_DB=0
 Environment=RT_ALLOW_REBOOT=1
 EnvironmentFile=/etc/rollingthunder/redis.env
 
+
 ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/tools/ui_intent_worker.py
 
 # (Hardening tuned for what you actually need; your reboot path will need privileges)
