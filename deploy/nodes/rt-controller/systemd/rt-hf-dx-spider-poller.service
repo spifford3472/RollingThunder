@@ -1,0 +1,22 @@
+[Unit]
+Description=RollingThunder HF DX Spider Poller
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/opt/rollingthunder/services/hf_dx_spider_poller.py
+Restart=on-failure
+RestartSec=5
+
+Environment=RT_APP_JSON=/opt/rollingthunder/config/app.json
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=-/etc/rollingthunder/redis.env
+
+
+[Install]
+WantedBy=multi-user.target

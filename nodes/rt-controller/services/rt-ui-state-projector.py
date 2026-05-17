@@ -156,7 +156,7 @@ class Config:
     event_timeout_ms: int
     intent_debounce_ms: int
     state_debounce_ms: int
-    state_debounce_ms=int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", str(DEFAULT_STATE_DEBOUNCE_MS)))
+    #state_debounce_ms=int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", str(DEFAULT_STATE_DEBOUNCE_MS)))
 
 
 class UIStateProjector:
@@ -172,6 +172,8 @@ class UIStateProjector:
         self._browsable_panel_ids = self._load_browsable_panel_ids()
         self._breadcrumb_state: dict[str, Any] = {"last_page": None, "return_button": None}
         self._pending_binding_refresh_keys: set[str] = set()
+        self._last_state_changed_keys: set[str] = set()
+        self._last_project_reason: str = ""
 
     def _connect(self) -> Redis:
         client = redis.Redis.from_url(
@@ -312,6 +314,7 @@ class UIStateProjector:
     def _project_once(self, reason: str) -> None:
         if not self._acquire_writer_lock():
             return
+        self._last_project_reason = str(reason or "")
 
         upstream = self._read_upstream_state()
         projection, optional_keys = self._build_projection(upstream)
@@ -331,11 +334,13 @@ class UIStateProjector:
 
         channel = msg.get("channel")
         if channel == UI_INTENTS_CHANNEL:
-            # ui_interaction_state mutates rt:interaction:state in response to
-            # intents, but it does not currently publish a state.changed event.
-            # Treat intents as a cheap event trigger and let semantic dedupe
-            # suppress no-op/rejected intents.
-            return True
+            # Intents are not projection input.
+            #
+            # ui_interaction_state owns translating raw UI intents into
+            # controller-owned state and now publishes state.changed for actual
+            # state changes. Projecting directly from rt:ui:intents causes
+            # duplicate projection passes and UI churn during browse movement.
+            return False
 
         if channel != SYSTEM_BUS_CHANNEL:
             return False
@@ -359,6 +364,11 @@ class UIStateProjector:
         keys = payload.get("keys")
         if not isinstance(keys, list):
             return False
+
+        self._last_state_changed_keys = {
+            str(key) for key in keys
+            if isinstance(key, str)
+        }
 
         return self._keys_affect_projection(keys)
 
@@ -533,6 +543,30 @@ class UIStateProjector:
             return values[-1] if values else None
         return None
 
+    def _should_refresh_node_health_model(self, reason: str) -> bool:
+        reason = str(reason or "")
+
+        if reason in {"startup", "reconnect"}:
+            return True
+
+        if reason == "safety":
+            return False
+
+        keys = getattr(self, "_last_state_changed_keys", set()) or set()
+
+        if not keys:
+            return False
+
+        for key in keys:
+            if key == "rt:system:nodes":
+                return True
+            if key.startswith("rt:nodes:"):
+                return True
+            if key in set(self.config.system_health_keys):
+                return True
+
+        return False
+    
     def _build_node_health_summary_model(self, now_ms: int) -> Dict[str, Any]:
         node_ids = self._read_node_ids()
         items: list[dict[str, Any]] = []
@@ -844,14 +878,15 @@ class UIStateProjector:
             breadcrumb=self._breadcrumb_state,
         )
 
-        node_health_model = self._build_node_health_summary_model(now_ms)
-
         projection: Dict[str, str] = {
             PROJECTED_KEYS["layer"]: layer,
             PROJECTED_KEYS["authority"]: self._json(authority),
             PROJECTED_KEYS["led_snapshot"]: self._json_any(led_snapshot),
-            NODE_HEALTH_MODEL_KEY: self._json_any(node_health_model),
         }
+
+        if self._should_refresh_node_health_model(getattr(self, "_last_project_reason", "")):
+            node_health_model = self._build_node_health_summary_model(now_ms)
+            projection[NODE_HEALTH_MODEL_KEY] = self._json_any(node_health_model)
         optional_keys: set[str] = set()
 
         if page is not None:
@@ -1807,6 +1842,7 @@ def build_config() -> Config:
         system_health_keys=csv_env("UI_PROJECTOR_SYSTEM_HEALTH_KEYS", DEFAULT_SYSTEM_HEALTH_KEYS),
         event_timeout_ms=int(os.environ.get("UI_PROJECTOR_EVENT_TIMEOUT_MS", str(DEFAULT_EVENT_TIMEOUT_MS))),
         intent_debounce_ms=int(os.environ.get("UI_PROJECTOR_INTENT_DEBOUNCE_MS", str(DEFAULT_INTENT_DEBOUNCE_MS))),
+        state_debounce_ms=int(os.environ.get("UI_PROJECTOR_STATE_DEBOUNCE_MS", str(DEFAULT_STATE_DEBOUNCE_MS))),        
     )
 
 
