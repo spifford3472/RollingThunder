@@ -1046,12 +1046,29 @@ class UIStateProjector:
             controller_authoritative = False
             degraded_reasons.append("missing_focus_for_browse")
 
+        # Do not treat rt:interaction:state.updated_at_ms as a heartbeat.
+        # It represents the last UI state transition, and a stable UI may sit
+        # unchanged for minutes or hours while still being fully authoritative.
+        #
+        # Only age-check explicit authority timestamps from legacy authority
+        # sources. The primary interaction-state source is considered valid if
+        # it was readable and normalized into page/focus/browse/modal state.
+        sources = upstream.get("_sources")
+        using_primary_interaction_state = (
+            isinstance(sources, Mapping)
+            and bool(sources.get("interaction_state"))
+        )
+
         source_ts_ms = (
             self._coerce_int(authority.get("ts_ms"))
             or self._coerce_int(authority.get("updated_at_ms"))
-            or self._find_timestamp_ms(upstream)
         )
-        if source_ts_ms is not None and (now_ms - source_ts_ms) > self.config.stale_ms:
+
+        if (
+            not using_primary_interaction_state
+            and source_ts_ms is not None
+            and (now_ms - source_ts_ms) > self.config.stale_ms
+        ):
             stale = True
             degraded = True
             controller_authoritative = False
