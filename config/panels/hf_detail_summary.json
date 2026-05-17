@@ -15,7 +15,8 @@
 
   "bindings": [
     { "id": "qrz", "source": "state", "key": "rt:hf:qrz:selected" },
-    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" }
+    { "id": "spot", "source": "state", "key": "rt:hf:spots:selected_detail" },
+    { "id": "qso_history", "source": "state", "key": "rt:hf:qso_history:selected" }
   ],
 
   "actions": [],

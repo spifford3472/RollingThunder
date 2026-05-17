@@ -470,7 +470,9 @@ function isBrowseCapableType(panelType) {
     t === "node_health_summary" ||
     t === "pota_bands_summary" ||
     t === "pota_parks_summary" ||
-    t === "pota_spots_summary"
+    t === "pota_spots_summary" ||
+    t === "hf_bands_summary" ||
+    t === "hf_spots_summary"
   );
 }
 
@@ -759,6 +761,14 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     if (layer === "browse" && browseObj?.panel) {
       navMode = "PANEL_BROWSE";
       browsePanelId = String(browseObj.panel || "").trim() || null;
+
+      // In browse mode, the browsed panel is the visually active panel.
+      // Without this, the encoder can correctly control hf_spots_summary
+      // while the old hf_bands_summary slot remains highlighted.
+      if (browsePanelId && typeof nav?.setActivePanel === "function") {
+        nav.setActivePanel(browsePanelId);
+      }
+
       syncBrowseIndicator({ rootEl: root, browsePanelId, slotByPanelId });
       return;
     }
@@ -1022,8 +1032,23 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
   let panelRefreshQueuedKeys = null;
 
   async function refreshAffectedPanelsFromChangedKeys(changedKeys) {
+    const normalizedKeys = Array.isArray(changedKeys)
+      ? changedKeys.map((k) => String(k || "").trim()).filter(Boolean)
+      : [];
+
+    if (normalizedKeys.length === 0) return;
+
+    const focusOrBrowseChanged = normalizedKeys.some((key) =>
+      key === "rt:ui:focus" ||
+      key === "rt:ui:browse" ||
+      key.startsWith("rt:ui:browse:")
+    );
+
     if (panelRefreshInflight) {
-      panelRefreshQueuedKeys = changedKeys;
+      panelRefreshQueuedKeys = Array.from(new Set([
+        ...(Array.isArray(panelRefreshQueuedKeys) ? panelRefreshQueuedKeys : []),
+        ...normalizedKeys,
+      ]));
       return;
     }
 
@@ -1031,14 +1056,46 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
 
     try {
       const affectedPanelIds = Array.from(slotByPanelId.keys()).filter((panelId) =>
-        panelDependsOnChangedKeys(panelId, changedKeys)
+        panelDependsOnChangedKeys(panelId, normalizedKeys)
       );
 
-      if (affectedPanelIds.length === 0) return;
+      // Defensive HF fallback:
+      // The controller/projector is publishing the correct HF data keys, but if
+      // the binding map misses one of them, force mounted HF panels to refresh.
+      // This preserves the POTA refresh behavior above.
+      const hfDataKeys = new Set([
+        "rt:hf:bands",
+        "rt:hf:context",
+        "rt:hf:spots:selected",
+        "rt:hf:spots:selected_detail",
+        "rt:hf:qrz:selected",
+        "rt:hf:qso_history:selected",
+      ]);
 
-      await Promise.all(
-        affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
-      );
+      const hfChanged = normalizedKeys.some((key) => hfDataKeys.has(key));
+
+      if (hfChanged) {
+        for (const panelId of [
+          "hf_bands_summary",
+          "hf_spots_summary",
+          "hf_detail_summary",
+          "hf_map_summary",
+        ]) {
+          if (slotByPanelId.has(panelId) && !affectedPanelIds.includes(panelId)) {
+            affectedPanelIds.push(panelId);
+          }
+        }
+      }
+
+      if (affectedPanelIds.length > 0) {
+        await Promise.all(
+          affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
+        );
+      }
+
+      if (focusOrBrowseChanged) {
+        rerenderPanelsFromUiState();
+      }
     } finally {
       panelRefreshInflight = false;
 

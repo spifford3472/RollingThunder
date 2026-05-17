@@ -93,6 +93,7 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:hf:spots:selected",
     "rt:hf:spots:selected_detail",
     "rt:hf:qrz:selected",
+    "rt:hf:qso_history:selected",
 }
 
 PROJECTED_KEYS = {
@@ -376,19 +377,30 @@ class UIStateProjector:
             *self.config.system_health_keys,
         }
 
+        affected = False
+
         for key in keys:
             if not isinstance(key, str):
                 continue
+
             if key in DEFAULT_BINDING_REFRESH_KEYS:
                 self._pending_binding_refresh_keys.add(key)
-                return True
+                affected = True
+                continue
+
             if key in relevant_exact:
-                return True
+                affected = True
+                continue
+
             if key.startswith(POTA_SPOT_STATUS_KEY_PREFIX):
-                return True
+                affected = True
+                continue
+
             if key == "rt:system:nodes" or key.startswith("rt:nodes:"):
-                return True
-        return False
+                affected = True
+                continue
+
+        return affected
 
     def _acquire_writer_lock(self) -> bool:
         current = self.redis_client.get(self.config.lock_key)
@@ -1132,12 +1144,18 @@ class UIStateProjector:
     ) -> str:
         if modal is not None:
             return "modal"
+
+        # Browse is a user-entered interaction mode. It must stay projected as
+        # browse until the controller explicitly clears browse via cancel/back/
+        # page change/etc. Do not let stale/degraded authority override it.
+        if browse is not None:
+            return "browse"
+
         if bool(authority.get("degraded")) or bool(authority.get("stale")) or not bool(
             authority.get("controller_authoritative", True)
         ):
             return "degraded"
-        if browse is not None:
-            return "browse"
+
         return "default"
 
     @staticmethod
@@ -1630,12 +1648,15 @@ class UIStateProjector:
 
         # Browse state.
         if browse_active or layer == "browse":
+            # Browse is sticky until explicitly exited. Nothing below this point
+            # should overwrite browse LEDs due to stale/degraded authority.
             leds["page"] = "off"
             leds["back"] = "off"
             leds["mode"] = "off"
             leds["info"] = "off"
             leds["cancel"] = "on"
             leds["primary"] = "on" if self._has_browse_selection(browse_obj) else "off"
+            return leds
 
         # Modal state.
         if modal_active or layer == "modal":

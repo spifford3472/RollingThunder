@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -40,9 +41,15 @@ ALLOW_NODE_REBOOT = (
 HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
 HF_SPOTS_SELECTED_KEY = os.environ.get("RT_HF_SPOTS_SELECTED_KEY", "rt:hf:spots:selected")
 HF_SELECTED_DETAIL_KEY = os.environ.get("RT_HF_SELECTED_DETAIL_KEY", "rt:hf:spots:selected_detail")
+HF_QSO_HISTORY_SELECTED_KEY = os.environ.get(
+    "RT_HF_QSO_HISTORY_SELECTED_KEY",
+    "rt:hf:qso_history:selected",
+)
+HF_BANDS_KEY = os.environ.get("RT_HF_BANDS_KEY", "rt:hf:bands")
 
 # POTA UI context key in Redis, used by both the context manager and the UI intent worker.
 POTA_CONTEXT_KEY = os.environ.get("RT_POTA_CONTEXT_KEY", "rt:pota:context")
+
 
 POTA_BAND_ORDER = {
     "160m", "80m", "60m", "40m", "30m",
@@ -51,10 +58,33 @@ POTA_BAND_ORDER = {
 }
 
 RT_RADIO_SERVICES_DIR = Path("/opt/rollingthunder/nodes/rt-radio/services")
+RT_CONTROLLER_SERVICES_DIR = Path("/opt/rollingthunder/services")
+
+_qso_history_module = None
+
+
+def _load_qso_history_module():
+    """
+    Lazy-load controller-only SQLite QSO history support.
+
+    This keeps rt-radio from failing import at startup. Only rt-controller
+    should call this from HF selection handlers.
+    """
+    global _qso_history_module
+
+    if _qso_history_module is not None:
+        return _qso_history_module
+
+    if str(RT_CONTROLLER_SERVICES_DIR) not in sys.path:
+        sys.path.insert(0, str(RT_CONTROLLER_SERVICES_DIR))
+
+    import qso_history
+
+    _qso_history_module = qso_history
+    return _qso_history_module
 
 _radio_runtime: Dict[str, Any] | None = None
 _radio_runtime_error: str | None = None
-
 
 def _load_radio_runtime() -> Dict[str, Any]:
     """
@@ -166,6 +196,63 @@ def _hf_publish_state_changed(r: redis.Redis, keys: list[str]) -> None:
         })
     )
 
+def _hf_update_bands_selected_id(r: redis.Redis, band: str) -> None:
+    band = str(band or "").strip()
+    if not band:
+        return
+
+    model = _json_get(r, HF_BANDS_KEY, {}) or {}
+    if not isinstance(model, dict):
+        return
+
+    model["selected_id"] = band
+    model["selected_band"] = band
+    model["updated_at_ms"] = now_ms()
+
+    items = model.get("items") or []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(
+                item.get("id")
+                or item.get("band")
+                or item.get("label")
+                or item.get("name")
+                or ""
+            ).strip()
+
+            item["selected"] = item_id == band
+
+    _json_set(r, HF_BANDS_KEY, model)
+
+def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
+    """
+    Controller-side SQLite lookup for selected HF callsign.
+
+    Must never run on rt-radio. Must never prevent tuning.
+    """
+    if NODE_ID != "rt-controller":
+        return
+
+    try:
+        qso_history = _load_qso_history_module()
+
+        call = str(callsign or "").strip().upper()
+
+        payload = qso_history.history_payload_for_callsign(
+            None,
+            call,
+            limit=5,
+            updated_at_ms=now_ms(),
+        )
+
+        _json_set(r, HF_QSO_HISTORY_SELECTED_KEY, payload)
+        _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
+
+    except Exception:
+        # QSO history lookup is optional. Never block HF/POTA control flow.
+        pass
 
 def _utc_date_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -260,35 +347,6 @@ def handle_ui_browse_delta(r: redis.Redis, params: Dict[str, Any]) -> None:
     state["selected_index"] = selected
 
     # --- NEW: auto tune on selection change ---
-#    try:
-#        # Get spots list for current band
-#        spots_key = f"rt:pota:ui:ssb:spots:selected"
-#        raw_spots = r.get(spots_key)
-#        spots = json.loads(raw_spots) if raw_spots else []
-#
-#        if isinstance(spots, list) and 0 <= selected < len(spots):
-#            spot = spots[selected]
-#
-#            freq_hz = int(spot.get("freq_hz", 0))
-#            mode = str(spot.get("mode", "SSB")).strip()
-#            band = str(spot.get("band", "")).strip()
-#
-#            if freq_hz > 0:
-#                intent = {
-#                    "intent": "radio.tune",
-#                    "params": {
-#                        "freq_hz": freq_hz,
-#                        "mode": mode,
-#                        "band": band,
-#                        "autotune": False,
-#                        "nodeId": "rt-radio"
-#                    }
-#                }
-#                r.publish("rt:ui:intents", json.dumps(intent, separators=(",", ":")))
-#
-#    except Exception:
-#        pass
-
     state["window_start"] = window_start
     state["window_size"] = window_size
     state["updated_at_ms"] = int(time.time() * 1000)
@@ -1234,6 +1292,7 @@ def main() -> None:
 
                 if not band:
                     continue
+                _hf_update_bands_selected_id(r, band)                                
 
                 HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
 
@@ -1275,10 +1334,17 @@ def main() -> None:
                 _json_set(r, "rt:hf:spots:selected", spots_model)
                 _json_set(r, "rt:hf:spots:selected_detail", detail)
 
+                _hf_update_qso_history_for_callsign(
+                    r,
+                    str(detail.get("callsign") or detail.get("call") or ""),
+                )
+
                 _hf_publish_state_changed(r, [
+                    HF_BANDS_KEY,
                     "rt:hf:context",
                     "rt:hf:spots:selected",
                     "rt:hf:spots:selected_detail",
+                    HF_QSO_HISTORY_SELECTED_KEY,
                 ])
 
                 freq = selected.get("freq_hz")
@@ -1328,7 +1394,19 @@ def main() -> None:
                 selected = _hf_selected_spot(spots_model, selected_id)
 
                 if not selected:
-                    return
+                    _json_set(
+                        r,
+                        HF_QSO_HISTORY_SELECTED_KEY,
+                        {
+                            "source": "sqlite",
+                            "callsign": "",
+                            "items": [],
+                            "limit": 5,
+                            "updated_at_ms": now_ms(),
+                        },
+                    )
+                    _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
+                    continue
 
                 selected_id = selected.get("id")
                 band = band or spots_model.get("band") or selected.get("band")
@@ -1353,6 +1431,24 @@ def main() -> None:
                     "rt:hf:spots:selected_detail",
                 ])
 
+                _hf_update_qso_history_for_callsign(
+                    r,
+                    str(
+                        detail.get("callsign")
+                        or detail.get("call")
+                        or params.get("callsign")
+                        or params.get("call")
+                        or ""
+                    ),
+                )
+
+                _hf_publish_state_changed(r, [
+                    "rt:hf:context",
+                    "rt:hf:spots:selected",
+                    "rt:hf:spots:selected_detail",
+                    HF_QSO_HISTORY_SELECTED_KEY,
+                ])
+
                 if detail.get("freq_hz"):
                     tune_payload = {
                         "intent": "radio.tune",
@@ -1373,7 +1469,7 @@ def main() -> None:
                     }
                     r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
 
-                return   
+                continue
 
             elif intent == "hf.spot.outcome":
                 handle_hf_spot_outcome(r, params)                 

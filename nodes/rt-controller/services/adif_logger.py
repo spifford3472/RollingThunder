@@ -17,6 +17,7 @@ import qso_normalize
 import qso_rules
 import qso_storage
 import rt_config
+import qso_history
 
 
 REDIS_HOST = os.environ.get("RT_REDIS_HOST", "127.0.0.1")
@@ -338,6 +339,22 @@ def _render_adif_text(records: list[str]) -> str:
         return ""
     return "\n".join(records) + "\n"
 
+def _best_effort_insert_qso_history(qso: Mapping[str, Any]) -> None:
+    try:
+        mode = str(qso.get("submode") or qso.get("mode") or "").strip().upper()
+        qso_history.insert_qso_history(
+            None,
+            callsign=qso.get("call"),
+            freq_hz=qso.get("freq_hz"),
+            band=qso.get("band"),
+            mode=mode,
+            qso_utc=qso.get("time_on_utc") or qso.get("created_utc") or utc_now_iso_z(),
+            source="radio.log_qso",
+            comment=qso.get("comment") or "",
+        )
+    except Exception:
+        logger.exception("best-effort SQLite QSO history insert failed; ADIF/JSONL log remains successful")
+
 
 def process_radio_log_qso_intent(
     r: redis.Redis,
@@ -447,6 +464,7 @@ def process_radio_log_qso_intent(
     adif_records = qso_adif.canonical_qso_to_adif_records(ruled_qso)
     logger.debug("ADIF RECORDS %r", adif_records)
     qso_storage.append_adif_text(_render_adif_text(adif_records))
+    _best_effort_insert_qso_history(ruled_qso)
 
     _publish_success(
         r,

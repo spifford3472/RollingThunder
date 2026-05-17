@@ -1164,6 +1164,28 @@ def resolve_hf_spots_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
         "get_id": get_id,
     }
 
+def hf_selected_spots_model_matches_band(r: redis.Redis, band: str) -> bool:
+    band = str(band or "").strip()
+    if not band:
+        return False
+
+    raw = get_json_or_value(r, "rt:hf:spots:selected")
+    model = as_dict(raw)
+    if not model:
+        return False
+
+    model_band = str(model.get("band") or "").strip()
+    if model_band == band:
+        return True
+
+    items = as_list(model.get("items"))
+    if not items:
+        return False
+
+    first = as_dict(items[0])
+    first_band = str(first.get("band") or "").strip()
+    return first_band == band
+
 def resolve_alerts_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
     raw = get_json_or_value(r, "rt:alerts:active")
 
@@ -1667,6 +1689,8 @@ def run_main_loop():
 
                                 state["pending_action"] = {
                                     "type": "tune_first_spot_after_band_select",
+                                    "page": "pota",
+                                    "panel": "pota_spots_summary",
                                     "band": new_band,
                                 }
 
@@ -1678,6 +1702,8 @@ def run_main_loop():
                                     state["modal"] = build_band_tune_reminder_modal(new_band)
                                     state["pending_action"] = {
                                         "type": "tune_first_spot_after_reminder",
+                                        "page": "pota",
+                                        "panel": "pota_spots_summary",
                                         "band": new_band,
                                         "ts_ms": now_ms(),
                                     }
@@ -1694,10 +1720,20 @@ def run_main_loop():
 
                                 publish_hf_select_band_intent(r, item)
 
-                                state["focus"] = "hf_spots_summary"
-                                state["browse"] = None
+                                # Do NOT switch focus/browse yet.
+                                # ui_intent_worker must first update rt:hf:spots:selected.
+                                # The bottom pending_action block will enter hf_spots_summary
+                                # only after the selected spots model actually matches this band.
+                                state["pending_action"] = {
+                                    "type": "enter_hf_spots_after_band_select",
+                                    "page": "hf",
+                                    "panel": "hf_spots_summary",
+                                    "band": band,
+                                    "ts_ms": now_ms(),
+                                }
+
                                 state_changed = True
-                                publish_ui_result(r, intent)
+                                publish_ui_result(r, intent, "hf_band_selected")
 
                             elif state["page"] == "hf" and panel_id == "hf_spots_summary":
                                 publish_hf_select_spot_intent(r, item)
@@ -1719,82 +1755,71 @@ def run_main_loop():
                                 state_changed = True
                                 publish_ui_result(r, intent)                                
 
+
                     elif intent == "ui.encoder.press":
                         # Encoder press is a panel-local shortcut. It must not confirm modals.
                         if state.get("modal") is not None:
                             publish_ui_result(r, intent, "ignored_modal_active")
                             continue
 
-                        if is_browse_active(state):
-                            browse = as_dict(state.get("browse"))
-                            panel_id = str(browse.get("panel") or "").strip()
+                        if not is_browse_active(state):
+                            publish_ui_result(r, intent, "ignored_no_browse")
+                            continue
 
-                            if state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                model = resolve_browse_model(r, state["page"], panel_id)
-                                if not model:
-                                    continue
+                        browse = as_dict(state.get("browse"))
+                        panel_id = str(browse.get("panel") or "").strip()
 
-                                try:
-                                    selected_index = int(browse.get("selected_index", 0))
-                                except Exception:
-                                    selected_index = 0
+                        model = resolve_browse_model(r, state["page"], panel_id)
+                        if not model:
+                            publish_ui_result(r, intent, "ignored_no_model")
+                            continue
 
-                                item = selected_item_from_model(model, selected_index)
-                                if item:
-                                    publish_radio_tune_intent(r, item)
-                                    publish_ui_result(r, intent)
+                        try:
+                            selected_index = int(browse.get("selected_index", 0))
+                        except Exception:
+                            selected_index = 0
 
-                            elif state["page"] == "hf" and panel_id == "hf_bands_summary":
-                                model = resolve_browse_model(r, state["page"], panel_id)
-                                if not model:
-                                    continue
+                        item = selected_item_from_model(model, selected_index)
+                        if not item:
+                            publish_ui_result(r, intent, "ignored_no_item")
+                            continue
 
-                                try:
-                                    selected_index = int(browse.get("selected_index", 0))
-                                except Exception:
-                                    selected_index = 0
+                        if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                            # Encoder press tunes only. OK still opens/logs outcome modal.
+                            publish_radio_tune_intent(r, item)
+                            publish_ui_result(r, intent, "pota_spot_tuned")
+                            continue
 
-                                item = selected_item_from_model(model, selected_index)
-                                if item:
-                                    publish_hf_select_band_intent(r, item)
+                        if state["page"] == "hf" and panel_id == "hf_spots_summary":
+                            # Encoder press selects/tunes via the controller-owned HF handler.
+                            # Do not publish radio.tune here; hf.select_spot owns detail/history/tune.
+                            # Do not rebuild/clear browse; stay exactly where the selector is.
+                            publish_hf_select_spot_intent(r, item)
+                            publish_ui_result(r, intent, "hf_spot_selected")
+                            continue
+                        
+                        if state["page"] == "hf" and panel_id == "hf_bands_summary":
+                            band = hf_band_item_id(item)
+                            if not band:
+                                continue
 
-                                    state["focus"] = "hf_spots_summary"
-                                    state["browse"] = None
-                                    state_changed = True
-                                    publish_ui_result(r, intent)
+                            publish_hf_select_band_intent(r, item)
 
-                            elif state["page"] == "hf" and panel_id == "hf_spots_summary":
-                                model = resolve_browse_model(r, state["page"], panel_id)
-                                if not model:
-                                    continue
+                            # Same delayed-entry flow as OK on an HF band.
+                            # Keep current band browse active until the new spots model is ready.
+                            state["pending_action"] = {
+                                "type": "enter_hf_spots_after_band_select",
+                                "page": "hf",
+                                "panel": "hf_spots_summary",
+                                "band": band,
+                                "ts_ms": now_ms(),
+                            }
 
-                                try:
-                                    selected_index = int(browse.get("selected_index", 0))
-                                except Exception:
-                                    selected_index = 0
+                            state_changed = True
+                            publish_ui_result(r, intent, "hf_band_selected")
+                            continue
 
-                                item = selected_item_from_model(model, selected_index)
-                                if item:
-                                    publish_hf_select_spot_intent(r, item)
 
-                                    # Tune only. Do not open outcome modal on encoder press.
-                                    # hf.select_spot also updates selected detail; this direct tune keeps response fast.
-                                    publish_intent(
-                                        r,
-                                        "radio.tune",
-                                        {
-                                            "freq_hz": int(item.get("freq_hz") or item.get("frequency") or 0),
-                                            "band": str(item.get("band") or "").strip(),
-                                            "mode": str(item.get("mode") or "").strip(),
-                                            "source": "hf",
-                                            "spot_id": hf_spot_item_id(item),
-                                            "callsign": str(item.get("callsign") or item.get("call") or "").strip(),
-                                            "nodeId": "rt-radio",
-                                        },
-                                    )
-
-                                    state_changed = True
-                                    publish_ui_result(r, intent)
                     elif intent == "ui.browse.enter":
                         panel_id = state.get("focus")
 
@@ -1894,9 +1919,29 @@ def run_main_loop():
                                     state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
                                     state_changed = True
 
+        now = now_ms()
+
         pending_action = as_dict(state.get("pending_action"))
 
-        if (
+        if pending_action.get("type") == "enter_hf_spots_after_band_select":
+            target_band = str(pending_action.get("band") or "").strip()
+
+            if hf_selected_spots_model_matches_band(r, target_band):
+                spots_model = resolve_hf_spots_browse_model(r)
+
+                if spots_model:
+                    state["focus"] = "hf_spots_summary"
+                    state["browse"] = build_browse_state(
+                        "hf",
+                        "hf_spots_summary",
+                        spots_model,
+                        0,
+                    )
+
+                    state["pending_action"] = None
+                    state_changed = True
+
+        elif (
             pending_action.get("type") == "tune_first_spot_after_band_select"
             or (
                 pending_action.get("type") == "tune_first_spot_after_reminder"
@@ -1915,15 +1960,13 @@ def run_main_loop():
                     0,
                 )
 
-                # Tune first spot (ONLY here)
+                # Tune first spot
                 first_spot = selected_item_from_model(spots_model, 0)
                 if first_spot:
                     publish_radio_tune_intent(r, first_spot)
 
                 state["pending_action"] = None
                 state_changed = True
-
-        now = now_ms()
 
         # Controller-owned services model refresh cadence.
         # HOME active: refresh every 60s.
@@ -1954,26 +1997,7 @@ def run_main_loop():
 
             if modal_type == "band_tune_reminder" and auto_close_at_ms and now >= auto_close_at_ms:
                 state["modal"] = None
-
-                pending = as_dict(state.get("pending_action"))
-                if pending.get("type") in ("tune_first_spot_after_band_select", "tune_first_spot_after_reminder"):
-                    spots_model = resolve_pota_spots_browse_model(r)
-
-                    if spots_model:
-                        state["focus"] = "pota_spots_summary"
-                        state["browse"] = build_browse_state(
-                            "pota",
-                            "pota_spots_summary",
-                            spots_model,
-                            0,
-                        )
-
-                        first_spot = selected_item_from_model(spots_model, 0)
-                        if first_spot:
-                            publish_radio_tune_intent(r, first_spot)
-
-                    state["pending_action"] = None
-                    state_changed = True
+                state_changed = True
 
         if state_changed:
             save_state(r, state)
