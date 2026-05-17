@@ -38,6 +38,7 @@ OPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/ops/"
 COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
 RT_TOOLS="/opt/rollingthunder/tools"
 POTA_PARK_DATA_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/POTA/"
+HF_FLAGS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/FLAGS/"
 
 
 # Thin-client UI/runtime sources (served by rt-controller)
@@ -52,6 +53,7 @@ STATE_ENV_DST="/etc/rollingthunder/service_state_publisher.env"
 COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 POTA_PARK_DATA_DST_DIR="/opt/rollingthunder/data/POTA/"
+HF_FLAGS_DST_DIR="/opt/rollingthunder/nodes/rt-controller/data/FLAGS/"
 
 # Thin-client UI/runtime destinations (served by rt-controller)
 UI_DST_DIR="/opt/rollingthunder/ui/"
@@ -115,6 +117,13 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chmod -R 755 /opt/rollingthunder/data/POTA
 "
 
+echo "[push] Ensure HF flags data dir exists (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  sudo mkdir -p '${HF_FLAGS_DST_DIR}';
+  sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/nodes/rt-controller/data;
+  sudo chmod -R 755 /opt/rollingthunder/nodes/rt-controller/data
+"
+
 # Common rsync excludes
 RSYNC_EXCLUDES=(
   --exclude='__pycache__/'
@@ -124,6 +133,7 @@ RSYNC_EXCLUDES=(
   --exclude='.git/'
   --exclude='.dev/'
 )
+
 
 echo "[push] Sync common python services -> ${COMMON_SERVICES_DST_DIR} (user-owned)"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
@@ -146,6 +156,9 @@ fail_missing_dir "${NODE_SRC_DIR}"
 fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing_dir "${COMMON_SERVICES_SRC_DIR}"
 fail_missing_dir "${POTA_PARK_DATA_SRC_DIR}"
+fail_missing_dir "${HF_FLAGS_SRC_DIR}"
+fail_missing "${HF_FLAGS_SRC_DIR}/4x3/us.svg"
+fail_missing "${HF_FLAGS_SRC_DIR}/4x3/ie.svg"
 fail_missing "${COMMON_SERVICES_SRC_DIR}/node_presence_publisher.py"
 fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
@@ -182,6 +195,11 @@ echo "[push] Sync POTA park data files dir ${POTA_PARK_DATA_SRC_DIR} -> ${POTA_P
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${POTA_PARK_DATA_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${POTA_PARK_DATA_DST_DIR}"
+
+echo "[push] Sync HF flag data files dir ${HF_FLAGS_SRC_DIR} -> ${HF_FLAGS_DST_DIR}"
+rsync -avz --checksum --itemize-changes --delete "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${HF_FLAGS_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${HF_FLAGS_DST_DIR}"
 
 echo "[push] Sync global tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
@@ -438,6 +456,14 @@ PY
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/api/v1/ui/nodes" 5 1.5
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/ui/index.html" 5 1.5
   curl_smoke_retry "${TARGET_HOST}" "${TARGET_USER}" "http://127.0.0.1:8625/config/app.json" 5 1.5
+
+  echo "[smoke] HF flag assets deployed"
+  ssh "${TARGET_USER}@${TARGET_HOST}" '
+    set -e
+    test -s /opt/rollingthunder/nodes/rt-controller/data/FLAGS/4x3/us.svg
+    test -s /opt/rollingthunder/nodes/rt-controller/data/FLAGS/4x3/ie.svg
+    echo "hf-flags=ok"
+  '
 
   echo "[smoke] Redis auth and controller presence"
   ssh "${TARGET_USER}@${TARGET_HOST}" '

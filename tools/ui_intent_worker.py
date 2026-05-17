@@ -46,9 +46,14 @@ HF_QSO_HISTORY_SELECTED_KEY = os.environ.get(
     "RT_HF_QSO_HISTORY_SELECTED_KEY",
     "rt:hf:qso_history:selected",
 )
+
 HF_QRZ_SELECTED_KEY = os.environ.get(
     "RT_HF_QRZ_SELECTED_KEY",
     "rt:hf:qrz:selected",
+)
+HF_MAP_SELECTED_KEY = os.environ.get(
+    "RT_HF_MAP_SELECTED_KEY",
+    "rt:hf:map:selected",
 )
 HF_QRZ_API_ENABLED = os.environ.get("RT_QRZ_API_ENABLED", "0").strip() == "1"
 HF_BANDS_KEY = os.environ.get("RT_HF_BANDS_KEY", "rt:hf:bands")
@@ -340,9 +345,236 @@ def _hf_qrz_status_payload(callsign: str, status: str, message: str = "") -> Dic
         "updated_at_ms": now_ms(),
     }
 
+def _hf_clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _hf_float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except Exception:
+        return None
+
+
+def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
+    """
+    Return an ISO alpha-2-ish country code when we can safely derive one.
+
+    This is intentionally small and conservative for Phase 2.
+    Phase 3 can replace/extend this with QRZ DXCC metadata or a real mapping table.
+    """
+    explicit = (
+        _hf_clean_text(payload.get("country_code"))
+        or _hf_clean_text(payload.get("iso2"))
+        or _hf_clean_text(payload.get("cc"))
+    ).upper()
+
+    if len(explicit) == 2 and explicit.isalpha():
+        return explicit
+
+    country = _hf_clean_text(payload.get("country")).lower()
+
+    common = {
+        "united states": "US",
+        "united states of america": "US",
+        "usa": "US",
+        "canada": "CA",
+        "mexico": "MX",
+        "ireland": "IE",
+        "england": "GB",
+        "scotland": "GB",
+        "wales": "GB",
+        "northern ireland": "GB",
+        "united kingdom": "GB",
+        "great britain": "GB",
+        "france": "FR",
+        "germany": "DE",
+        "spain": "ES",
+        "italy": "IT",
+        "portugal": "PT",
+        "netherlands": "NL",
+        "belgium": "BE",
+        "switzerland": "CH",
+        "austria": "AT",
+        "sweden": "SE",
+        "norway": "NO",
+        "finland": "FI",
+        "denmark": "DK",
+        "poland": "PL",
+        "czech republic": "CZ",
+        "slovakia": "SK",
+        "hungary": "HU",
+        "romania": "RO",
+        "greece": "GR",
+        "ukraine": "UA",
+        "japan": "JP",
+        "china": "CN",
+        "south korea": "KR",
+        "republic of korea": "KR",
+        "australia": "AU",
+        "new zealand": "NZ",
+        "brazil": "BR",
+        "argentina": "AR",
+        "chile": "CL",
+        "south africa": "ZA",
+    }
+
+    return common.get(country, "")
+
+
+def _hf_map_zoom_for_country(country_code: str, country: str) -> int:
+    """
+    Coarse country/region-level zoom hint for a future static map provider.
+
+    The renderer does not use this for decisions. It is projected data only.
+    """
+    code = _hf_clean_text(country_code).upper()
+    name = _hf_clean_text(country).lower()
+
+    large = {
+        "US", "CA", "MX", "BR", "AR", "CL", "AU", "CN", "RU", "IN", "ZA"
+    }
+
+    small = {
+        "IE", "GB", "NL", "BE", "CH", "AT", "DK", "LU"
+    }
+
+    if code in large:
+        return 4
+    if code in small:
+        return 6
+    if name in ("united states", "canada", "australia", "china", "brazil"):
+        return 4
+    return 5
+
+
+def _hf_map_payload_from_qrz(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build rt:hf:map:selected from already-available QRZ selected data.
+
+    Phase 2 intentionally does not call map, flag, geocoder, or tile services.
+    It only projects a render-ready/fallback model for the dumb UI renderer.
+    """
+    payload = payload or {}
+
+    call = _hf_clean_text(
+        payload.get("callsign")
+        or payload.get("call")
+    ).upper()
+
+    qrz_status = _hf_clean_text(payload.get("status")) or "unknown"
+    qrz_message = _hf_clean_text(payload.get("message"))
+
+    country = _hf_clean_text(
+        payload.get("country")
+        or payload.get("land")
+    )
+
+    country_code = _hf_country_code_from_qrz(payload)
+
+    lat = _hf_float_or_none(payload.get("lat"))
+    lon = _hf_float_or_none(payload.get("lon"))
+
+    out: Dict[str, Any] = {
+        "source": "hf_map_enricher",
+        "callsign": call,
+        "status": "pending",
+        "message": "",
+        "country": country,
+        "country_code": country_code,
+        "flag": {
+            "status": "unavailable",
+            "label": "FLAG UNAVAILABLE",
+        },
+        "map": {
+            "status": "unavailable",
+            "label": "MAP UNAVAILABLE",
+        },
+        "updated_at_ms": now_ms(),
+    }
+
+    out["flag"] = {
+        "status": "ok",
+        "url": f"/ui/hf/flags/4x3/{country_code.lower()}.svg",
+        "label": country or country_code,
+    }
+
+    if lat is not None and lon is not None:
+        zoom = _hf_map_zoom_for_country(country_code, country)
+        out["map"] = {
+            "status": "coordinates",
+            "lat": lat,
+            "lon": lon,
+            "pin_lat": lat,
+            "pin_lon": lon,
+            "zoom": zoom,
+            "provider": "none",
+            "label": "MAP UNAVAILABLE",
+        }
+
+    if country or country_code or lat is not None or lon is not None:
+        out["status"] = "partial"
+        out["message"] = qrz_message
+    else:
+        out["status"] = "unavailable"
+        out["message"] = qrz_message or "LOCATION NOT AVAILABLE"
+
+    if qrz_status in ("not_configured", "not_found", "unavailable", "no_callsign"):
+        out["status"] = "unavailable"
+        out["message"] = qrz_message or "LOCATION NOT AVAILABLE"
+
+    return out
+
+
+def _hf_write_map_selected_from_qrz(r: redis.Redis, payload: Dict[str, Any]) -> None:
+    try:
+        map_payload = _hf_map_payload_from_qrz(payload)
+        _json_set(r, HF_MAP_SELECTED_KEY, map_payload)
+        _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+    except Exception as exc:
+        try:
+            fallback = {
+                "source": "hf_map_enricher",
+                "callsign": _hf_clean_text((payload or {}).get("callsign")).upper(),
+                "status": "unavailable",
+                "message": "LOCATION NOT AVAILABLE",
+                "country": "",
+                "country_code": "",
+                "flag": {
+                    "status": "unavailable",
+                    "label": "FLAG UNAVAILABLE",
+                },
+                "map": {
+                    "status": "unavailable",
+                    "label": "MAP UNAVAILABLE",
+                },
+                "updated_at_ms": now_ms(),
+            }
+            _json_set(r, HF_MAP_SELECTED_KEY, fallback)
+            _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+        except Exception:
+            pass
+
+        try:
+            publish_last_result(r, {
+                "ok": False,
+                "intent": "hf.map.enrich",
+                "reason": "map_enrich_failed",
+                "error": str(exc),
+            })
+        except Exception:
+            pass
 
 def _hf_write_qrz_selected(r: redis.Redis, payload: Dict[str, Any]) -> None:
     _json_set(r, HF_QRZ_SELECTED_KEY, payload)
+    _hf_write_map_selected_from_qrz(r, payload)
     _hf_publish_state_changed(r, [HF_QRZ_SELECTED_KEY])
 
 
@@ -1651,6 +1883,7 @@ def main() -> None:
                     "rt:hf:spots:selected_detail",
                     HF_QSO_HISTORY_SELECTED_KEY,
                     HF_QRZ_SELECTED_KEY,
+                    HF_MAP_SELECTED_KEY,
                 ])
 
                 freq = selected.get("freq_hz")
@@ -1779,6 +2012,7 @@ def main() -> None:
                     "rt:hf:spots:selected_detail",
                     HF_QSO_HISTORY_SELECTED_KEY,
                     HF_QRZ_SELECTED_KEY,
+                    HF_MAP_SELECTED_KEY,
                 ])
 
                 continue
