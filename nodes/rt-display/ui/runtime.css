@@ -819,3 +819,43 @@ body[data-page="pota"] td {
 body[data-page="pota"] .panel-title {
   font-size: 24px;
 }
+
+/*------------------------------------------------------------------*/
+/* HF Pages readability pass - mobile/kiosk friendly                */
+/*------------------------------------------------------------------*/
+/*
+ * HF-only font tuning.
+ * Keep this scoped to HF panels so POTA/home page styling is untouched.
+ * UI remains renderer-only; this is presentation only.
+ */
+.rt-slot[data-panel-id^="hf_"] .rt-slot-body {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.rt-slot[data-panel-id^="hf_"] table {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 20px;
+}
+
+.rt-slot[data-panel-id^="hf_"] th,
+.rt-slot[data-panel-id^="hf_"] td {
+  font-size: 20px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rt-slot[data-panel-id^="hf_"] .rt-muted,
+.rt-slot[data-panel-id^="hf_"] .rt-footer {
+  font-size: 18px;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-detail,
+.rt-slot[data-panel-id="hf_detail_summary"] .rt-detail {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
