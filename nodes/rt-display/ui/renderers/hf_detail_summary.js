@@ -24,6 +24,15 @@ function unwrapItems(value) {
   return Array.isArray(obj.items) ? obj.items : [];
 }
 
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function fmtHistoryLine(item) {
   const qsoUtc = String(item?.qso_utc || "").trim();
   const freq = String(item?.freq || "").trim();
@@ -36,6 +45,17 @@ function fmtHistoryLine(item) {
   return [ts, freq, mode].filter(Boolean).join("  ");
 }
 
+function qrzMessage(qrz) {
+  const status = String(qrz?.status || "").trim();
+
+  if (status === "loading") return "QRZ lookup…";
+  if (status === "not_configured") return "QRZ NOT CONFIGURED";
+  if (status === "unavailable") return "QRZ NOT CURRENTLY AVAILABLE";
+  if (status === "not_found") return "USER NOT IN QRZ";
+  if (status === "no_callsign") return "No selected callsign";
+
+  return String(qrz?.message || "").trim();
+}
 
 export function renderHfDetailSummary(container, panel, data) {
   const qrz = unwrapObject(data?.qrz);
@@ -54,56 +74,61 @@ export function renderHfDetailSummary(container, panel, data) {
   const address = String(qrz?.address || "").trim();
   const country = String(qrz?.country || "").trim();
   const grid = String(qrz?.grid || "").trim();
+  const qrzStatusText = qrzMessage(qrz);
+
+  const image = String(qrz?.image || "").trim();
+  const licenseClass = String(qrz?.class || "").trim();
+  const qslmgr = String(qrz?.qslmgr || "").trim();
 
   const freq = String(spot?.freq || "").trim();
   const mode = String(spot?.mode || "").trim();
   const band = String(spot?.band || "").trim();
   const status = String(spot?.status || "").trim();
 
-  if (!container.__rtHfDetailInit) {
-    container.innerHTML = `
-      <div class="rt-detail">
-        <div class="rt-hf-call" style="font-size:1.6em; font-weight:700;"></div>
-        <div class="rt-hf-subtitle rt-muted"></div>
+  const subtitle =
+    [name, country].filter(Boolean).join(" • ") ||
+    qrzStatusText ||
+    "No QRZ detail";
 
-        <table style="margin-top:.5rem;">
-          <tbody>
-            <tr><th>Freq</th><td class="rt-hf-freq"></td></tr>
-            <tr><th>Mode</th><td class="rt-hf-mode"></td></tr>
-            <tr><th>Band</th><td class="rt-hf-band"></td></tr>
-            <tr><th>Status</th><td class="rt-hf-status"></td></tr>
-            <tr><th>Grid</th><td class="rt-hf-grid"></td></tr>
-            <tr><th>QTH</th><td class="rt-hf-qth"></td></tr>
-          </tbody>
-        </table>
+  const photoHtml = image
+    ? `<img src="${esc(image)}" alt="" style="max-width:72px; max-height:72px; object-fit:cover; border-radius:8px; float:right; margin-left:.5rem;">`
+    : "";
 
-        <div style="margin-top:.65rem;">
-          <div style="font-weight:700;">Last contacts:</div>
-          <div class="rt-hf-qso-history"></div>
+  container.innerHTML = `
+    <div class="rt-detail">
+      ${photoHtml}
+      <div class="rt-hf-call" style="font-size:1.6em; font-weight:700;">${esc(callsign)}</div>
+      <div class="rt-hf-subtitle rt-muted">${esc(subtitle)}</div>
+
+      <table style="margin-top:.5rem;">
+        <tbody>
+          <tr><th>Freq</th><td>${esc(freq || "-")}</td></tr>
+          <tr><th>Mode</th><td>${esc(mode || "-")}</td></tr>
+          <tr><th>Band</th><td>${esc(band || "-")}</td></tr>
+          <tr><th>Status</th><td>${esc(status || "-")}</td></tr>
+          <tr><th>Grid</th><td>${esc(grid || "-")}</td></tr>
+          <tr><th>QTH</th><td>${esc(address || "-")}</td></tr>
+          <tr><th>Class</th><td>${esc(licenseClass || "-")}</td></tr>
+          <tr><th>QSL</th><td>${esc(qslmgr || "-")}</td></tr>
+        </tbody>
+      </table>
+
+      ${
+        qrzStatusText && qrzStatusText !== "QRZ lookup…"
+          ? `<div class="rt-muted" style="margin-top:.45rem;">${esc(qrzStatusText)}</div>`
+          : ""
+      }
+
+      <div style="clear:both; margin-top:.65rem;">
+        <div style="font-weight:700;">Last QSO:</div>
+        <div class="rt-hf-qso-history">
+          ${
+            historyItems.length
+              ? esc(fmtHistoryLine(historyItems[0]))
+              : `<span class="rt-muted">FIRST QSO</span>`
+          }
         </div>
       </div>
-    `;
-    container.__rtHfDetailInit = true;
-  }
-
-  container.querySelector(".rt-hf-call").textContent = callsign;
-  container.querySelector(".rt-hf-subtitle").textContent =
-    [name, country].filter(Boolean).join(" • ") || "No QRZ detail";
-
-  container.querySelector(".rt-hf-freq").textContent = freq || "-";
-  container.querySelector(".rt-hf-mode").textContent = mode || "-";
-  container.querySelector(".rt-hf-band").textContent = band || "-";
-  container.querySelector(".rt-hf-status").textContent = status || "-";
-  container.querySelector(".rt-hf-grid").textContent = grid || "-";
-  container.querySelector(".rt-hf-qth").textContent = address || "-";
-
-  const historyEl = container.querySelector(".rt-hf-qso-history");
-  if (!historyItems.length) {
-    historyEl.innerHTML = `<div class="rt-muted">No previous contacts</div>`;
-  } else {
-    historyEl.innerHTML = historyItems
-      .slice(0, 5)
-      .map((item) => `<div>${fmtHistoryLine(item)}</div>`)
-      .join("");
-  }
+    </div>
+  `;
 }

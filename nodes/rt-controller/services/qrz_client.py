@@ -38,7 +38,7 @@ class QRZClient:
         password: str,
         *,
         base_url: str = QRZ_XML_URL,
-        timeout_sec: float = 10.0,
+        timeout_sec: float = 6.0,
     ) -> None:
         self._username = str(username or "").strip()
         self._password = str(password or "").strip()
@@ -52,6 +52,7 @@ class QRZClient:
         return cls(
             username=os.environ.get("RT_QRZ_USERNAME", ""),
             password=os.environ.get("RT_QRZ_PASSWORD", ""),
+            timeout_sec=float(os.environ.get("RT_QRZ_TIMEOUT_SEC", "6.0")),
         )
 
     def _fetch_xml(self, params: Mapping[str, Any]) -> ET.Element:
@@ -117,10 +118,29 @@ class QRZClient:
                 return {"_session_error": session_error}
             return None
 
+        fname = _first_text(callsign, "qrz:fname")
+        name = _first_text(callsign, "qrz:name")
+        full_name = " ".join([x for x in [fname, name] if x]).strip()
+
         return {
-            "name": _first_text(callsign, "qrz:fname"),
+            "callsign": call,
+            "name": full_name or fname or name,
+            "fname": fname,
+            "lname": name,
+            "addr1": _first_text(callsign, "qrz:addr1"),
+            "addr2": _first_text(callsign, "qrz:addr2"),
             "state": _first_text(callsign, "qrz:state"),
+            "zip": _first_text(callsign, "qrz:zip"),
             "country": _first_text(callsign, "qrz:country"),
+            "grid": _first_text(callsign, "qrz:grid"),
+            "lat": _first_text(callsign, "qrz:lat"),
+            "lon": _first_text(callsign, "qrz:lon"),
+            "image": _first_text(callsign, "qrz:image"),
+            "class": _first_text(callsign, "qrz:class"),
+            "codes": _first_text(callsign, "qrz:codes"),
+            "qslmgr": _first_text(callsign, "qrz:qslmgr"),
+            "email": _first_text(callsign, "qrz:email"),
+            "url": _first_text(callsign, "qrz:url"),
         }
 
     def lookup_callsign(self, call: str) -> Mapping[str, Any] | None:

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import Any, Dict
 from datetime import datetime, timezone
@@ -38,13 +39,18 @@ ALLOW_NODE_REBOOT = (
 )
 
 # HF UI context keys in Redis, used by both the context manager and the UI intent worker.
-HF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
+HHF_CONTEXT_KEY = os.environ.get("RT_HF_CONTEXT_KEY", "rt:hf:context")
 HF_SPOTS_SELECTED_KEY = os.environ.get("RT_HF_SPOTS_SELECTED_KEY", "rt:hf:spots:selected")
 HF_SELECTED_DETAIL_KEY = os.environ.get("RT_HF_SELECTED_DETAIL_KEY", "rt:hf:spots:selected_detail")
 HF_QSO_HISTORY_SELECTED_KEY = os.environ.get(
     "RT_HF_QSO_HISTORY_SELECTED_KEY",
     "rt:hf:qso_history:selected",
 )
+HF_QRZ_SELECTED_KEY = os.environ.get(
+    "RT_HF_QRZ_SELECTED_KEY",
+    "rt:hf:qrz:selected",
+)
+HF_QRZ_API_ENABLED = os.environ.get("RT_QRZ_API_ENABLED", "0").strip() == "1"
 HF_BANDS_KEY = os.environ.get("RT_HF_BANDS_KEY", "rt:hf:bands")
 
 # POTA UI context key in Redis, used by both the context manager and the UI intent worker.
@@ -61,7 +67,10 @@ RT_RADIO_SERVICES_DIR = Path("/opt/rollingthunder/nodes/rt-radio/services")
 RT_CONTROLLER_SERVICES_DIR = Path("/opt/rollingthunder/services")
 
 _qso_history_module = None
-
+_qrz_lookup_module = None
+_qrz_client_module = None
+_qrz_threads: dict[str, float] = {}
+_qrz_threads_lock = threading.Lock()
 
 def _load_qso_history_module():
     """
@@ -85,6 +94,43 @@ def _load_qso_history_module():
 
 _radio_runtime: Dict[str, Any] | None = None
 _radio_runtime_error: str | None = None
+
+def _load_qrz_lookup_module():
+    """
+    Lazy-load controller-side QRZ cache support.
+
+    This keeps shared workers on non-controller nodes from depending on QRZ.
+    """
+    global _qrz_lookup_module
+
+    if _qrz_lookup_module is not None:
+        return _qrz_lookup_module
+
+    if str(RT_CONTROLLER_SERVICES_DIR) not in sys.path:
+        sys.path.insert(0, str(RT_CONTROLLER_SERVICES_DIR))
+
+    import qrz_lookup
+
+    _qrz_lookup_module = qrz_lookup
+    return _qrz_lookup_module
+
+
+def _load_qrz_client_module():
+    """
+    Lazy-load controller-side QRZ XML client.
+    """
+    global _qrz_client_module
+
+    if _qrz_client_module is not None:
+        return _qrz_client_module
+
+    if str(RT_CONTROLLER_SERVICES_DIR) not in sys.path:
+        sys.path.insert(0, str(RT_CONTROLLER_SERVICES_DIR))
+
+    import qrz_client
+
+    _qrz_client_module = qrz_client
+    return _qrz_client_module
 
 def _load_radio_runtime() -> Dict[str, Any]:
     """
@@ -231,14 +277,23 @@ def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
     Controller-side SQLite lookup for selected HF callsign.
 
     Must never run on rt-radio. Must never prevent tuning.
+    Must always update rt:hf:qso_history:selected for panel 4, even on failure.
     """
     if NODE_ID != "rt-controller":
         return
 
+    call = str(callsign or "").strip().upper()
+
+    fallback_payload = {
+        "source": "sqlite",
+        "callsign": call,
+        "items": [],
+        "limit": 5,
+        "updated_at_ms": now_ms(),
+    }
+
     try:
         qso_history = _load_qso_history_module()
-
-        call = str(callsign or "").strip().upper()
 
         payload = qso_history.history_payload_for_callsign(
             None,
@@ -247,12 +302,202 @@ def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
             updated_at_ms=now_ms(),
         )
 
+        if not isinstance(payload, dict):
+            payload = fallback_payload
+
+        payload["callsign"] = call
+
         _json_set(r, HF_QSO_HISTORY_SELECTED_KEY, payload)
         _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
 
+    except Exception as exc:
+        fallback_payload["status"] = "unavailable"
+        fallback_payload["message"] = "QSO HISTORY NOT CURRENTLY AVAILABLE"
+
+        try:
+            _json_set(r, HF_QSO_HISTORY_SELECTED_KEY, fallback_payload)
+            _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
+        except Exception:
+            pass
+
+        try:
+            publish_last_result(r, {
+                "ok": False,
+                "intent": "hf.qso_history.lookup",
+                "callsign": call,
+                "reason": "qso_history_lookup_failed",
+                "error": str(exc),
+            })
+        except Exception:
+            pass
+
+def _hf_qrz_status_payload(callsign: str, status: str, message: str = "") -> Dict[str, Any]:
+    return {
+        "source": "qrz",
+        "callsign": str(callsign or "").strip().upper(),
+        "status": status,
+        "message": message,
+        "updated_at_ms": now_ms(),
+    }
+
+
+def _hf_write_qrz_selected(r: redis.Redis, payload: Dict[str, Any]) -> None:
+    _json_set(r, HF_QRZ_SELECTED_KEY, payload)
+    _hf_publish_state_changed(r, [HF_QRZ_SELECTED_KEY])
+
+
+def _hf_qrz_lookup_worker(callsign: str) -> None:
+    """
+    Background QRZ lookup.
+
+    This must not block HF spot selection, tuning, or logging.
+    It owns only rt:hf:qrz:selected and QRZ cache keys.
+    """
+    call = str(callsign or "").strip().upper()
+    if not call:
+        return
+
+    r = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+        socket_timeout=3.0,
+        socket_connect_timeout=3.0,
+    )
+
+    try:
+        # Do not let an old lookup overwrite a newer selected callsign.
+        selected_detail = _json_get(r, HF_SELECTED_DETAIL_KEY, {}) or {}
+        selected_call = str(
+            selected_detail.get("callsign")
+            or selected_detail.get("call")
+            or ""
+        ).strip().upper()
+        if selected_call and selected_call != call:
+            return
+
+        qrz_lookup = _load_qrz_lookup_module()
+        qrz_client = _load_qrz_client_module()
+
+        result = qrz_lookup.lookup_qrz_with_cache(
+            r,
+            call,
+            qrz_client.qrz_fetch_callsign,
+        )
+
+        selected_detail = _json_get(r, HF_SELECTED_DETAIL_KEY, {}) or {}
+        selected_call = str(
+            selected_detail.get("callsign")
+            or selected_detail.get("call")
+            or ""
+        ).strip().upper()
+        if selected_call and selected_call != call:
+            return
+
+        if result:
+            payload = dict(result)
+            payload["source"] = "qrz"
+            payload["callsign"] = payload.get("callsign") or call
+            payload["status"] = payload.get("status") or "ok"
+            payload["updated_at_ms"] = now_ms()
+            _hf_write_qrz_selected(r, payload)
+        else:
+            _hf_write_qrz_selected(
+                r,
+                _hf_qrz_status_payload(call, "not_found", "USER NOT IN QRZ"),
+            )
+
+    except RuntimeError as exc:
+        text = str(exc)
+        if "credentials" in text.lower() or "configured" in text.lower():
+            status = "not_configured"
+            msg = "QRZ NOT CONFIGURED"
+        else:
+            status = "unavailable"
+            msg = "QRZ NOT CURRENTLY AVAILABLE"
+
+        try:
+            _hf_write_qrz_selected(r, _hf_qrz_status_payload(call, status, msg))
+        except Exception:
+            pass
+
     except Exception:
-        # QSO history lookup is optional. Never block HF/POTA control flow.
+        try:
+            _hf_write_qrz_selected(
+                r,
+                _hf_qrz_status_payload(
+                    call,
+                    "unavailable",
+                    "QRZ NOT CURRENTLY AVAILABLE",
+                ),
+            )
+        except Exception:
+            pass
+
+    finally:
+        with _qrz_threads_lock:
+            _qrz_threads.pop(call, None)
+
+
+def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
+    """
+    Start QRZ enrichment for selected HF callsign.
+
+    This writes a fast placeholder immediately, then performs QRZ/cache lookup
+    in a background thread so radio.tune is not delayed.
+    """
+    if NODE_ID != "rt-controller":
+        return
+
+    call = str(callsign or "").strip().upper()
+    if not call:
+        _hf_write_qrz_selected(
+            r,
+            _hf_qrz_status_payload("", "no_callsign", "No selected callsign"),
+        )
+        return
+
+    if not HF_QRZ_API_ENABLED:
+        _hf_write_qrz_selected(
+            r,
+            _hf_qrz_status_payload(call, "not_configured", "QRZ NOT CONFIGURED"),
+        )
+        return
+
+    # If cached, publish immediately and skip the thread.
+    try:
+        qrz_lookup = _load_qrz_lookup_module()
+        cached = qrz_lookup.get_cached_qrz(r, call)
+        if cached is not None:
+            payload = dict(cached)
+            payload["source"] = "qrz"
+            payload["callsign"] = payload.get("callsign") or call
+            payload["status"] = payload.get("status") or "ok"
+            payload["updated_at_ms"] = now_ms()
+            _hf_write_qrz_selected(r, payload)
+            return
+    except Exception:
         pass
+
+    _hf_write_qrz_selected(
+        r,
+        _hf_qrz_status_payload(call, "loading", "QRZ lookup…"),
+    )
+
+    with _qrz_threads_lock:
+        if call in _qrz_threads:
+            return
+        _qrz_threads[call] = time.time()
+
+    t = threading.Thread(
+        target=_hf_qrz_lookup_worker,
+        args=(call,),
+        name=f"hf-qrz-{call}",
+        daemon=True,
+    )
+    t.start()
 
 def _utc_date_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1394,12 +1639,18 @@ def main() -> None:
                     str(detail.get("callsign") or detail.get("call") or ""),
                 )
 
+                _hf_update_qrz_for_callsign(
+                    r,
+                    str(detail.get("callsign") or detail.get("call") or ""),
+                )
+
                 _hf_publish_state_changed(r, [
                     HF_BANDS_KEY,
                     "rt:hf:context",
                     "rt:hf:spots:selected",
                     "rt:hf:spots:selected_detail",
                     HF_QSO_HISTORY_SELECTED_KEY,
+                    HF_QRZ_SELECTED_KEY,
                 ])
 
                 freq = selected.get("freq_hz")
@@ -1511,11 +1762,23 @@ def main() -> None:
                     ),
                 )
 
+                _hf_update_qrz_for_callsign(
+                    r,
+                    str(
+                        detail.get("callsign")
+                        or detail.get("call")
+                        or params.get("callsign")
+                        or params.get("call")
+                        or ""
+                    ),
+                )
+                
                 _hf_publish_state_changed(r, [
                     "rt:hf:context",
                     "rt:hf:spots:selected",
                     "rt:hf:spots:selected_detail",
                     HF_QSO_HISTORY_SELECTED_KEY,
+                    HF_QRZ_SELECTED_KEY,
                 ])
 
                 continue
