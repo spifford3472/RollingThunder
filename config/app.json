@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 53,
-    "build": 65
+    "build": 66
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -55,56 +55,92 @@
       "readTimeoutSec": 15,
       "logonName": "KI5VNB",
       "ssbBandSegmentsHz": {
-        "40m": [{ "low": 7125000, "high": 7300000, "mode": "LSB" }],
-        "20m": [{ "low": 14150000, "high": 14350000, "mode": "USB" }],
-        "17m": [{ "low": 18110000, "high": 18168000, "mode": "USB" }],
-        "15m": [{ "low": 21200000, "high": 21450000, "mode": "USB" }],
-        "12m": [{ "low": 24930000, "high": 24990000, "mode": "USB" }],
-        "10m": [{ "low": 28300000, "high": 29700000, "mode": "USB" }]
+        "40m": [
+          {
+            "low": 7125000,
+            "high": 7300000,
+            "mode": "LSB"
+          }
+        ],
+        "20m": [
+          {
+            "low": 14150000,
+            "high": 14350000,
+            "mode": "USB"
+          }
+        ],
+        "17m": [
+          {
+            "low": 18110000,
+            "high": 18168000,
+            "mode": "USB"
+          }
+        ],
+        "15m": [
+          {
+            "low": 21200000,
+            "high": 21450000,
+            "mode": "USB"
+          }
+        ],
+        "12m": [
+          {
+            "low": 24930000,
+            "high": 24990000,
+            "mode": "USB"
+          }
+        ],
+        "10m": [
+          {
+            "low": 28300000,
+            "high": 29700000,
+            "mode": "USB"
+          }
+        ]
       },
       "nodes": [
         {
           "id": "local",
           "name": "Local DX Spider",
-          "location": "Local / Midwest",
-          "telnetAddress": "example.local",
+          "location": "Johnstown, OH (EN80)",
+          "telnetAddress": "dxc.ohiopacket.org",
           "telnetPort": 7300,
           "logonName": "KI5VNB",
-          "setNameCommand": "set/name KI5VNB",
-          "setLocationCommand": "set/location Waynesville, OH"
+          "setNameCommand": "set/name Geoffrey",
+          "setLocationCommand": "set/qra EM79"
         },
         {
           "id": "us_east",
           "name": "US East DX Spider",
-          "location": "US East Coast",
-          "telnetAddress": "example-east.net",
+          "location": "Amazon Data Center, VA (FM19)",
+          "telnetAddress": "dxc.ae3n.us",
           "telnetPort": 7300,
           "logonName": "KI5VNB",
-          "setNameCommand": "set/name KI5VNB",
-          "setLocationCommand": "set/location Waynesville, OH"
+          "setNameCommand": "set/name Geoffrey",
+          "setLocationCommand": "set/qra EM79"
         },
         {
           "id": "us_west",
           "name": "US West DX Spider",
-          "location": "US West Coast",
-          "telnetAddress": "example-west.net",
+          "location": "Nipomo, CA (CM95)",
+          "telnetAddress": "n6ws.ddns.net",
           "telnetPort": 7300,
           "logonName": "KI5VNB",
-          "setNameCommand": "set/name KI5VNB",
-          "setLocationCommand": "set/location Waynesville, OH"
+          "setNameCommand": "set/name Geoffrey",
+          "setLocationCommand": "set/qra EM79"
         },
         {
           "id": "europe",
           "name": "Europe DX Spider",
-          "location": "Europe",
-          "telnetAddress": "example-eu.net",
-          "telnetPort": 7300,
+          "location": "San Esterban de Pravia, Asturias (IN63)",
+          "telnetAddress": "ea1cyz.niab.es",
+          "telnetPort": 9000,
           "logonName": "KI5VNB",
-          "setNameCommand": "set/name KI5VNB",
-          "setLocationCommand": "set/location Waynesville, OH"
+          "setNameCommand": "set/name Geoffrey",
+          "setLocationCommand": "set/qra EM79"
         }
       ]
-    }    
+    }
   },
   "virtualPanel": {
     "enabled": true,
