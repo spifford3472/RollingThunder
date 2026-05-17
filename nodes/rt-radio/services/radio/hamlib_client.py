@@ -137,6 +137,44 @@ class HamlibClient:
 
         return b"".join(chunks).decode("utf-8", errors="replace").strip()
 
+    def _recv_lines(self, expected_lines: int) -> str:
+        """
+        Read a known number of payload lines from rigctld.
+
+        Query commands such as 'f' and 'm' return fixed payload line counts and
+        do not include RPRT. Do not wait for socket quiet here; waiting for quiet
+        adds one full socket timeout to every query.
+        """
+        assert self._sock is not None
+
+        if expected_lines <= 0:
+            raise ValueError("expected_lines must be > 0")
+
+        chunks: list[bytes] = []
+
+        while True:
+            try:
+                data = self._sock.recv(4096)
+            except socket.timeout as exc:
+                self.close()
+                raise RigctldProtocolError(
+                    f"timed out waiting for {expected_lines} payload line(s) from rigctld"
+                ) from exc
+            except OSError as exc:
+                self.close()
+                raise RigctldUnreachable("connection to rigctld dropped") from exc
+
+            if not data:
+                self.close()
+                raise RigctldUnreachable("rigctld closed connection")
+
+            chunks.append(data)
+            text = b"".join(chunks).decode("utf-8", errors="replace")
+            lines = self._payload_lines(text)
+
+            if len(lines) >= expected_lines:
+                return "\n".join(lines[:expected_lines])
+
     @staticmethod
     def _parse_rprt(response: str) -> int:
         for line in reversed(response.splitlines()):
@@ -175,8 +213,16 @@ class HamlibClient:
             self._send(cmd)
             return self._recv_until_quiet()
 
+    def query_lines(self, cmd: str, expected_lines: int) -> str:
+        """
+        Query command with known payload length.
+        """
+        with self._lock:
+            self._send(cmd)
+            return self._recv_lines(expected_lines)
+
     def get_freq(self) -> int:
-        response = self.query("f")
+        response = self.query_lines("f", 1)
         lines = self._payload_lines(response)
         if not lines:
             raise RigctldProtocolError("empty get_freq response")
@@ -186,7 +232,7 @@ class HamlibClient:
         self.command(f"F {int(freq_hz)}")
 
     def get_mode(self) -> ModeReadback:
-        response = self.query("m")
+        response = self.query_lines("m", 2)
         lines = self._payload_lines(response)
         if len(lines) < 2:
             raise RigctldProtocolError(f"unexpected get_mode response: {response!r}")
@@ -199,7 +245,7 @@ class HamlibClient:
         self.command("U TUNER 1")
 
     def get_tuner_state(self) -> str:
-        response = self.query("u TUNER")
+        response = self.query_lines("u TUNER", 1)
         lines = self._payload_lines(response)
         return lines[0] if lines else ""
 
