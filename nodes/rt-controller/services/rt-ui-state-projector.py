@@ -174,6 +174,7 @@ class UIStateProjector:
         self._pending_binding_refresh_keys: set[str] = set()
         self._last_state_changed_keys: set[str] = set()
         self._last_project_reason: str = ""
+        self._last_node_health_comparison: Optional[str] = None
 
     def _connect(self) -> Redis:
         client = redis.Redis.from_url(
@@ -543,6 +544,25 @@ class UIStateProjector:
             return values[-1] if values else None
         return None
 
+    def _should_emit_node_health_projection(self, node_health_json: str) -> bool:
+        """
+        Node health is a backend binding-refresh model, not a normal rt:ui:* core
+        interaction projection key. It may be omitted from browse-only projections.
+
+        Keep a dedicated semantic cache so node health is only emitted when its
+        actual content changes, not merely because the previous projection pass
+        was browse-only and omitted NODE_HEALTH_MODEL_KEY.
+        """
+        comparison = self._semantic_projection({
+            NODE_HEALTH_MODEL_KEY: node_health_json,
+        }).get(NODE_HEALTH_MODEL_KEY)
+
+        if comparison == self._last_node_health_comparison:
+            return False
+
+        self._last_node_health_comparison = comparison
+        return True
+
     def _should_refresh_node_health_model(self, reason: str) -> bool:
         reason = str(reason or "")
 
@@ -886,7 +906,9 @@ class UIStateProjector:
 
         if self._should_refresh_node_health_model(getattr(self, "_last_project_reason", "")):
             node_health_model = self._build_node_health_summary_model(now_ms)
-            projection[NODE_HEALTH_MODEL_KEY] = self._json_any(node_health_model)
+            node_health_json = self._json_any(node_health_model)
+            if self._should_emit_node_health_projection(node_health_json):
+                projection[NODE_HEALTH_MODEL_KEY] = node_health_json
         optional_keys: set[str] = set()
 
         if page is not None:
