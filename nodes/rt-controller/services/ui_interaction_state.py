@@ -1736,24 +1736,13 @@ def run_main_loop():
                                 publish_ui_result(r, intent, "hf_band_selected")
 
                             elif state["page"] == "hf" and panel_id == "hf_spots_summary":
+                                # HF handler owns detail/history/tune so OK and encoder
+                                # press follow the same single-tune path.
                                 publish_hf_select_spot_intent(r, item)
-                                publish_intent(
-                                    r,
-                                    "radio.tune",
-                                    {
-                                        "freq_hz": int(item.get("freq_hz") or item.get("frequency") or 0),
-                                        "band": str(item.get("band") or "").strip(),
-                                        "mode": str(item.get("mode") or "").strip(),
-                                        "source": "hf",
-                                        "spot_id": hf_spot_item_id(item),
-                                        "callsign": str(item.get("callsign") or item.get("call") or "").strip(),
-                                        "nodeId": "rt-radio",
-                                    },
-                                )
 
                                 state["modal"] = build_hf_spot_outcome_modal(item)
                                 state_changed = True
-                                publish_ui_result(r, intent)                                
+                                publish_ui_result(r, intent, "hf_spot_selected")                               
 
 
                     elif intent == "ui.encoder.press":

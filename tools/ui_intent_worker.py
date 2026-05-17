@@ -1421,15 +1421,29 @@ def main() -> None:
                 detail["band"] = band
                 detail["mode"] = detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band)
 
+                if detail.get("freq_hz"):
+                    tune_payload = {
+                        "intent": "radio.tune",
+                        "params": {
+                            "freq_hz": int(detail["freq_hz"]),
+                            "band": band,
+                            "mode": detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band),
+                            "source": "hf",
+                            "spot_id": selected_id,
+                            "callsign": detail.get("callsign"),
+                            "nodeId": "rt-radio",
+                        },
+                        "source": {
+                            "type": "ui_intent_worker:hf",
+                            "node": "rt-controller",
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                    r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
+
                 _json_set(r, "rt:hf:context", context)
                 _json_set(r, "rt:hf:spots:selected", spots_model)
                 _json_set(r, "rt:hf:spots:selected_detail", detail)
-
-                _hf_publish_state_changed(r, [
-                    "rt:hf:context",
-                    "rt:hf:spots:selected",
-                    "rt:hf:spots:selected_detail",
-                ])
 
                 _hf_update_qso_history_for_callsign(
                     r,
@@ -1448,26 +1462,6 @@ def main() -> None:
                     "rt:hf:spots:selected_detail",
                     HF_QSO_HISTORY_SELECTED_KEY,
                 ])
-
-                if detail.get("freq_hz"):
-                    tune_payload = {
-                        "intent": "radio.tune",
-                        "params": {
-                            "freq_hz": int(detail["freq_hz"]),
-                            "band": band,
-                            "mode": detail.get("mode") or _hf_mode_for_freq(detail.get("freq_hz"), band),
-                            "source": "hf",
-                            "spot_id": selected_id,
-                            "callsign": detail.get("callsign"),
-                            "nodeId": "rt-radio",
-                        },
-                        "source": {
-                            "type": "ui_interaction_state",
-                            "node": "rt-controller",
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
-                    r.publish("rt:ui:intents", json.dumps(tune_payload, separators=(",", ":")))
 
                 continue
 
