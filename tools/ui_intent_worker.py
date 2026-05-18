@@ -450,9 +450,12 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
 
     Order:
       1. explicit ISO-like fields
-      2. QRZ/DXCC numeric fields via local config mapping
-      3. QRZ country/land/name aliases via local config mapping
+      2. QRZ country/land/name aliases via local config mapping
+      3. QRZ/DXCC numeric fields via local config mapping
       4. small built-in fallback aliases
+
+    Country text wins over numeric DXCC/ccode because real QRZ records have
+    shown numeric fields that do not match our starter DXCC table.
     """
     payload = payload or {}
 
@@ -462,21 +465,8 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
             return explicit
 
     country_codes = _hf_load_country_codes()
-    dxcc_map = country_codes.get("dxcc") or {}
     aliases = country_codes.get("aliases") or {}
-
-    for key in ("dxcc", "ccode"):
-        dxcc_value = _hf_clean_text(payload.get(key))
-        if dxcc_value:
-            # QRZ values may arrive as "291", "291.0", or similar strings.
-            try:
-                dxcc_value = str(int(float(dxcc_value)))
-            except Exception:
-                pass
-
-            mapped = _hf_clean_text(dxcc_map.get(dxcc_value)).upper()
-            if len(mapped) == 2 and mapped.isalpha():
-                return mapped
+    dxcc_map = country_codes.get("dxcc") or {}
 
     for key in ("country", "land", "entity", "dxcc_name"):
         name = _hf_normalize_country_name(payload.get(key))
@@ -502,8 +492,10 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
         "great britain": "GB",
         "france": "FR",
         "germany": "DE",
+        "federal republic of germany": "DE",
         "spain": "ES",
         "italy": "IT",
+        "malta": "MT",
         "portugal": "PT",
         "netherlands": "NL",
         "belgium": "BE",
@@ -530,6 +522,8 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
         "brazil": "BR",
         "argentina": "AR",
         "chile": "CL",
+        "colombia": "CO",
+        "dominican republic": "DO",
         "south africa": "ZA",
     }
 
@@ -537,6 +531,18 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
         name = _hf_normalize_country_name(payload.get(key))
         if name in built_in:
             return built_in[name]
+
+    for key in ("dxcc", "ccode"):
+        dxcc_value = _hf_clean_text(payload.get(key))
+        if dxcc_value:
+            try:
+                dxcc_value = str(int(float(dxcc_value)))
+            except Exception:
+                pass
+
+            mapped = _hf_clean_text(dxcc_map.get(dxcc_value)).upper()
+            if len(mapped) == 2 and mapped.isalpha():
+                return mapped
 
     return ""
 
