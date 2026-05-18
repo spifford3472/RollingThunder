@@ -278,7 +278,11 @@ def _hf_update_bands_selected_id(r: redis.Redis, band: str) -> None:
 
     _json_set(r, HF_BANDS_KEY, model)
 
-def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
+def _hf_update_qso_history_for_callsign(
+    r: redis.Redis,
+    callsign: str,
+    publish: bool = True,
+) -> None:
     """
     Controller-side SQLite lookup for selected HF callsign.
 
@@ -314,7 +318,8 @@ def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
         payload["callsign"] = call
 
         _json_set(r, HF_QSO_HISTORY_SELECTED_KEY, payload)
-        _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
+        if publish:
+            _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
 
     except Exception as exc:
         fallback_payload["status"] = "unavailable"
@@ -322,7 +327,8 @@ def _hf_update_qso_history_for_callsign(r: redis.Redis, callsign: str) -> None:
 
         try:
             _json_set(r, HF_QSO_HISTORY_SELECTED_KEY, fallback_payload)
-            _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
+            if publish:
+                _hf_publish_state_changed(r, [HF_QSO_HISTORY_SELECTED_KEY])
         except Exception:
             pass
 
@@ -657,11 +663,18 @@ def _hf_map_payload_from_qrz(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _hf_write_map_selected_from_qrz(r: redis.Redis, payload: Dict[str, Any]) -> None:
+def _hf_write_map_selected_from_qrz(
+    r: redis.Redis,
+    payload: Dict[str, Any],
+    publish: bool = False,
+) -> None:
     try:
         map_payload = _hf_map_payload_from_qrz(payload)
         _json_set(r, HF_MAP_SELECTED_KEY, map_payload)
-        _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+
+        if publish:
+            _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+
     except Exception as exc:
         try:
             fallback = {
@@ -682,7 +695,10 @@ def _hf_write_map_selected_from_qrz(r: redis.Redis, payload: Dict[str, Any]) -> 
                 "updated_at_ms": now_ms(),
             }
             _json_set(r, HF_MAP_SELECTED_KEY, fallback)
-            _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+
+            if publish:
+                _hf_publish_state_changed(r, [HF_MAP_SELECTED_KEY])
+
         except Exception:
             pass
 
@@ -696,10 +712,19 @@ def _hf_write_map_selected_from_qrz(r: redis.Redis, payload: Dict[str, Any]) -> 
         except Exception:
             pass
 
-def _hf_write_qrz_selected(r: redis.Redis, payload: Dict[str, Any]) -> None:
+def _hf_write_qrz_selected(
+    r: redis.Redis,
+    payload: Dict[str, Any],
+    publish: bool = True,
+) -> None:
     _json_set(r, HF_QRZ_SELECTED_KEY, payload)
-    _hf_write_map_selected_from_qrz(r, payload)
-    _hf_publish_state_changed(r, [HF_QRZ_SELECTED_KEY])
+    _hf_write_map_selected_from_qrz(r, payload, publish=False)
+
+    if publish:
+        _hf_publish_state_changed(r, [
+            HF_QRZ_SELECTED_KEY,
+            HF_MAP_SELECTED_KEY,
+        ])
 
 
 def _hf_qrz_lookup_worker(callsign: str) -> None:
@@ -796,13 +821,19 @@ def _hf_qrz_lookup_worker(callsign: str) -> None:
         with _qrz_threads_lock:
             _qrz_threads.pop(call, None)
 
-
-def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
+def _hf_update_qrz_for_callsign(
+    r: redis.Redis,
+    callsign: str,
+    publish: bool = True,
+) -> None:
     """
     Start QRZ enrichment for selected HF callsign.
 
     This writes a fast placeholder immediately, then performs QRZ/cache lookup
     in a background thread so radio.tune is not delayed.
+
+    If publish=False, this writes rt:hf:qrz:selected and rt:hf:map:selected
+    but lets the caller publish one larger combined state.changed event.
     """
     if NODE_ID != "rt-controller":
         return
@@ -812,6 +843,7 @@ def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
         _hf_write_qrz_selected(
             r,
             _hf_qrz_status_payload("", "no_callsign", "No selected callsign"),
+            publish=publish,
         )
         return
 
@@ -819,6 +851,7 @@ def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
         _hf_write_qrz_selected(
             r,
             _hf_qrz_status_payload(call, "not_configured", "QRZ NOT CONFIGURED"),
+            publish=publish,
         )
         return
 
@@ -832,7 +865,7 @@ def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
             payload["callsign"] = payload.get("callsign") or call
             payload["status"] = payload.get("status") or "ok"
             payload["updated_at_ms"] = now_ms()
-            _hf_write_qrz_selected(r, payload)
+            _hf_write_qrz_selected(r, payload, publish=publish)
             return
     except Exception:
         pass
@@ -840,6 +873,7 @@ def _hf_update_qrz_for_callsign(r: redis.Redis, callsign: str) -> None:
     _hf_write_qrz_selected(
         r,
         _hf_qrz_status_payload(call, "loading", "QRZ lookup…"),
+        publish=publish,
     )
 
     with _qrz_threads_lock:
@@ -1993,11 +2027,13 @@ def main() -> None:
                 _hf_update_qso_history_for_callsign(
                     r,
                     str(detail.get("callsign") or detail.get("call") or ""),
+                    publish=False,
                 )
 
                 _hf_update_qrz_for_callsign(
                     r,
                     str(detail.get("callsign") or detail.get("call") or ""),
+                    publish=False,
                 )
 
                 _hf_publish_state_changed(r, [
@@ -2117,6 +2153,7 @@ def main() -> None:
                         or params.get("call")
                         or ""
                     ),
+                    publish=False,
                 )
 
                 _hf_update_qrz_for_callsign(
@@ -2128,6 +2165,7 @@ def main() -> None:
                         or params.get("call")
                         or ""
                     ),
+                    publish=False,
                 )
                 
                 _hf_publish_state_changed(r, [
