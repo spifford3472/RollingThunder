@@ -598,11 +598,12 @@ def _hf_map_payload_from_qrz(payload: Dict[str, Any]) -> Dict[str, Any]:
         "updated_at_ms": now_ms(),
     }
 
-    out["flag"] = {
-        "status": "ok",
-        "url": f"/ui/hf/flags/4x3/{country_code.lower()}.svg",
-        "label": country or country_code,
-    }
+    if country_code:
+        out["flag"] = {
+            "status": "ok",
+            "url": f"/ui/hf/flags/4x3/{country_code.lower()}.svg",
+            "label": country or country_code,
+        }
 
     if lat is not None and lon is not None:
         zoom = _hf_map_zoom_for_country(country_code, country)
