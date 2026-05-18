@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-label="Simplified world map">
+  <rect width="1000" height="500" fill="#07111f"/>
+  <path d="M0 250 H1000" stroke="#1f334a" stroke-width="1"/>
+  <path d="M500 0 V500" stroke="#1f334a" stroke-width="1"/>
+  <g stroke="#17283a" stroke-width="0.7" opacity="0.75">
+    <path d="M125 0 V500"/><path d="M250 0 V500"/><path d="M375 0 V500"/><path d="M625 0 V500"/><path d="M750 0 V500"/><path d="M875 0 V500"/>
+    <path d="M0 125 H1000"/><path d="M0 375 H1000"/>
+  </g>
+  <g fill="#203d56" stroke="#5d7f9e" stroke-width="2" opacity="0.95">
+    <path d="M120 105 L175 70 L245 82 L288 125 L275 182 L230 220 L182 205 L138 170 Z"/>
+    <path d="M235 222 L285 245 L305 315 L278 390 L230 455 L198 405 L210 330 Z"/>
+    <path d="M380 105 L430 80 L505 88 L555 118 L535 155 L468 168 L410 145 Z"/>
+    <path d="M455 175 L530 170 L600 205 L620 285 L590 350 L520 330 L485 270 Z"/>
+    <path d="M555 110 L690 95 L815 125 L875 175 L830 225 L710 220 L625 175 Z"/>
+    <path d="M690 238 L780 250 L835 310 L800 370 L705 355 L650 300 Z"/>
+    <path d="M760 360 L820 345 L875 380 L850 430 L775 425 Z"/>
+  </g>
+  <g fill="#2f5878" opacity="0.7">
+    <circle cx="160" cy="135" r="10"/>
+    <circle cx="245" cy="285" r="9"/>
+    <circle cx="490" cy="125" r="8"/>
+    <circle cx="570" cy="250" r="8"/>
+    <circle cx="735" cy="165" r="10"/>
+    <circle cx="790" cy="310" r="8"/>
+  </g>
+</svg>

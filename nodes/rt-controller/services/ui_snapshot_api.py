@@ -146,6 +146,12 @@ HF_FLAGS_ROOT = os.environ.get(
     "RT_HF_FLAGS_ROOT",
     "/opt/rollingthunder/nodes/rt-controller/data/FLAGS",
 )
+HF_MAPS_PREFIX = "/ui/hf/maps"
+HF_MAPS_ROOT = os.environ.get(
+    "RT_HF_MAPS_ROOT",
+    "/opt/rollingthunder/nodes/rt-controller/data/MAPS",
+)
+
 
 WPSD_HTTP_BASE = os.environ.get("RT_WPSD_HTTP_BASE", "http://192.168.8.184")
 FLAGS_MAX_BYTES = int(os.environ.get("RT_FLAGS_MAX_BYTES", "200000"))  # 200KB cap
@@ -343,6 +349,51 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
     
+    def _handle_hf_map_asset(self, path: str) -> bool:
+        """
+        Serve local HF map assets.
+
+        GET /ui/hf/maps/world.svg
+          -> /opt/rollingthunder/nodes/rt-controller/data/MAPS/world.svg
+        """
+        if path != HF_MAPS_PREFIX and not path.startswith(HF_MAPS_PREFIX + "/"):
+            return False
+
+        rel = path[len(HF_MAPS_PREFIX):].lstrip("/")
+
+        if not rel or not rel.endswith(".svg"):
+            self.send_error(404, "HF map not found")
+            return True
+
+        root = os.path.abspath(HF_MAPS_ROOT)
+        target = os.path.abspath(os.path.join(root, rel))
+
+        if target != root and not target.startswith(root + os.sep):
+            self.send_error(403, "Forbidden")
+            return True
+
+        if not os.path.isfile(target):
+            self.send_error(404, "HF map not found")
+            return True
+
+        try:
+            with open(target, "rb") as f:
+                data = f.read()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        except Exception as exc:
+            print(f"[ui_snapshot_api] HF map read failed: {exc}", flush=True)
+            self.send_error(500, "HF map read failed")
+            return True
+
+
     def _handle_hf_flag_asset(self, path: str) -> bool:
         """
         Serve local HF flag assets.
@@ -1455,7 +1506,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         if path in HEALTHZ_PATHS:
             return self._handle_healthz()
 
-        # 1) Local HF flag assets.
+        # Local HF map assets.
+        if self._handle_hf_map_asset(path):
+            return
+
+        # Local HF flag assets.
         # Must be before static UI routing so /ui/hf/flags/* is handled here.
         if self._handle_hf_flag_asset(path):
             return

@@ -72,13 +72,19 @@ function renderFlag(mapModel, country) {
   return renderFallback("⚑", "FLAG UNAVAILABLE", "rt-hf-map-flag-missing");
 }
 
+function pct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
 function renderMap(mapModel) {
   const map = unwrapObject(mapModel?.map);
   const status = text(map.status).toLowerCase();
   const url = safeImageUrl(map.url);
   const label = text(map.label, "MAP UNAVAILABLE");
 
-  if (status === "ok" && url) {
+  if ((status === "ok" || status === "local_world") && url) {
     const altParts = [
       text(mapModel?.callsign),
       text(mapModel?.country),
@@ -87,16 +93,26 @@ function renderMap(mapModel) {
 
     const alt = altParts.length ? altParts.join(" • ") : "HF station map";
 
+    const x = pct(map.pin_x_pct);
+    const y = pct(map.pin_y_pct);
+
+    const pinHtml = x !== null && y !== null
+      ? `
+        <div class="rt-hf-map-pin" style="left:${x}%; top:${y}%;">
+          <div class="rt-hf-map-pin-dot"></div>
+          <div class="rt-hf-map-pin-ring"></div>
+        </div>
+      `
+      : "";
+
     return `
-      <div class="rt-hf-map-image-wrap">
-        <img class="rt-hf-map-image" src="${url}" alt="${alt}">
+      <div class="rt-hf-map-image-wrap rt-hf-map-world-wrap">
+        <img class="rt-hf-map-image rt-hf-map-world-image" src="${url}" alt="${alt}">
+        ${pinHtml}
       </div>
     `;
   }
 
-  // Phase 1: no browser-side drawing or coordinate math.
-  // If a future service wants a pin, it should project a ready-to-render image URL
-  // or a simple explicit render model.
   return renderFallback("⌕", label || "MAP UNAVAILABLE", "rt-hf-map-map-missing");
 }
 

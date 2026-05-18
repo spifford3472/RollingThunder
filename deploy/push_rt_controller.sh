@@ -31,6 +31,10 @@ GPS_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-gps-state-publisher.se
 ALERT_UNIT_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-alert@.service"
 ALERT_RECONCILE_SRC="${REPO_ROOT}/nodes/rt-controller/systemd/rt-alerts-reconciler.service"
 
+# --- HF Map Variables ---
+HF_MAPS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/MAPS/"
+HF_MAPS_DST_DIR="/opt/rollingthunder/nodes/rt-controller/data/MAPS/"
+
 # --- Source roots (authoritative) ---
 NODE_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/"
 SERVICES_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/services/"
@@ -124,6 +128,13 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
   sudo chmod -R 755 /opt/rollingthunder/nodes/rt-controller/data
 "
 
+echo "[push] Ensure HF maps data dir exists (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  sudo mkdir -p '${HF_MAPS_DST_DIR}';
+  sudo chown -R '${TARGET_USER}:${TARGET_USER}' /opt/rollingthunder/nodes/rt-controller/data;
+  sudo chmod -R 755 /opt/rollingthunder/nodes/rt-controller/data
+"
+
 # Common rsync excludes
 RSYNC_EXCLUDES=(
   --exclude='__pycache__/'
@@ -157,6 +168,8 @@ fail_missing_dir "${SERVICES_SRC_DIR}"
 fail_missing_dir "${COMMON_SERVICES_SRC_DIR}"
 fail_missing_dir "${POTA_PARK_DATA_SRC_DIR}"
 fail_missing_dir "${HF_FLAGS_SRC_DIR}"
+fail_missing_dir "${HF_MAPS_SRC_DIR}"
+fail_missing "${HF_MAPS_SRC_DIR}/world.svg"
 fail_missing "${HF_FLAGS_SRC_DIR}/4x3/us.svg"
 fail_missing "${HF_FLAGS_SRC_DIR}/4x3/ie.svg"
 fail_missing "${COMMON_SERVICES_SRC_DIR}/node_presence_publisher.py"
@@ -201,6 +214,11 @@ rsync -avz --checksum --itemize-changes --delete "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${HF_FLAGS_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${HF_FLAGS_DST_DIR}"
 
+echo "[push] Sync HF map data files dir ${HF_MAPS_SRC_DIR} -> ${HF_MAPS_DST_DIR}"
+rsync -avz --checksum --itemize-changes --delete "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${HF_MAPS_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${HF_MAPS_DST_DIR}"
+  
 echo "[push] Sync global tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \

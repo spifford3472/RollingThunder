@@ -972,3 +972,123 @@ body[data-page="pota"] .panel-title {
 .rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-map-missing .rt-hf-map-fallback-symbol {
   font-size: 5rem;
 }
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-world-wrap {
+  position: relative;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 0.45rem;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-world-image {
+  position: relative;
+  z-index: 1;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin {
+  position: absolute;
+  z-index: 3;
+  width: 1.25rem;
+  height: 1.25rem;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.55rem;
+  height: 0.55rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0.5rem currentColor;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1.25rem;
+  height: 1.25rem;
+  transform: translate(-50%, -50%);
+  border: 0.18rem solid currentColor;
+  border-radius: 999px;
+  opacity: 0.75;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-world-wrap {
+  position: relative;
+  background: #000;
+  border-radius: 0.45rem;
+  overflow: hidden;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-world-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.00) 0px,
+      rgba(255,255,255,0.00) 3px,
+      rgba(255,255,255,0.04) 4px
+    );
+  opacity: 0.18;
+  z-index: 2;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-world-image {
+  position: relative;
+  z-index: 1;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin {
+  position: absolute;
+  z-index: 3;
+  width: 1.25rem;
+  height: 1.25rem;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: #00e5ff;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin {
+  position: absolute;
+  z-index: 3;
+  width: 1.25rem;
+  height: 1.25rem;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: #00e5ff;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.55rem;
+  height: 0.55rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow:
+    0 0 0.5rem currentColor,
+    0 0 1rem currentColor,
+    0 0 1.5rem currentColor;
+}
+
+.rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1.25rem;
+  height: 1.25rem;
+  transform: translate(-50%, -50%);
+  border: 0.18rem solid currentColor;
+  border-radius: 999px;
+  opacity: 0.85;
+  box-shadow: 0 0 0.75rem currentColor;
+}

@@ -363,6 +363,20 @@ def _hf_float_or_none(value: Any) -> float | None:
     except Exception:
         return None
 
+def _hf_world_pin_pct(lat: float, lon: float) -> tuple[float, float]:
+    """
+    Convert lat/lon to simple equirectangular world-map percentages.
+
+    This is a display hint only. It is not award/geocoding logic.
+    """
+    lat = max(-90.0, min(90.0, float(lat)))
+    lon = max(-180.0, min(180.0, float(lon)))
+
+    x_pct = ((lon + 180.0) / 360.0) * 100.0
+    y_pct = ((90.0 - lat) / 180.0) * 100.0
+
+    return round(x_pct, 2), round(y_pct, 2)
+
 def _hf_normalize_country_name(value: Any) -> str:
     text = _hf_clean_text(value).lower()
     for old, new in (
@@ -607,15 +621,20 @@ def _hf_map_payload_from_qrz(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if lat is not None and lon is not None:
         zoom = _hf_map_zoom_for_country(country_code, country)
+        pin_x_pct, pin_y_pct = _hf_world_pin_pct(lat, lon)
+
         out["map"] = {
-            "status": "coordinates",
+            "status": "local_world",
             "lat": lat,
             "lon": lon,
             "pin_lat": lat,
             "pin_lon": lon,
+            "pin_x_pct": pin_x_pct,
+            "pin_y_pct": pin_y_pct,
             "zoom": zoom,
-            "provider": "none",
-            "label": "MAP UNAVAILABLE",
+            "provider": "local_world_map",
+            "url": "/ui/hf/maps/world_ascii.svg",
+            "label": "Approximate location",
         }
 
     if country or country_code or lat is not None or lon is not None:
