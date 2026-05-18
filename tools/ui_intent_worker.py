@@ -74,6 +74,7 @@ RT_CONTROLLER_SERVICES_DIR = Path("/opt/rollingthunder/services")
 _qso_history_module = None
 _qrz_lookup_module = None
 _qrz_client_module = None
+_hf_country_codes_cache: dict[str, Any] | None = None
 _qrz_threads: dict[str, float] = {}
 _qrz_threads_lock = threading.Lock()
 
@@ -362,26 +363,117 @@ def _hf_float_or_none(value: Any) -> float | None:
     except Exception:
         return None
 
+def _hf_normalize_country_name(value: Any) -> str:
+    text = _hf_clean_text(value).lower()
+    for old, new in (
+        ("&", " and "),
+        (",", " "),
+        (";", " "),
+        (":", " "),
+        ("(", " "),
+        (")", " "),
+        (".", ""),
+        ("'", ""),
+    ):
+        text = text.replace(old, new)
+    return " ".join(text.split())
+
+
+def _hf_load_country_codes() -> dict[str, Any]:
+    global _hf_country_codes_cache
+
+    if _hf_country_codes_cache is not None:
+        return _hf_country_codes_cache
+
+    paths = [
+        os.environ.get("RT_HF_COUNTRY_CODES_PATH", ""),
+        "/opt/rollingthunder/config/hf_country_codes.json",
+        str(CONFIG_PATH.parent / "hf_country_codes.json"),
+    ]
+
+    for path in paths:
+        if not path:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+
+            aliases = loaded.get("aliases") if isinstance(loaded, dict) else {}
+            dxcc = loaded.get("dxcc") if isinstance(loaded, dict) else {}
+
+            if not isinstance(aliases, dict):
+                aliases = {}
+            if not isinstance(dxcc, dict):
+                dxcc = {}
+
+            _hf_country_codes_cache = {
+                "aliases": {
+                    _hf_normalize_country_name(k): _hf_clean_text(v).upper()
+                    for k, v in aliases.items()
+                    if _hf_clean_text(k) and len(_hf_clean_text(v)) == 2
+                },
+                "dxcc": {
+                    _hf_clean_text(k): _hf_clean_text(v).upper()
+                    for k, v in dxcc.items()
+                    if _hf_clean_text(k) and len(_hf_clean_text(v)) == 2
+                },
+            }
+            return _hf_country_codes_cache
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+
+    _hf_country_codes_cache = {
+        "aliases": {},
+        "dxcc": {},
+    }
+    return _hf_country_codes_cache
 
 def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
     """
     Return an ISO alpha-2-ish country code when we can safely derive one.
 
-    This is intentionally small and conservative for Phase 2.
-    Phase 3 can replace/extend this with QRZ DXCC metadata or a real mapping table.
+    Order:
+      1. explicit ISO-like fields
+      2. QRZ/DXCC numeric fields via local config mapping
+      3. QRZ country/land/name aliases via local config mapping
+      4. small built-in fallback aliases
     """
-    explicit = (
-        _hf_clean_text(payload.get("country_code"))
-        or _hf_clean_text(payload.get("iso2"))
-        or _hf_clean_text(payload.get("cc"))
-    ).upper()
+    payload = payload or {}
 
-    if len(explicit) == 2 and explicit.isalpha():
-        return explicit
+    for key in ("country_code", "iso2", "cc", "ccc"):
+        explicit = _hf_clean_text(payload.get(key)).upper()
+        if len(explicit) == 2 and explicit.isalpha():
+            return explicit
 
-    country = _hf_clean_text(payload.get("country")).lower()
+    country_codes = _hf_load_country_codes()
+    dxcc_map = country_codes.get("dxcc") or {}
+    aliases = country_codes.get("aliases") or {}
 
-    common = {
+    for key in ("dxcc", "ccode"):
+        dxcc_value = _hf_clean_text(payload.get(key))
+        if dxcc_value:
+            # QRZ values may arrive as "291", "291.0", or similar strings.
+            try:
+                dxcc_value = str(int(float(dxcc_value)))
+            except Exception:
+                pass
+
+            mapped = _hf_clean_text(dxcc_map.get(dxcc_value)).upper()
+            if len(mapped) == 2 and mapped.isalpha():
+                return mapped
+
+    for key in ("country", "land", "entity", "dxcc_name"):
+        name = _hf_normalize_country_name(payload.get(key))
+        if not name:
+            continue
+
+        mapped = _hf_clean_text(aliases.get(name)).upper()
+        if len(mapped) == 2 and mapped.isalpha():
+            return mapped
+
+    built_in = {
         "united states": "US",
         "united states of america": "US",
         "usa": "US",
@@ -409,6 +501,7 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
         "denmark": "DK",
         "poland": "PL",
         "czech republic": "CZ",
+        "czechia": "CZ",
         "slovakia": "SK",
         "hungary": "HU",
         "romania": "RO",
@@ -426,7 +519,12 @@ def _hf_country_code_from_qrz(payload: Dict[str, Any]) -> str:
         "south africa": "ZA",
     }
 
-    return common.get(country, "")
+    for key in ("country", "land", "entity", "dxcc_name"):
+        name = _hf_normalize_country_name(payload.get(key))
+        if name in built_in:
+            return built_in[name]
+
+    return ""
 
 
 def _hf_map_zoom_for_country(country_code: str, country: str) -> int:
