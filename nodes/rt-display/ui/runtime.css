@@ -1052,7 +1052,7 @@ body[data-page="pota"] .panel-title {
   height: 1.25rem;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  color: #00e5ff;
+  color: #0000cd;
 }
 
 .rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin {
@@ -1062,7 +1062,7 @@ body[data-page="pota"] .panel-title {
   height: 1.25rem;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  color: #00e5ff;
+  color: #0000cd;
 }
 
 .rt-slot[data-panel-id="hf_map_summary"] .rt-hf-map-pin-dot {
