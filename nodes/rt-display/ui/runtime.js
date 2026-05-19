@@ -624,6 +624,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
   let uiProjectionNeedsRerun = false;
   let uiProjectionSubscribed = false;
   let uiProjectionRetryDelayMs = 1500;
+  let topbarCoreRefreshTimer = null;
 
   function stopAllRefresh() {
     for (const handle of refreshHandles) {
@@ -959,6 +960,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     });
 
     updateLocalUiModeFromProjection(currentUiState);
+    startTopbarCoreRefresh();
   }
 
   function bindingRedisKey(binding) {
@@ -999,13 +1001,21 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     return payload?.data?.values || {};
   }
 
-  async function refreshPanelBindings(panelId) {
+  async function refreshPanelBindings(panelId, changedKeys = null) {
     const panel = bundle.panelsById[panelId];
     const rerender = panelRerender.get(panelId);
     if (!panel || typeof rerender !== "function") return;
 
     const bindings = coerceBindings(panel);
-    const keys = bindings.map(bindingRedisKey).filter(Boolean);
+    const allKeys = bindings.map(bindingRedisKey).filter(Boolean);
+
+    const normalizedChangedKeys = Array.isArray(changedKeys)
+      ? changedKeys.map((k) => String(k || "").trim()).filter(Boolean)
+      : [];
+
+    const keys = normalizedChangedKeys.length
+      ? allKeys.filter((key) => normalizedChangedKeys.includes(key))
+      : allKeys;
 
     if (!keys.length) {
       rerender(buildRenderDataForPanel(panelId, currentUiState));
@@ -1013,12 +1023,16 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     }
 
     const values = await fetchUiStateBatch(keys);
-    const nextData = {};
+    const nextData = { ...(panelLastData.get(panelId) || {}) };
 
     for (const binding of bindings) {
       const id = String(binding?.id || "").trim();
       const key = bindingRedisKey(binding);
       if (!id || !key) continue;
+
+      // Partial refresh: only update bindings that were actually fetched.
+      // Preserve all other cached panel data.
+      if (!keys.includes(key)) continue;
 
       const entry = values[key];
       nextData[id] = entry && entry.ok ? tryParseJSON(entry.value) : null;
@@ -1027,6 +1041,23 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     panelLastData.set(panelId, nextData);
     rerender(buildRenderDataForPanel(panelId, currentUiState));
   }
+
+  function startTopbarCoreRefresh() {
+    if (topbarCoreRefreshTimer) {
+      clearInterval(topbarCoreRefreshTimer);
+      topbarCoreRefreshTimer = null;
+    }
+
+    topbarCoreRefreshTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (!slotByPanelId.has("topbar_core")) return;
+
+      // GPS/time keys are updated directly by rt-gps-state-publisher.
+      // They do not currently arrive as ui.projection.changed events.
+      // Keep this targeted to topbar_core so we do not restore broad panel polling.
+      void refreshPanelBindings("topbar_core");
+    }, 1000);
+  }  
 
   let panelRefreshInflight = false;
   let panelRefreshQueuedKeys = null;
@@ -1070,6 +1101,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
         "rt:hf:spots:selected_detail",
         "rt:hf:qrz:selected",
         "rt:hf:qso_history:selected",
+        "rt:hf:map:selected",
       ]);
 
       const hfChanged = normalizedKeys.some((key) => hfDataKeys.has(key));
@@ -1089,7 +1121,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
 
       if (affectedPanelIds.length > 0) {
         await Promise.all(
-          affectedPanelIds.map((panelId) => refreshPanelBindings(panelId))
+          affectedPanelIds.map((panelId) => refreshPanelBindings(panelId, normalizedKeys))
         );
       }
 
@@ -1129,6 +1161,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     if (pageChanged) {
       mountCurrentPage(pageId, focusId);
       updateLocalUiModeFromProjection(uiState);
+
 
       if (focusId) {
         nav.setActivePanel(focusId);
@@ -1171,9 +1204,44 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
     await refreshAffectedPanelsFromChangedKeys(keys);
   }
 
+  function normalizeChangedKeys(keys) {
+    return Array.isArray(keys)
+      ? keys.map((k) => String(k || "").trim()).filter(Boolean)
+      : [];
+  }
+
+  function changedKeysNeedUiProjectionFetch(changedKeys, deletedKeys = []) {
+    const changed = normalizeChangedKeys(changedKeys);
+    const deleted = normalizeChangedKeys(deletedKeys);
+
+    const projectionKeys = new Set([
+      "rt:ui:page",
+      "rt:ui:focus",
+      "rt:ui:layer",
+      "rt:ui:modal",
+      "rt:ui:authority",
+      "rt:ui:page_context",
+      "rt:ui:browse",
+    ]);
+
+    const relevant = [...changed, ...deleted].filter((key) =>
+      projectionKeys.has(key) || key.startsWith("rt:ui:browse:")
+    );
+
+    if (relevant.length === 0) return false;
+
+    return true;
+  }
+
   async function refreshUiProjectionState(reason = "unknown") {
     if (uiProjectionInflight) {
-      uiProjectionNeedsRerun = true;
+      const changed = normalizeChangedKeys(reason?.changed_keys || null);
+      const deleted = normalizeChangedKeys(reason?.deleted_keys || null);
+
+      if (changedKeysNeedUiProjectionFetch(changed, deleted)) {
+        uiProjectionNeedsRerun = true;
+      }
+
       return;
     }
 
@@ -1199,9 +1267,46 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       if (uiProjectionNeedsRerun) {
         uiProjectionNeedsRerun = false;
         queueMicrotask(() => {
-          void refreshUiProjectionState("rerun");
+          void refreshUiProjectionState({
+            source: "rerun",
+            changed_keys: ["rt:ui:page"],
+            deleted_keys: [],
+          });
         });
+      }    
+    }
+  }
+
+  async function handleProjectionChangedKeys(changedKeys, deletedKeys = []) {
+    const normalizedChangedKeys = normalizeChangedKeys(changedKeys);
+    const normalizedDeletedKeys = normalizeChangedKeys(deletedKeys);
+
+    if (changedKeysNeedUiProjectionFetch(normalizedChangedKeys, normalizedDeletedKeys)) {
+      await refreshUiProjectionState({
+        source: "bus",
+        changed_keys: normalizedChangedKeys,
+        deleted_keys: normalizedDeletedKeys,
+      });
+      return;
+    }
+
+    try {
+      clearUiProjectionRetryTimer();
+      rtHideControllerOverlay();
+
+      await refreshAffectedPanelsFromChangedKeys(normalizedChangedKeys);
+    } catch (e) {
+      rtShowControllerOverlay("Lost connection to rt-controller. Reconnecting…");
+
+      if (debug) {
+        console.warn("[rt] handleProjectionChangedKeys error", {
+          changed_keys: normalizedChangedKeys,
+          deleted_keys: normalizedDeletedKeys,
+        }, e);
       }
+
+      scheduleUiProjectionRetry("retry-after-changed-keys-error");
+      uiProjectionRetryDelayMs = Math.min(uiProjectionRetryDelayMs * 2, 5000);
     }
   }
 
@@ -1220,10 +1325,15 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
         event?.keys ||
         null;
 
-      void refreshUiProjectionState({
-        source: "bus",
-        changed_keys: Array.isArray(changedKeys) ? changedKeys : null,
-      });
+      const deletedKeys =
+        event?.payload?.deleted_keys ||
+        event?.deleted_keys ||
+        null;
+
+      void handleProjectionChangedKeys(
+        Array.isArray(changedKeys) ? changedKeys : null,
+        Array.isArray(deletedKeys) ? deletedKeys : null,
+      );
     });
 
     // FALLBACK POLLING DISABLED - event driven only
@@ -1271,6 +1381,7 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
       store.unsubscribe(UI_PROJECTION_TOPIC);
       clearUiProjectionRetryTimer();
       if (uiProjectionPollTimer) clearInterval(uiProjectionPollTimer);
+      if (topbarCoreRefreshTimer) clearInterval(topbarCoreRefreshTimer);
     } catch (_) {}
   });
 })();
