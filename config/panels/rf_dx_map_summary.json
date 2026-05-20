@@ -1,0 +1,30 @@
+{
+  "id": "rf_dx_map_summary",
+  "type": "rf_dx_map_summary",
+  "interaction": {
+    "browsable": false
+  },
+  "focusable": false,
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+  "bindings": [
+    {
+      "id": "map",
+      "source": "state",
+      "key": "rt:rfintel:map"
+    }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Placeholder display for projected RF Intel DX and propagation map data.",
+    "title": "DX Map",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": [
+        "map"
+      ]
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "id": "rfintel",
+  "order": 30,
+  "title": "RF Intel",
+  "layout": {
+    "top": [
+      "topbar_core"
+    ],
+    "middle": [
+      [
+        "rf_solar_summary",
+        "rf_band_recommendations"
+      ],
+      [
+        "rf_dx_map_summary",
+        "rf_advisor_summary"
+      ]
+    ],
+    "bottom": [
+      "alerts_overlay"
+    ]
+  },
+  "requires": [
+    "redis_state",
+    "mqtt_bus"
+  ],
+  "optional": [
+    "logging",
+    "node_health"
+  ],
+  "controls": {
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.ok",
+      "ui.cancel",
+      "ui.back",
+      "ui.browse.delta",
+      "ui.encoder.press",
+      "alert.ack",
+      "alert.silence"
+    ]
+  },
+  "focusPolicy": {
+    "defaultPanel": "rf_solar_summary",
+    "rotation": [
+      "rf_solar_summary",
+      "rf_band_recommendations",
+      "rf_dx_map_summary",
+      "rf_advisor_summary",
+      "alerts_overlay"
+    ]
+  },
+  "meta": {
+    "purpose": "RF intelligence and propagation skeleton page. Placeholder panels only; no RF intelligence, API fetchers, propagation logic, map logic, or advisor logic."
+  }
+}

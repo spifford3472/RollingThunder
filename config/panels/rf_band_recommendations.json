@@ -1,0 +1,30 @@
+{
+  "id": "rf_band_recommendations",
+  "type": "rf_band_recommendations",
+  "interaction": {
+    "browsable": false
+  },
+  "focusable": true,
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+  "bindings": [
+    {
+      "id": "bands",
+      "source": "state",
+      "key": "rt:rfintel:bands"
+    }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Placeholder display for projected RF Intel band recommendation data.",
+    "title": "Bands",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": [
+        "bands"
+      ]
+    }
+  }
+}

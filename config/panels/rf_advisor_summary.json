@@ -1,0 +1,30 @@
+{
+  "id": "rf_advisor_summary",
+  "type": "rf_advisor_summary",
+  "interaction": {
+    "browsable": false
+  },
+  "focusable": false,
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+  "bindings": [
+    {
+      "id": "advisor",
+      "source": "state",
+      "key": "rt:rfintel:advisor"
+    }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Placeholder display for projected RF Intel advisor text.",
+    "title": "Advisor",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": [
+        "advisor"
+      ]
+    }
+  }
+}

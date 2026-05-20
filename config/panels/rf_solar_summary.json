@@ -1,0 +1,30 @@
+{
+  "id": "rf_solar_summary",
+  "type": "rf_solar_summary",
+  "interaction": {
+    "browsable": false
+  },
+  "focusable": true,
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed"
+  },
+  "bindings": [
+    {
+      "id": "solar",
+      "source": "state",
+      "key": "rt:rfintel:solar"
+    }
+  ],
+  "actions": [],
+  "meta": {
+    "purpose": "Placeholder display for projected RF Intel solar data.",
+    "title": "Solar",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": [
+        "solar"
+      ]
+    }
+  }
+}

@@ -9,5 +9,9 @@
 "hf_bands_summary.json",
 "hf_spots_summary.json",
 "hf_map_summary.json",
-"hf_detail_summary.json"
+"hf_detail_summary.json",
+"rf_solar_summary.json",
+"rf_band_recommendations.json",
+"rf_dx_map_summary.json",
+"rf_advisor_summary.json"
 ] }

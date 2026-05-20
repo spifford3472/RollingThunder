@@ -12,6 +12,10 @@ import { renderHfBandsSummary } from "./renderers/hf_bands_summary.js";
 import { renderHfSpotsSummary } from "./renderers/hf_spots_summary.js";
 import { renderHfMapSummary } from "./renderers/hf_map_summary.js";
 import { renderHfDetailSummary } from "./renderers/hf_detail_summary.js";
+import { renderRfSolarSummary } from "./renderers/rf_solar_summary.js";
+import { renderRfBandRecommendations } from "./renderers/rf_band_recommendations.js";
+import { renderRfDxMapSummary } from "./renderers/rf_dx_map_summary.js";
+import { renderRfAdvisorSummary } from "./renderers/rf_advisor_summary.js";
 
 /**
  * createRendererRegistry()
@@ -73,6 +77,7 @@ export function createRendererRegistry() {
     renderPotaParksSummary(container, panel, data)
   );
 
+  // HF Panels
   map.set("hf_bands_summary", (container, panel, data) =>
     renderHfBandsSummary(container, panel, data)
   );
@@ -87,6 +92,23 @@ export function createRendererRegistry() {
 
   map.set("hf_detail_summary", (container, panel, data) =>
     renderHfDetailSummary(container, panel, data)
+  );
+
+  // RF Intel Panels
+  map.set("rf_solar_summary", (container, panel, data) =>
+    renderRfSolarSummary(container, panel, data)
+  );
+
+  map.set("rf_band_recommendations", (container, panel, data) =>
+    renderRfBandRecommendations(container, panel, data)
+  );
+
+  map.set("rf_dx_map_summary", (container, panel, data) =>
+    renderRfDxMapSummary(container, panel, data)
+  );
+
+  map.set("rf_advisor_summary", (container, panel, data) =>
+    renderRfAdvisorSummary(container, panel, data)
   );
 
   return map;

@@ -1,1 +1,8 @@
-{ "files": ["home.json", "hf.json", "pota.json"] }
+{
+  "files": [
+    "home.json",
+    "hf.json",
+    "pota.json",
+    "rfintel.json"
+  ]
+}
