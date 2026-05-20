@@ -95,6 +95,10 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:hf:qrz:selected",
     "rt:hf:qso_history:selected",
     "rt:hf:map:selected",
+    "rt:rfintel:solar",
+    "rt:rfintel:bands",
+    "rt:rfintel:map",
+    "rt:rfintel:advisor",
 }
 
 PROJECTED_KEYS = {
