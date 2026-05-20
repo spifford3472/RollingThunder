@@ -9,8 +9,8 @@
   },
   "runtimeVersion": {
     "major": 0,
-    "minor": 53,
-    "build": 117
+    "minor": 54,
+    "build": 0
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -102,9 +102,9 @@
         {
           "id": "local",
           "name": "Local DX Spider",
-          "location": "Johnstown, OH (EN80)",
-          "telnetAddress": "dxc.ohiopacket.org",
-          "telnetPort": 7300,
+          "location": "Westfield, IN (EN82)",
+          "telnetAddress": "dxc.w9na.net",
+          "telnetPort": 7373,
           "logonName": "KI5VNB",
           "setNameCommand": "set/name Geoffrey",
           "setLocationCommand": "set/qra EM79"
@@ -112,8 +112,8 @@
         {
           "id": "us_east",
           "name": "US East DX Spider",
-          "location": "Amazon Data Center, VA (FM19)",
-          "telnetAddress": "dxc.ae3n.us",
+          "location": "N. Chelmsford, MA (FN42)",
+          "telnetAddress": "dxc.ad1c.us",
           "telnetPort": 7300,
           "logonName": "KI5VNB",
           "setNameCommand": "set/name Geoffrey",
@@ -122,8 +122,8 @@
         {
           "id": "us_west",
           "name": "US West DX Spider",
-          "location": "Nipomo, CA (CM95)",
-          "telnetAddress": "n6ws.ddns.net",
+          "location": "Bee Cave, TX (EM12)",
+          "telnetAddress": "dxc-us.ab5k.net",
           "telnetPort": 7300,
           "logonName": "KI5VNB",
           "setNameCommand": "set/name Geoffrey",
@@ -132,9 +132,9 @@
         {
           "id": "europe",
           "name": "Europe DX Spider",
-          "location": "San Esterban de Pravia, Asturias (IN63)",
-          "telnetAddress": "ea1cyz.niab.es",
-          "telnetPort": 9000,
+          "location": "UK (IO91)",
+          "telnetAddress": "dxspider.co.uk",
+          "telnetPort": 7300,
           "logonName": "KI5VNB",
           "setNameCommand": "set/name Geoffrey",
           "setLocationCommand": "set/qra EM79"
