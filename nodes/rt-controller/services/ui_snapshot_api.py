@@ -152,6 +152,12 @@ HF_MAPS_ROOT = os.environ.get(
     "/opt/rollingthunder/nodes/rt-controller/data/MAPS",
 )
 
+RFINTEL_IMAGES_PREFIX = "/ui/rfintel/images"
+RFINTEL_IMAGES_ROOT = os.environ.get(
+    "RT_RFINTEL_IMAGE_CACHE_DIR",
+    "/opt/rollingthunder/data/rfintel/images",
+)
+
 
 WPSD_HTTP_BASE = os.environ.get("RT_WPSD_HTTP_BASE", "http://192.168.8.184")
 FLAGS_MAX_BYTES = int(os.environ.get("RT_FLAGS_MAX_BYTES", "200000"))  # 200KB cap
@@ -348,7 +354,61 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
     # Keep logs quiet by default; systemd/journal can still show tracebacks if we print
     def log_message(self, fmt: str, *args: Any) -> None:
         return
-    
+
+    def _handle_rfintel_image_asset(self, path: str) -> bool:
+        """
+        Serve local RF Intel cached image assets.
+
+        GET /ui/rfintel/images/latest_suvi.png
+          -> /opt/rollingthunder/data/rfintel/images/latest_suvi.png
+
+        This is intentionally static/local. The browser does not call NOAA/SWPC;
+        it only renders controller-projected same-origin URLs.
+        """
+        if path != RFINTEL_IMAGES_PREFIX and not path.startswith(RFINTEL_IMAGES_PREFIX + "/"):
+            return False
+
+        rel = path[len(RFINTEL_IMAGES_PREFIX):].lstrip("/")
+
+        # No directory listings. Keep the first version deliberately small.
+        allowed_ext = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+        if not rel or "/" in rel or not rel.lower().endswith(allowed_ext):
+            self.send_error(404, "RF Intel image not found")
+            return True
+
+        root = os.path.abspath(RFINTEL_IMAGES_ROOT)
+        target = os.path.abspath(os.path.join(root, rel))
+
+        # Path traversal guard.
+        if target != root and not target.startswith(root + os.sep):
+            self.send_error(403, "Forbidden")
+            return True
+
+        if not os.path.isfile(target):
+            self.send_error(404, "RF Intel image not found")
+            return True
+
+        ctype, _ = mimetypes.guess_type(target)
+        ctype = ctype or "application/octet-stream"
+
+        try:
+            with open(target, "rb") as f:
+                data = f.read()
+
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        except Exception as exc:
+            print(f"[ui_snapshot_api] RF Intel image read failed: {exc}", flush=True)
+            self.send_error(500, "RF Intel image read failed")
+            return True
+
     def _handle_hf_map_asset(self, path: str) -> bool:
         """
         Serve local HF map assets.
@@ -1505,6 +1565,11 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
         # 0) healthz
         if path in HEALTHZ_PATHS:
             return self._handle_healthz()
+
+        # Local RF Intel cached image assets.
+        # Must be before static UI routing so /ui/rfintel/images/* is handled here.
+        if self._handle_rfintel_image_asset(path):
+            return
 
         # Local HF map assets.
         if self._handle_hf_map_asset(path):

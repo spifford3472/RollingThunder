@@ -13,6 +13,13 @@ Publishes only:
 Does not write to rt:ui:bus.
 Does not inspect UI state.
 Does not make band/advisor/map recommendations.
+
+Image cache behavior:
+- Downloads one NOAA/SWPC SUVI image controller-side.
+- Stores it locally under /opt/rollingthunder/data/rfintel/images/.
+- Publishes only the local same-origin URL to Redis:
+    /ui/rfintel/images/latest_suvi.png
+- Keeps the previous good image on download failure.
 """
 
 from __future__ import annotations
@@ -22,9 +29,11 @@ import json
 import os
 import signal
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 import redis
@@ -42,6 +51,26 @@ DEFAULT_INTERVAL_SEC = int(os.environ.get("RT_RFINTEL_SWPC_INTERVAL_SEC", "900")
 HTTP_TIMEOUT_SEC = float(os.environ.get("RT_RFINTEL_SWPC_HTTP_TIMEOUT_SEC", "8"))
 STALE_AFTER_SEC = int(os.environ.get("RT_RFINTEL_SWPC_STALE_AFTER_SEC", "1800"))
 
+IMAGE_CACHE_DIR = os.environ.get(
+    "RT_RFINTEL_IMAGE_CACHE_DIR",
+    "/opt/rollingthunder/data/rfintel/images",
+)
+IMAGE_PUBLIC_PREFIX = os.environ.get(
+    "RT_RFINTEL_IMAGE_PUBLIC_PREFIX",
+    "/ui/rfintel/images",
+).rstrip("/")
+
+# NOAA/SWPC direct image endpoint.
+# Browser never sees this URL; the collector downloads it and publishes only the local URL.
+DEFAULT_SOLAR_IMAGE_SOURCE_URL = os.environ.get(
+    "RT_RFINTEL_SOLAR_IMAGE_SOURCE_URL",
+    "https://services.swpc.noaa.gov/images/animations/suvi/primary/195/latest.png",
+)
+SOLAR_IMAGE_FILENAME = os.environ.get(
+    "RT_RFINTEL_SOLAR_IMAGE_FILENAME",
+    "latest_suvi.png",
+)
+
 SOURCE = "NOAA SWPC"
 SERVICE_SOURCE = "rfintel_swpc_collector"
 
@@ -49,9 +78,6 @@ URL_KP = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 URL_F107 = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json"
 URL_SCALES = "https://services.swpc.noaa.gov/products/noaa-scales.json"
 URL_SUNSPOTS = "https://services.swpc.noaa.gov/json/solar-cycle/sunspots.json"
-
-#SOLAR_IMAGE_URL = "https://www.swpc.noaa.gov/products/goes-solar-ultraviolet-imager-suvi"
-SOLAR_IMAGE_URL = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_HMIIF.jpg"
 
 _running = True
 
@@ -131,6 +157,14 @@ def rounded(value: float | None, digits: int = 1) -> float | None:
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def safe_error_text(exc: Exception) -> str:
+    raw = f"{type(exc).__name__}: {exc}"
+    raw = raw.replace("\n", " ").replace("\r", " ")
+    if len(raw) > 180:
+        raw = raw[:177] + "..."
+    return raw
 
 
 def http_json(url: str) -> Any:
@@ -264,7 +298,173 @@ def condition_from_kp(kp: float | None) -> str:
     return "Severe storm"
 
 
-def build_ok_model(verbose: bool = False) -> dict[str, Any]:
+def image_cache_paths(cache_dir: str, filename: str) -> tuple[Path, Path]:
+    root = Path(cache_dir).resolve()
+    return root / filename, root / f"{filename}.json"
+
+
+def read_image_meta(meta_path: Path) -> dict[str, Any]:
+    try:
+        if not meta_path.is_file():
+            return {}
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_image_meta(meta_path: Path, meta: Mapping[str, Any]) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(dict(meta), sort_keys=True, indent=2), encoding="utf-8")
+    os.replace(tmp, meta_path)
+
+
+def same_file_bytes(a: Path, b: Path) -> bool:
+    try:
+        if not a.is_file() or not b.is_file():
+            return False
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        with a.open("rb") as fa, b.open("rb") as fb:
+            while True:
+                ca = fa.read(1024 * 256)
+                cb = fb.read(1024 * 256)
+                if ca != cb:
+                    return False
+                if not ca:
+                    return True
+    except Exception:
+        return False
+
+
+def download_image_to_cache(
+    *,
+    source_url: str,
+    cache_dir: str,
+    public_prefix: str,
+    filename: str,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    image_path, meta_path = image_cache_paths(cache_dir, filename)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+
+    local_url = f"{public_prefix.rstrip('/')}/{filename}"
+    previous_meta = read_image_meta(meta_path)
+    previous_updated = str(previous_meta.get("image_updated_utc") or "")
+
+    try:
+        req = urllib.request.Request(
+            source_url,
+            headers={
+                "User-Agent": "RollingThunder RFIntel Image Cache",
+                "Accept": "image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.1",
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            content_type = str(resp.headers.get("Content-Type") or "").lower()
+            if content_type and not content_type.startswith("image/"):
+                raise RuntimeError(f"unexpected content-type {content_type}")
+
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{filename}.",
+                suffix=".tmp",
+                dir=str(image_path.parent),
+            )
+
+            bytes_written = 0
+            try:
+                with os.fdopen(fd, "wb") as tmp:
+                    while True:
+                        chunk = resp.read(1024 * 256)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+                        bytes_written += len(chunk)
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except Exception:
+                    pass
+                raise
+
+        tmp_path = Path(tmp_name)
+
+        if bytes_written < 1024:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+            raise RuntimeError(f"image too small: {bytes_written} bytes")
+
+        changed = not same_file_bytes(tmp_path, image_path)
+        if changed:
+            os.replace(tmp_path, image_path)
+            image_updated_utc = now_utc()
+        else:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+            image_updated_utc = previous_updated or now_utc()
+
+        meta = {
+            "image_updated_utc": image_updated_utc,
+            "image_source": SOURCE,
+            "image_source_url": source_url,
+            "image_filename": filename,
+            "image_bytes": int(image_path.stat().st_size),
+            "image_content_type": content_type or "image/png",
+        }
+        write_image_meta(meta_path, meta)
+
+        if verbose:
+            action = "updated" if changed else "unchanged"
+            print(f"Image cache {action}: {image_path} -> {local_url}")
+
+        return {
+            "image_url": local_url,
+            "image_status": "fresh",
+            "image_updated_utc": image_updated_utc,
+            "image_source": SOURCE,
+            "image_error": "",
+        }
+
+    except Exception as exc:
+        error = safe_error_text(exc)
+
+        if image_path.is_file():
+            if verbose:
+                print(f"Image download failed; keeping stale cache: {error}")
+            return {
+                "image_url": local_url,
+                "image_status": "stale",
+                "image_updated_utc": previous_updated,
+                "image_source": SOURCE,
+                "image_error": error,
+            }
+
+        if verbose:
+            print(f"Image download failed; no cache available: {error}")
+
+        return {
+            "image_url": "",
+            "image_status": "unavailable",
+            "image_updated_utc": "",
+            "image_source": SOURCE,
+            "image_error": error,
+        }
+
+
+def build_ok_model(
+    *,
+    verbose: bool = False,
+    image_source_url: str = DEFAULT_SOLAR_IMAGE_SOURCE_URL,
+    image_cache_dir: str = IMAGE_CACHE_DIR,
+    image_public_prefix: str = IMAGE_PUBLIC_PREFIX,
+    image_filename: str = SOLAR_IMAGE_FILENAME,
+) -> dict[str, Any]:
     errors: list[str] = []
     timestamps: list[str | None] = []
 
@@ -302,6 +502,14 @@ def build_ok_model(verbose: bool = False) -> dict[str, Any]:
     if kp is None and sfi is None and xray_status is None and sunspot_number is None:
         raise RuntimeError(";".join(errors) if errors else "no usable SWPC fields")
 
+    image_state = download_image_to_cache(
+        source_url=image_source_url,
+        cache_dir=image_cache_dir,
+        public_prefix=image_public_prefix,
+        filename=image_filename,
+        verbose=verbose,
+    )
+
     condition = condition_from_kp(kp)
     updated_utc = latest_utc(timestamps)
 
@@ -318,7 +526,11 @@ def build_ok_model(verbose: bool = False) -> dict[str, Any]:
         "sunspot_number": sunspot_number,
         "xray_status": xray_status or "—",
         "swpc_scales": scales_summary or "",
-        "image_url": SOLAR_IMAGE_URL,
+        "image_url": image_state["image_url"],
+        "image_status": image_state["image_status"],
+        "image_updated_utc": image_state["image_updated_utc"],
+        "image_source": image_state["image_source"],
+        "image_error": image_state["image_error"],
         "updated_utc": updated_utc,
         "generated_ms": now_ms(),
         "source": SOURCE,
@@ -334,15 +546,16 @@ def build_ok_model(verbose: bool = False) -> dict[str, Any]:
     return {k: v for k, v in model.items() if v is not None}
 
 
-def safe_error_text(exc: Exception) -> str:
-    raw = f"{type(exc).__name__}: {exc}"
-    raw = raw.replace("\n", " ").replace("\r", " ")
-    if len(raw) > 180:
-        raw = raw[:177] + "..."
-    return raw
-
-
-def build_offline_model(error: str, previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def build_offline_model(
+    error: str,
+    previous: Mapping[str, Any] | None = None,
+    *,
+    image_source_url: str = DEFAULT_SOLAR_IMAGE_SOURCE_URL,
+    image_cache_dir: str = IMAGE_CACHE_DIR,
+    image_public_prefix: str = IMAGE_PUBLIC_PREFIX,
+    image_filename: str = SOLAR_IMAGE_FILENAME,
+    verbose: bool = False,
+) -> dict[str, Any]:
     updated = now_utc()
 
     if (
@@ -353,20 +566,32 @@ def build_offline_model(error: str, previous: Mapping[str, Any] | None = None) -
     ):
         updated = str(previous.get("updated_utc"))
 
+    image_state = download_image_to_cache(
+        source_url=image_source_url,
+        cache_dir=image_cache_dir,
+        public_prefix=image_public_prefix,
+        filename=image_filename,
+        verbose=verbose,
+    )
+
     return {
         "status": "offline",
         "condition": "Space weather data unavailable",
         "title": "NOAA SWPC Solar Status",
         "solar_status": "Space weather data unavailable",
         "xray_status": "—",
-        "image_url": SOLAR_IMAGE_URL,
+        "image_url": image_state["image_url"],
+        "image_status": image_state["image_status"],
+        "image_updated_utc": image_state["image_updated_utc"],
+        "image_source": image_state["image_source"],
+        "image_error": image_state["image_error"],
         "updated_utc": updated,
         "generated_ms": now_ms(),
         "source": SOURCE,
         "mock": False,
         "stale_after_sec": STALE_AFTER_SEC,
         "error": error,
-        "message": "NOAA/SWPC data is currently unavailable. Last good data is kept in service memory only.",
+        "message": "NOAA/SWPC data is currently unavailable. Last known good image is kept locally when available.",
     }
 
 
@@ -419,13 +644,27 @@ def write_if_changed(r: redis.Redis, model: dict[str, Any], verbose: bool = Fals
     return True
 
 
-def poll_once(r: redis.Redis, verbose: bool = False) -> bool:
+def poll_once(r: redis.Redis, args: argparse.Namespace, verbose: bool = False) -> bool:
     previous = load_current_model(r)
 
     try:
-        model = build_ok_model(verbose=verbose)
+        model = build_ok_model(
+            verbose=verbose,
+            image_source_url=args.image_source_url,
+            image_cache_dir=args.image_cache_dir,
+            image_public_prefix=args.image_public_prefix,
+            image_filename=args.image_filename,
+        )
     except Exception as e:
-        model = build_offline_model(safe_error_text(e), previous=previous)
+        model = build_offline_model(
+            safe_error_text(e),
+            previous=previous,
+            image_source_url=args.image_source_url,
+            image_cache_dir=args.image_cache_dir,
+            image_public_prefix=args.image_public_prefix,
+            image_filename=args.image_filename,
+            verbose=verbose,
+        )
 
     return write_if_changed(r, model, verbose=verbose)
 
@@ -456,6 +695,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--redis-port", type=int, default=DEFAULT_REDIS_PORT)
     p.add_argument("--redis-db", type=int, default=DEFAULT_REDIS_DB)
     p.add_argument("--redis-password", default=DEFAULT_REDIS_PASSWORD)
+    p.add_argument("--image-cache-dir", default=IMAGE_CACHE_DIR)
+    p.add_argument("--image-public-prefix", default=IMAGE_PUBLIC_PREFIX)
+    p.add_argument("--image-source-url", default=DEFAULT_SOLAR_IMAGE_SOURCE_URL)
+    p.add_argument("--image-filename", default=SOLAR_IMAGE_FILENAME)
     p.add_argument("--once", action="store_true")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
@@ -470,14 +713,19 @@ def main(argv: list[str]) -> int:
     r = redis_client(args)
 
     if args.once:
-        poll_once(r, verbose=args.verbose)
+        poll_once(r, args, verbose=args.verbose)
         return 0
 
     if args.verbose:
-        print(f"{SERVICE_SOURCE} starting; interval={args.interval_sec}s key={SOLAR_KEY}")
+        print(
+            f"{SERVICE_SOURCE} starting; "
+            f"interval={args.interval_sec}s key={SOLAR_KEY} "
+            f"image={args.image_source_url} -> "
+            f"{args.image_public_prefix.rstrip('/')}/{args.image_filename}"
+        )
 
     while _running:
-        poll_once(r, verbose=args.verbose)
+        poll_once(r, args, verbose=args.verbose)
 
         slept = 0
         while _running and slept < args.interval_sec:
