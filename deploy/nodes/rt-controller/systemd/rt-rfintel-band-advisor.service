@@ -1,0 +1,21 @@
+[Unit]
+Description=RollingThunder RF Intel Band Advisor
+After=network-online.target redis-server.service rt-rfintel-swpc-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_RFI_BAND_ADVISOR_INTERVAL_SEC=90
+EnvironmentFile=/etc/rollingthunder/redis.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rfintel_band_advisor.py
+Restart=always
+RestartSec=5
+User=spiff
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

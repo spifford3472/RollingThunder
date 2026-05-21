@@ -88,6 +88,7 @@ UNITS=(
   "rt-weather-publisher.service"
   "rt-hf-dx-spider-poller.service"
   "rt-rfintel-swpc-collector.service"
+  "rt-rfintel-band-advisor.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
