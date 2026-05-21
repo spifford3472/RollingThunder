@@ -1,0 +1,18 @@
+[Unit]
+Description=RollingThunder RF Intel NOAA SWPC Collector
+After=network-online.target redis-server.service rt-ui-state-projector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+WorkingDirectory=/opt/rollingthunder
+EnvironmentFile=/etc/rollingthunder/redis.env
+Environment=RT_RFINTEL_SWPC_INTERVAL_SEC=900
+Environment=RT_RFINTEL_SWPC_STALE_AFTER_SEC=1800
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/rfintel_swpc_collector.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
