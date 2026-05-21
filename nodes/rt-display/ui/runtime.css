@@ -1092,3 +1092,761 @@ body[data-page="pota"] .panel-title {
   opacity: 0.85;
   box-shadow: 0 0 0.75rem currentColor;
 }
+
+/*------------------------------------------------------------------*/
+/*              RF Intel visual renderers                           */
+/*------------------------------------------------------------------*/
+.rt-rfintel-panel {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  overflow: hidden;
+}
+
+.rt-rfintel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.rt-rfintel-title {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.rt-rfintel-badge {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  opacity: 0.82;
+}
+
+.rt-rfintel-badge-mock {
+  opacity: 0.7;
+}
+
+.rt-rfintel-hero {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.rt-rfintel-hero-label {
+  font-size: 0.78rem;
+  opacity: 0.72;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.rt-rfintel-hero-value {
+  margin-top: 0.2rem;
+  font-size: 1.75rem;
+  line-height: 1.05;
+  font-weight: 900;
+}
+
+.rt-rfintel-metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  min-height: 0;
+}
+
+.rt-rfintel-metric {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+}
+
+.rt-rfintel-metric-label {
+  font-size: 0.74rem;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rt-rfintel-metric-value {
+  margin-top: 0.12rem;
+  font-size: 1.45rem;
+  line-height: 1.05;
+  font-weight: 850;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rt-rfintel-footer span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*----------------------------------*/
+/* RF Intel Solar layout refinement */
+/*----------------------------------*/
+/* RF Intel Solar final panel layout */
+.rt-rfintel-solar-panel {
+  gap: 0.45rem;
+}
+
+.rt-rfintel-solar-condition {
+  flex: 0 0 auto;
+}
+
+.rt-rfintel-solar-main {
+  display: grid;
+  grid-template-columns: 1.25fr 0.95fr;
+  gap: 0.65rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-solar-metrics,
+.rt-rfintel-solar-right {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-solar-metrics {
+  display: flex;
+  align-items: stretch;
+}
+
+.rt-rfintel-solar-metric-grid {
+  width: 100%;
+  height: 100%;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.rt-rfintel-solar-right {
+  display: flex;
+  align-items: stretch;
+}
+
+.rt-rfintel-solar-visual-card {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.rt-rfintel-solar-footer {
+  flex: 0 0 auto;
+  padding-top: 0.1rem;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric-label {
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric-value {
+  text-align: right;
+  font-size: 1.8rem;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-solar-disc {
+  width: 6.2rem;
+  height: 6.2rem;
+}
+
+/* RF Intel Solar compact metric + X-Ray layout */
+.rt-rfintel-solar-main {
+  grid-template-columns: 1.2fr 0.95fr;
+  gap: 0.65rem;
+}
+
+.rt-rfintel-solar-metric-grid {
+  align-content: start;
+  height: auto;
+  gap: 0.45rem;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric {
+  min-height: 4.15rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric-value {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+
+.rt-rfintel-solar-right {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 0.45rem;
+}
+
+.rt-rfintel-solar-visual-card {
+  min-height: 5.8rem;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-solar-disc {
+  width: 4.9rem;
+  height: 4.9rem;
+  top: 43%;
+}
+
+.rt-rfintel-solar-xray-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+}
+
+.rt-rfintel-solar-xray-label {
+  font-size: 0.9rem;
+  font-weight: 800;
+  opacity: 0.78;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rt-rfintel-solar-xray-value {
+  margin-top: 0.15rem;
+  font-size: 1.45rem;
+  line-height: 1;
+  font-weight: 900;
+  text-align: right;
+}
+
+.rt-rfintel-solar-footer {
+  justify-content: flex-end;
+}
+
+/*-------------------------------------------------------------------*/
+/*            RF Intel Advisor visual renderer                       */
+/*-------------------------------------------------------------------*/
+.rt-rfintel-badge-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.rt-rfintel-advisor-panel {
+  gap: 0.5rem;
+}
+
+.rt-rfintel-advisor-hero {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.055);
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.rt-rfintel-advisor-main {
+  margin-top: 0.25rem;
+  font-size: 1.45rem;
+  line-height: 1.12;
+  font-weight: 850;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.rt-rfintel-advisor-list {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 0.4rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-advisor-row {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.6rem;
+  padding: 0.42rem 0.55rem;
+  background: rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+}
+
+.rt-rfintel-advisor-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.rt-rfintel-advisor-row-label {
+  font-size: 0.9rem;
+  line-height: 1;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.84;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-advisor-row-badge {
+  font-size: 0.68rem;
+  padding: 0.08rem 0.35rem;
+  opacity: 0.72;
+}
+
+.rt-rfintel-advisor-row-text {
+  margin-top: 0.22rem;
+  font-size: 1.02rem;
+  line-height: 1.1;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-advisor-footer {
+  justify-content: flex-end;
+}
+
+/*------------------------------------------------------------------*/
+/*      RF Intel DX / Propagation Map visual renderer               */
+/*------------------------------------------------------------------*/
+.rt-rfintel-map-panel {
+  gap: 0.5rem;
+}
+
+.rt-rfintel-map-layout {
+  display: grid;
+  grid-template-columns: 1.25fr 0.95fr;
+  gap: 0.65rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-map-left,
+.rt-rfintel-map-right {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-map-left {
+  display: flex;
+  align-items: stretch;
+}
+
+.rt-rfintel-map-right {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.rt-rfintel-map-visual-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 0.7rem;
+  overflow: hidden;
+  background: rgba(0,0,0,0.22);
+}
+
+.rt-rfintel-map-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.rt-rfintel-map-placeholder {
+  background:
+    radial-gradient(circle at center, rgba(80,180,255,0.16) 0%, rgba(0,0,0,0) 58%),
+    linear-gradient(to bottom, rgba(255,255,255,0.04), rgba(0,0,0,0.18));
+}
+
+.rt-rfintel-map-grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+  background-size: 1.2rem 1.2rem;
+  opacity: 0.55;
+}
+
+.rt-rfintel-map-sweep {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10rem;
+  height: 10rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 1px solid rgba(120,210,255,0.34);
+  box-shadow:
+    0 0 1rem rgba(120,210,255,0.18),
+    inset 0 0 1rem rgba(120,210,255,0.10);
+}
+
+.rt-rfintel-map-sweep::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48%;
+  height: 1px;
+  transform-origin: left center;
+  transform: rotate(-28deg);
+  background: linear-gradient(to right, rgba(120,210,255,0.85), rgba(120,210,255,0));
+}
+
+.rt-rfintel-map-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2.2rem;
+  height: 2.2rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255,255,255,0.32);
+  border-radius: 999px;
+}
+
+.rt-rfintel-map-crosshair::before,
+.rt-rfintel-map-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255,255,255,0.24);
+}
+
+.rt-rfintel-map-crosshair::before {
+  left: 50%;
+  top: -0.8rem;
+  bottom: -0.8rem;
+  width: 1px;
+}
+
+.rt-rfintel-map-crosshair::after {
+  top: 50%;
+  left: -0.8rem;
+  right: -0.8rem;
+  height: 1px;
+}
+
+.rt-rfintel-map-center-label {
+  position: absolute;
+  left: 0.65rem;
+  right: 0.65rem;
+  bottom: 0.55rem;
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  opacity: 0.78;
+}
+
+.rt-rfintel-map-status-card {
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 0.7rem;
+  padding: 0.55rem 0.65rem;
+  background: rgba(255,255,255,0.055);
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.rt-rfintel-map-status {
+  margin-top: 0.18rem;
+  font-size: 1.35rem;
+  line-height: 1.05;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-map-message {
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+  line-height: 1.12;
+  opacity: 0.82;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-map-region-list {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 0.4rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-map-region {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 0.6rem;
+  padding: 0.4rem 0.52rem;
+  background: rgba(0,0,0,0.16);
+  overflow: hidden;
+}
+
+.rt-rfintel-map-region-label {
+  font-size: 0.86rem;
+  line-height: 1;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.82;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-map-region-text {
+  margin-top: 0.22rem;
+  font-size: 0.98rem;
+  line-height: 1.08;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-map-footer {
+  justify-content: flex-end;
+}
+
+/*------------------------------------------------------------------*/
+/*         RF Intel Band Recommendations visual renderer            */
+/*------------------------------------------------------------------*/
+rflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-reason {
+  font-size: 0.95rem;
+  line-height: 1.08;
+  opacity: 0.88;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-bands-empty {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.7rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.rt-rfintel-bands-empty-text {
+  margin-top: 0.25rem;
+  font-size: 1.45rem;
+  line-height: 1.1;
+  font-weight: 850;
+}
+
+.rt-rfintel-bands-footer {
+  justify-content: space-between;
+}
+
+.rt-rfintel-band-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-band-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  min-height: 0;
+}
+
+.rt-rfintel-band-left,
+.rt-rfintel-band-right {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-band-left {
+  display: block;
+}
+
+.rt-rfintel-band-name {
+  font-size: 2.05rem;
+  line-height: 1;
+  font-weight: 950;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-subline {
+  margin-top: 0.28rem;
+  font-size: 1.15rem;
+  line-height: 1.05;
+  font-weight: 750;
+  opacity: 0.88;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-right {
+  display: block;
+}
+
+.rt-rfintel-band-badges {
+  justify-content: flex-start;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.rt-rfintel-band-badges .rt-rfintel-badge {
+  font-size: 0.88rem;
+  padding: 0.12rem 0.45rem;
+  max-width: 8rem;
+}
+
+.rt-rfintel-band-reason {
+  margin-top: 0.3rem;
+  font-size: 1.05rem;
+  line-height: 1.05;
+  text-align: left;
+  opacity: 0.86;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-bands-footer {
+  font-size: 0.82rem;
+}
+
+/*------------------------------------------------------------------*/
+/*   RF Intel Band Recommendations simplified large-card layout     */
+/*------------------------------------------------------------------*/
+.rt-rfintel-band-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-4 {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-6 {
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+}
+
+.rt-rfintel-band-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.42rem;
+  padding: 0.75rem 0.85rem;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+}
+
+.rt-rfintel-band-name {
+  font-size: 2.35rem;
+  line-height: 1;
+  font-weight: 950;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-primary {
+  font-size: 1.35rem;
+  line-height: 1.05;
+  font-weight: 850;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-badges {
+  display: flex;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rt-rfintel-band-badges .rt-rfintel-badge {
+  font-size: 1rem;
+  padding: 0.13rem 0.5rem;
+  max-width: 9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-6 .rt-rfintel-band-row {
+  padding: 0.5rem 0.7rem;
+  gap: 0.25rem;
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-6 .rt-rfintel-band-name {
+  font-size: 1.85rem;
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-6 .rt-rfintel-band-primary {
+  font-size: 1.05rem;
+}
+
+.rt-rfintel-band-list.rt-rfintel-band-count-6 .rt-rfintel-band-badges .rt-rfintel-badge {
+  font-size: 0.82rem;
+}
+
+.rt-rfintel-bands-footer {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  opacity: 0.72;
+}

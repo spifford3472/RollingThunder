@@ -1,6 +1,7 @@
 // rf_advisor_summary.js
 // PURE RENDERER — displays controller/projector-owned RF Intel advisor model only.
 // No browser-owned advice, no Redis access, no API calls, no polling, no intent execution.
+// Presentation-only: formats and hides fields; does not score, infer, enrich, or correct data.
 
 function unwrapObject(value) {
   if (!value) return {};
@@ -19,6 +20,18 @@ function unwrapObject(value) {
   return {};
 }
 
+function unwrapItems(value) {
+  const obj = unwrapObject(value);
+
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(obj.items)) return obj.items;
+  if (Array.isArray(obj.rows)) return obj.rows;
+  if (Array.isArray(obj.messages)) return obj.messages;
+  if (Array.isArray(obj.advice)) return obj.advice;
+
+  return [];
+}
+
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -28,58 +41,151 @@ function esc(value) {
     .replaceAll("'", "&#39;");
 }
 
-function advisorText(model) {
-  if (typeof model === "string") return model;
+function firstText(model, keys, fallback = "") {
+  if (typeof model === "string") return model.trim();
 
-  return String(
-    model?.text ||
-    model?.message ||
-    model?.summary ||
-    model?.status ||
-    ""
-  ).trim();
+  for (const key of keys) {
+    const value = model?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+
+  return fallback;
 }
 
-function renderKeyValueRows(model) {
-  return Object.entries(model)
-    .filter(([key]) => !String(key).startsWith("_"))
-    .filter(([key]) => !["text", "message", "summary"].includes(String(key)))
-    .map(([key, value]) => {
-      const displayValue =
-        value && typeof value === "object"
-          ? JSON.stringify(value)
-          : value;
+function compactTime(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
 
-      return `
-        <div class="rt-kv-row">
-          <div class="rt-kv-key">${esc(key)}</div>
-          <div class="rt-kv-value">${esc(displayValue)}</div>
-        </div>
-      `;
-    })
-    .join("");
+  return s
+    .replace("T", " ")
+    .replace(/\.000Z$/, "Z")
+    .replace(/\+00:00$/, "Z");
+}
+
+function badge(label, className = "") {
+  const s = String(label ?? "").trim();
+  if (!s) return "";
+
+  return `
+    <span class="rt-rfintel-badge ${className}">
+      ${esc(s)}
+    </span>
+  `;
+}
+
+function itemText(item) {
+  if (typeof item === "string") return item.trim();
+
+  return firstText(
+    item,
+    ["text", "message", "summary", "recommendation", "reason", "status"],
+    ""
+  );
+}
+
+function itemLabel(item, index) {
+  if (!item || typeof item !== "object") return `#${index + 1}`;
+
+  return firstText(
+    item,
+    ["label", "title", "band", "name", "priority", "level", "severity"],
+    `#${index + 1}`
+  );
+}
+
+function renderAdvisorItem(item, index) {
+  const label = itemLabel(item, index);
+  const text = itemText(item);
+
+  if (!text) return "";
+
+  const status =
+    item && typeof item === "object"
+      ? firstText(item, ["status", "level", "severity"], "")
+      : "";
+
+  return `
+    <div class="rt-rfintel-advisor-row">
+      <div class="rt-rfintel-advisor-row-top">
+        <div class="rt-rfintel-advisor-row-label">${esc(label)}</div>
+        ${status ? badge(status, "rt-rfintel-advisor-row-badge") : ""}
+      </div>
+      <div class="rt-rfintel-advisor-row-text">${esc(text)}</div>
+    </div>
+  `;
 }
 
 export function renderRfAdvisorSummary(container, panel, data) {
-  const advisor = data?.advisor;
-  const advisorObj = unwrapObject(advisor);
-  const text = advisorText(advisorObj);
+  const advisorRaw = data?.advisor;
+  const advisor = unwrapObject(advisorRaw);
+  const items = unwrapItems(advisorRaw);
 
-  if (!text && Object.keys(advisorObj).length === 0) {
-    container.innerHTML = `<div class="rt-muted">Waiting for projected advisor data</div>`;
+  const primaryText = firstText(
+    typeof advisorRaw === "string" ? advisorRaw : advisor,
+    ["advisor_text", "message", "text", "summary"],
+    ""
+  );
+
+  if (!primaryText && Object.keys(advisor).length === 0 && items.length === 0) {
+    container.innerHTML = `
+      <div class="rt-rfintel-panel">
+        <div class="rt-rfintel-title">RF Advisor</div>
+        <div class="rt-muted">Waiting for projected advisor data</div>
+      </div>
+    `;
     return;
   }
 
+  const level = firstText(advisor, ["level", "severity", "status"], "");
+  const priority = firstText(advisor, ["priority"], "");
+  const mobileMode = firstText(advisor, ["mobile_mode", "mode"], "");
+  const updated = compactTime(
+    advisor.updated_utc ||
+    advisor.updated_at ||
+    advisor.timestamp_utc ||
+    advisor.timestamp
+  );
+
+  const isMock =
+    advisor.mock === true ||
+    String(advisor.source || "").toLowerCase().includes("mock");
+
+  const visibleItems = items
+    .map((item, index) => renderAdvisorItem(item, index))
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("");
+
   container.innerHTML = `
-    <div class="rt-panel-section">
-      <div class="rt-panel-title">RF Advisor</div>
-      <div class="rt-panel-body">
+    <div class="rt-rfintel-panel rt-rfintel-advisor-panel">
+      <div class="rt-rfintel-title-row">
+        <div class="rt-rfintel-title">RF Advisor</div>
+        <div class="rt-rfintel-badge-row">
+          ${level ? badge(level) : ""}
+          ${priority ? badge(`P${priority}`) : ""}
+          ${mobileMode ? badge(mobileMode) : ""}
+          ${isMock ? badge("MOCK", "rt-rfintel-badge-mock") : ""}
+        </div>
+      </div>
+
+      <div class="rt-rfintel-advisor-hero">
+        <div class="rt-rfintel-hero-label">Primary Guidance</div>
+        <div class="rt-rfintel-advisor-main">
+          ${esc(primaryText || "No projected advisor text")}
+        </div>
+      </div>
+
+      <div class="rt-rfintel-advisor-list">
         ${
-          text
-            ? `<div class="rt-advisor-text">${esc(text)}</div>`
-            : `<div class="rt-muted">No projected advisor text</div>`
+          visibleItems ||
+          `<div class="rt-muted">No additional advisor items</div>`
         }
-        ${renderKeyValueRows(advisorObj)}
+      </div>
+
+      <div class="rt-rfintel-footer rt-rfintel-advisor-footer">
+        ${updated ? `<span>Updated: ${esc(updated)}</span>` : ""}
       </div>
     </div>
   `;
