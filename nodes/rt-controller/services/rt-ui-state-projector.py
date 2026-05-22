@@ -99,6 +99,7 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:rfintel:bands",
     "rt:rfintel:map",
     "rt:rfintel:advisor",
+    "rt:rfintel:mobile",
 }
 
 PROJECTED_KEYS = {
