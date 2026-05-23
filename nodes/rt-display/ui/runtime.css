@@ -1339,8 +1339,46 @@ body[data-page="pota"] .panel-title {
   text-align: right;
 }
 
-.rt-rfintel-solar-footer {
-  justify-content: flex-end;
+/* RF Intel Solar readability bump
+   Presentation-only. No model, controller, Redis, or renderer behavior change. */
+
+.rt-rfintel-solar-panel .rt-rfintel-solar-metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric {
+  min-height: 96px;
+  justify-content: center;
+  padding: 8px 8px;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric-label {
+  font-size: 16px;
+  line-height: 1.05;
+}
+
+.rt-rfintel-solar-panel .rt-rfintel-metric-value {
+  font-size: clamp(22px, 2.4vw, 36px);
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.rt-rfintel-solar-xray-card {
+  min-height: 64px;
+  padding: 7px 10px;
+}
+
+.rt-rfintel-solar-xray-label {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.rt-rfintel-solar-xray-value {
+  font-size: clamp(20px, 2.1vw, 30px);
+  line-height: 1;
+  font-weight: 850;
 }
 
 /* RF Intel Solar image containment fix.

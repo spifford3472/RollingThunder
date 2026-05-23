@@ -1,0 +1,18 @@
+[Unit]
+Description=RollingThunder RF Intel Advisor Engine
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rfintel_advisor_engine.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

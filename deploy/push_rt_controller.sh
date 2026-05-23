@@ -90,6 +90,7 @@ UNITS=(
   "rt-rfintel-swpc-collector.service"
   "rt-rfintel-band-advisor.service"
   "rt-rfintel-mobile-advisor.service"
+  "rt-rfintel-advisor-engine.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
