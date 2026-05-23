@@ -91,6 +91,7 @@ UNITS=(
   "rt-rfintel-band-advisor.service"
   "rt-rfintel-mobile-advisor.service"
   "rt-rfintel-advisor-engine.service"
+  "rt-rfintel-advisor-alert-mirror.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

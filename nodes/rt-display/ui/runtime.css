@@ -1925,3 +1925,21 @@ rflow: hidden;
   font-size: 0.78rem;
   opacity: 0.72;
 }
+
+/*-------------------------------------------------------------------*/
+/* RF Intel Advisor row readability bump                             */
+/*   Presentation-only. Keeps rows compact but improves readability. */
+/*-------------------------------------------------------------------*/
+.rt-rfintel-advisor-row {
+  padding: 8px 10px;
+}
+
+.rt-rfintel-advisor-row-label {
+  font-size: 16px;
+  line-height: 1.05;
+}
+
+.rt-rfintel-advisor-row-text {
+  font-size: 19px;
+  line-height: 1.18;
+}
