@@ -148,7 +148,7 @@ def map_event_to_intent(event: dict[str, Any]) -> dict[str, Any] | None:
         return {"intent": "ui.focus.next", "params": {}}
 
     if control == "btn_info" and etype == "press":
-        return {"intent": "ui.focus.prev", "params": {}}
+        return {"intent": "ui.info", "params": {}}
 
     # ---- Encoder ----
     if control == "enc_main" and etype == "rotate":

@@ -2,10 +2,78 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
   "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
 }[c]));
 
-const WINDOW = 5;
+const SEVERITY_RANK = {
+  critical: 60,
+  error: 55,
+  bad: 50,
+  warn: 40,
+  warning: 40,
+  watch: 30,
+  info: 20,
+  ok: 10,
+};
 
-function clamp(n, lo, hi) {
-  return Math.max(lo, Math.min(hi, n));
+function severityRank(a) {
+  const sev = String(a?.severity ?? a?.level ?? "").toLowerCase().trim();
+  return SEVERITY_RANK[sev] ?? 25;
+}
+
+function alertTimeMs(a) {
+  const candidates = [
+    a?.created_ms,
+    a?.updated_ms,
+    a?.last_update_ms,
+    a?.timestamp_ms,
+    a?.ts_ms,
+  ];
+
+  for (const v of candidates) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  const textCandidates = [
+    a?.created_utc,
+    a?.timestamp_utc,
+    a?.time,
+    a?.ts,
+    a?.timestamp,
+    a?.start,
+    a?.when,
+  ];
+
+  for (const v of textCandidates) {
+    const t = Date.parse(String(v || ""));
+    if (Number.isFinite(t) && t > 0) return t;
+  }
+
+  return 0;
+}
+
+function pickTopAlert(list) {
+  if (!Array.isArray(list) || list.length <= 0) return null;
+
+  return [...list].sort((a, b) => {
+    const sevDiff = severityRank(b) - severityRank(a);
+    if (sevDiff !== 0) return sevDiff;
+
+    return alertTimeMs(b) - alertTimeMs(a);
+  })[0] || null;
+}
+
+function alertTitle(a) {
+  return String(
+    a?.title ??
+    a?.event ??
+    a?.message ??
+    a?.name ??
+    "Active alert"
+  ).trim();
+}
+
+function countText(total) {
+  if (total === 1) return "1 active alert";
+  return `${total} active alerts`;
 }
 
 export function renderAlertsOverlay(container, panel, data) {
@@ -17,62 +85,38 @@ export function renderAlertsOverlay(container, panel, data) {
     Array.isArray(payload.data) ? payload.data :
     [];
 
-  const browse = data?.ui_browse || null;
   const total = list.length;
+  const top = pickTopAlert(list);
 
-  let selectedIndex = 0;
-  let windowStart = 0;
-  let windowSize = WINDOW;
+  let body = `<div class="muted">No active alerts.</div>`;
 
-  if (browse && typeof browse === "object" && String(browse.panel || "") === "alerts_overlay") {
-    selectedIndex = Number.isFinite(Number(browse.selected_index)) ? Number(browse.selected_index) : 0;
-    windowStart = Number.isFinite(Number(browse.window_start)) ? Number(browse.window_start) : 0;
-    windowSize = Number.isFinite(Number(browse.window_size)) ? Number(browse.window_size) : WINDOW;
-  }
-
-  windowSize = clamp(windowSize, 1, WINDOW);
-  selectedIndex = total > 0 ? clamp(selectedIndex, 0, total - 1) : 0;
-  windowStart = clamp(windowStart, 0, Math.max(0, total - windowSize));
-
-  const view = list.slice(windowStart, windowStart + windowSize);
-
-  const rows = view.map((a, i) => {
-    const absoluteIndex = windowStart + i;
-    const selected = absoluteIndex === selectedIndex;
-
-    const kind = a.kind ?? a.type ?? a.category ?? "alert";
-    const sev = (a.severity ?? a.level ?? "").toString().toLowerCase();
-    const title = a.title ?? a.event ?? a.message ?? a.name ?? "(unnamed)";
-    const when = a.time ?? a.ts ?? a.timestamp ?? a.start ?? "";
+  if (top) {
+    const sev = String(top.severity ?? top.level ?? "alert").toLowerCase().trim();
+    const kind = String(top.kind ?? top.type ?? top.category ?? "alert").trim();
 
     const sevClass =
       sev === "bad" || sev === "critical" || sev === "error" ? "rt-alert-bad" :
-      sev === "warn" || sev === "warning" ? "rt-alert-warn" :
+      sev === "warn" || sev === "warning" || sev === "watch" ? "rt-alert-warn" :
       sev === "ok" || sev === "info" ? "rt-alert-ok" :
       "rt-alert-warn";
 
-    return `
-      <div class="rt-alert ${sevClass} ${selected ? "rt-selected" : ""}">
-        <div class="rt-alert-title">${esc(title)}</div>
-        <div class="rt-alert-meta">${esc(kind)}${when ? " • " + esc(when) : ""}</div>
+    body = `
+      <div class="rt-alert ${sevClass}">
+        <div class="rt-alert-title">${esc(alertTitle(top))}</div>
+        <div class="rt-alert-meta">${esc(kind)}${sev ? " • " + esc(sev) : ""}</div>
+      </div>
+      <div class="rt-footer">
+        <span class="rt-muted" style="font-size:20px;">${esc(countText(total))}</span>
       </div>
     `;
-
-
-  }).join("");
+  }
 
   container.innerHTML = `
     <div class="panel">
       <div class="panel-title">Alerts</div>
-      ${total === 0
-        ? `<div class="muted">No active alerts.</div>`
-        : `<div class="rt-alerts">
-             ${rows}
-             <div class="rt-footer">
-               <span class="rt-muted">Selected ${selectedIndex + 1} of ${total}</span>
-             </div>
-           </div>`
-      }
+      <div class="rt-alerts">
+        ${body}
+      </div>
     </div>
   `;
 }

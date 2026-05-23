@@ -101,7 +101,36 @@ function modalIdsDiffer(a, b) {
 
 function buildProjectedModalBodyHtml(modalObj) {
   const modalType = String(modalObj?.type || "").trim();
+  if (modalType === "alert_list") {
+    const items = Array.isArray(modalObj?.items) ? modalObj.items.slice(0, 10) : [];
+    const message = String(modalObj?.message || "").trim();
 
+    const rows = items.length
+      ? items.map((item, idx) => {
+          const title = String(item?.title || "Active alert").trim();
+          const meta = String(item?.meta || "").trim();
+          const body = String(item?.message || "").trim();
+
+          return `
+            <div class="rt-modal-alert-row">
+              <div class="rt-modal-alert-index">${idx + 1}</div>
+              <div class="rt-modal-alert-content">
+                <div class="rt-modal-alert-title">${title}</div>
+                ${meta ? `<div class="rt-modal-alert-meta">${meta}</div>` : ``}
+                ${body ? `<div class="rt-modal-alert-message">${body}</div>` : ``}
+              </div>
+            </div>
+          `;
+        }).join("")
+      : `<div class="rt-muted">No active alerts.</div>`;
+
+    return `
+      <div class="rt-modal-body rt-modal-alert-list">
+        ${message ? `<div class="rt-modal-alert-summary">${message}</div>` : ``}
+        ${rows}
+      </div>
+    `;
+  }
   if (modalType === "pota_spot_outcome" || modalType === "hf_spot_outcome") {
     const options = Array.isArray(modalObj?.options) ? modalObj.options : [];
     const selectedIndex = Number.isInteger(modalObj?.selected_option_index)

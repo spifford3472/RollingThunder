@@ -49,7 +49,6 @@
       "rf_solar_summary",
       "rf_band_recommendations",
       "rf_dx_map_summary",
-      "rf_advisor_summary",
       "alerts_overlay"
     ]
   },

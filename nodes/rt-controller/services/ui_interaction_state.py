@@ -1225,15 +1225,17 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
     page_id = str(page_id or "").strip()
     panel_id = str(panel_id or "").strip()
 
+    # Alert overlay exists on Home, POTA, HF, and RF Intel.
+    # Its browse model is always active-alert based and controller-owned.
+    if panel_id == "alerts_overlay":
+        return resolve_alerts_browse_model(r)
+
     if page_id == "home":
         if panel_id == "node_health_summary":
             return resolve_home_nodes_browse_model(r)
 
         if panel_id == "controller_services_summary":
             return resolve_home_services_browse_model(r)
-
-        if panel_id == "alerts_overlay":
-            return resolve_alerts_browse_model(r)
 
     if page_id == "pota":
         if panel_id == "pota_parks_summary":
@@ -1295,6 +1297,108 @@ def rotate(lst, current, direction):
         idx = (idx - 1) % len(lst)
     return lst[idx]
 
+ALERT_SEVERITY_RANK = {
+    "critical": 60,
+    "error": 55,
+    "bad": 50,
+    "warn": 40,
+    "warning": 40,
+    "watch": 30,
+    "info": 20,
+    "ok": 10,
+}
+
+
+def alert_severity_rank(alert: Dict[str, Any]) -> int:
+    sev = str(alert.get("severity") or alert.get("level") or "").strip().lower()
+    return ALERT_SEVERITY_RANK.get(sev, 25)
+
+
+def alert_time_rank(alert: Dict[str, Any]) -> int:
+    for key in ("created_ms", "updated_ms", "last_update_ms", "timestamp_ms", "ts_ms"):
+        try:
+            value = int(alert.get(key) or 0)
+        except Exception:
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+def ranked_alert_items(items: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    normalized = [as_dict(item) for item in items if isinstance(item, dict)]
+    return sorted(
+        normalized,
+        key=lambda item: (
+            alert_severity_rank(item),
+            alert_time_rank(item),
+        ),
+        reverse=True,
+    )
+
+
+def build_alert_list_modal(items: list[Dict[str, Any]]) -> Dict[str, Any]:
+    ts = now_ms()
+    ranked = ranked_alert_items(items)
+    shown = ranked[:10]
+    total = len(ranked)
+
+    modal_items = []
+    for item in shown:
+        title = str(
+            item.get("title")
+            or item.get("event")
+            or item.get("message")
+            or item.get("name")
+            or "Active alert"
+        ).strip()
+
+        message = str(item.get("message") or item.get("details") or item.get("description") or "").strip()
+        severity = str(item.get("severity") or item.get("level") or "").strip()
+        kind = str(item.get("kind") or item.get("type") or item.get("category") or "alert").strip()
+        source = str(item.get("source") or item.get("service") or "").strip()
+        when = str(
+            item.get("when")
+            or item.get("timestamp_utc")
+            or item.get("created_utc")
+            or item.get("time")
+            or item.get("ts")
+            or ""
+        ).strip()
+
+        meta = " • ".join([x for x in (kind, severity, source, when) if x])
+
+        modal_items.append({
+            "title": title,
+            "message": message,
+            "severity": severity,
+            "kind": kind,
+            "source": source,
+            "when": when,
+            "meta": meta,
+        })
+
+    if total <= 0:
+        summary = "No active alerts."
+    elif total <= 10:
+        summary = f"Showing {total} active alert{'s' if total != 1 else ''}."
+    else:
+        summary = f"Showing 10 of {total} active alerts."
+
+    return {
+        "active": True,
+        "id": f"alert_list:{ts}",
+        "type": "alert_list",
+        "title": "Active Alerts",
+        "message": summary,
+        "items": modal_items,
+        "total_count": total,
+        "shown_count": len(modal_items),
+        "confirmable": False,
+        "cancelable": True,
+        "destructive": False,
+        "opened_at_ms": ts,
+    }
 
 def build_alert_detail_modal(alert: Dict[str, Any]) -> Dict[str, Any]:
     ts = now_ms()
@@ -1389,7 +1493,13 @@ def run_main_loop():
                     "ui.browse.delta",
                 }
 
-                if intent in allowed or (modal_active and intent in modal_intents):
+                contextual_info_intents = {
+                    "ui.info",
+                    "info",
+                    "button.info",
+                }
+
+                if intent in allowed or intent in contextual_info_intents or (modal_active and intent in modal_intents):
                     if intent == "ui.page.next":
                         ids = [p["id"] for p in pages]
                         next_page = rotate(ids, state["page"], "next")
@@ -1432,6 +1542,52 @@ def run_main_loop():
                             state["focus"] = new_focus
                             state_changed = True
                             publish_ui_result(r, intent)
+
+                    elif intent in ("ui.info", "info", "button.info"):
+                        # Contextual INFO action v1:
+                        # - Controller-owned
+                        # - Active alerts only
+                        # - No alert history
+                        # - No UI-side modal decision logic
+                        if state.get("modal") is not None:
+                            publish_ui_result(r, intent, "ignored_modal_active")
+                            continue
+
+                        browse = as_dict(state.get("browse"))
+                        browse_panel = str(browse.get("panel") or "").strip()
+                        focus_panel = str(state.get("focus") or "").strip()
+
+                        info_applies_to_alerts = (
+                            browse_panel == "alerts_overlay"
+                            or focus_panel == "alerts_overlay"
+                        )
+
+                        if not info_applies_to_alerts:
+                            publish_ui_result(r, intent, "ignored_no_info_action")
+                            continue
+
+                        model = resolve_alerts_browse_model(r)
+                        if not model:
+                            publish_ui_result(r, intent, "ignored_no_active_alert")
+                            continue
+
+                        try:
+                            selected_index = (
+                                int(browse.get("selected_index", 0))
+                                if browse_panel == "alerts_overlay"
+                                else int(model.get("anchor_index", 0))
+                            )
+                        except Exception:
+                            selected_index = 0
+
+                        items = as_list(model.get("items"))
+                        if not items:
+                            publish_ui_result(r, intent, "ignored_no_alert_items")
+                            continue
+
+                        state["modal"] = build_alert_list_modal(items)
+                        state_changed = True
+                        publish_ui_result(r, intent, "alert_list_opened")
 
                     elif intent == "ui.focus.prev":
                         if is_browse_active(state):
@@ -1627,10 +1783,11 @@ def run_main_loop():
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
                                 continue
 
-                            elif state["page"] == "home" and panel_id == "alerts_overlay":
-                                state["modal"] = build_alert_detail_modal(item)
+                            elif panel_id == "alerts_overlay":
+                                items = as_list(model.get("items"))
+                                state["modal"] = build_alert_list_modal(items)
                                 state_changed = True
-                                publish_ui_result(r, intent)
+                                publish_ui_result(r, intent, "alert_list_opened")
 
                             elif state["page"] == "pota" and panel_id == "pota_parks_summary":
                                 park_ref = str(

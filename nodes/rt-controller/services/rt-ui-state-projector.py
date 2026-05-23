@@ -989,7 +989,7 @@ class UIStateProjector:
         if modal_type is None:
             modal_type = "generic"
 
-        return {
+        normalized = {
             "id": modal_id,
             "type": modal_type,
             "title": self._normalize_scalar(modal.get("title")),
@@ -1025,6 +1025,28 @@ class UIStateProjector:
             },
             "opened_at_ms": opened_at_ms or int(time.time() * 1000),
         }
+
+        if modal_type == "alert_list":
+            raw_items = modal.get("items")
+            if isinstance(raw_items, list):
+                normalized["items"] = [
+                    {
+                        "title": self._normalize_scalar(item.get("title")),
+                        "message": self._normalize_scalar(item.get("message")),
+                        "severity": self._normalize_scalar(item.get("severity")),
+                        "kind": self._normalize_scalar(item.get("kind")),
+                        "source": self._normalize_scalar(item.get("source")),
+                        "when": self._normalize_scalar(item.get("when")),
+                        "meta": self._normalize_scalar(item.get("meta")),
+                    }
+                    for item in raw_items[:10]
+                    if isinstance(item, Mapping)
+                ]
+
+            normalized["total_count"] = self._coerce_int(modal.get("total_count")) or 0
+            normalized["shown_count"] = self._coerce_int(modal.get("shown_count")) or 0
+
+        return normalized
 
     def _normalize_browse(
         self,
@@ -1605,6 +1627,33 @@ class UIStateProjector:
         return UIStateProjector._coerce_int_default(browse_obj.get("count"), 0) > 0
 
     @staticmethod
+    def _contextual_info_available(
+        focus: str | None,
+        modal_active: bool,
+        browse_active: bool,
+        browse_obj: dict[str, Any],
+    ) -> bool:
+        if modal_active:
+            return False
+
+        focus_panel = str(focus or "").strip()
+        browse_panel = str(browse_obj.get("panel") or "").strip()
+        browse_count = UIStateProjector._coerce_int_default(browse_obj.get("count"), 0)
+
+        # V1 contextual INFO action:
+        # Active alert detail is available when alert overlay owns the active
+        # browse context and has a selected active alert.
+        if browse_active and browse_panel == "alerts_overlay" and browse_count > 0:
+            return True
+
+        # Also advertise INFO when the alert overlay itself has focus.
+        # The controller will still no-op if there are no active alerts.
+        if not browse_active and focus_panel == "alerts_overlay":
+            return True
+
+        return False
+
+    @staticmethod
     def _is_destructive_modal(modal_obj: dict[str, Any]) -> bool:
         return bool(modal_obj.get("destructive", False))
 
@@ -1731,6 +1780,14 @@ class UIStateProjector:
             if self._focus_navigation_available(focus, modal_active) and self._browse_capable_focus(page, focus):
                 leds["mode"] = "on"
 
+            if self._contextual_info_available(
+                focus=focus,
+                modal_active=modal_active,
+                browse_active=browse_active,
+                browse_obj=browse_obj,
+            ):
+                leds["info"] = "on"
+
         # Browse state.
         if browse_active or layer == "browse":
             # Browse is sticky until explicitly exited. Nothing below this point
@@ -1738,7 +1795,12 @@ class UIStateProjector:
             leds["page"] = "off"
             leds["back"] = "off"
             leds["mode"] = "off"
-            leds["info"] = "off"
+            leds["info"] = "on" if self._contextual_info_available(
+                focus=focus,
+                modal_active=modal_active,
+                browse_active=browse_active,
+                browse_obj=browse_obj,
+            ) else "off"
             leds["cancel"] = "on"
             leds["primary"] = "on" if self._has_browse_selection(browse_obj) else "off"
             return leds

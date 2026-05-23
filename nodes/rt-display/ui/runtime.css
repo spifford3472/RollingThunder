@@ -250,6 +250,53 @@
   opacity: 0.98;
 }
 
+.rt-modal-alert-list {
+  font-size: 20px;
+  max-width: 78vw;
+}
+
+.rt-modal-alert-summary {
+  font-size: 22px;
+  color: #fff;
+  margin-bottom: 10px;
+  opacity: 0.9;
+}
+
+.rt-modal-alert-row {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid rgba(255,255,255,0.14);
+}
+
+.rt-modal-alert-index {
+  color: rgba(255,255,255,0.65);
+  font-size: 18px;
+  text-align: right;
+  padding-top: 2px;
+}
+
+.rt-modal-alert-title {
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.rt-modal-alert-meta {
+  color: rgba(255,255,255,0.78);
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.rt-modal-alert-message {
+  color: rgba(255,255,255,0.92);
+  font-size: 17px;
+  margin-top: 3px;
+  line-height: 1.2;
+}
+
 /* Submessage (kind / time / source) */
 .rt-modal-submessage {
   font-size: 20px;
