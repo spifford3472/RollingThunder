@@ -236,6 +236,124 @@ def add_unique(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
         items.append(item)
 
 
+def trend_priority(band_item: Dict[str, Any]) -> int:
+    band = clean_str(band_item.get("band"))
+    trend = band_item.get("trend") if isinstance(band_item.get("trend"), dict) else {}
+    direction = clean_str(trend.get("direction"))
+    score = to_int(band_item.get("score"), 0)
+    delta = abs(to_int(trend.get("score_delta"), 0))
+
+    if direction == "opening":
+        return 72
+    if direction == "fading" and score >= 55:
+        return 68
+    if direction == "rising" and band in ("40m", "80m"):
+        return 64
+    if direction == "rising":
+        return 62
+    if direction == "falling" and score >= 70:
+        return 60
+
+    return 50 + min(delta, 20)
+
+
+def trend_text_for_band(band_item: Dict[str, Any]) -> str:
+    band = clean_str(band_item.get("band"), "HF")
+    trend = band_item.get("trend") if isinstance(band_item.get("trend"), dict) else {}
+    direction = clean_str(trend.get("direction"))
+
+    if direction == "opening":
+        return f"{band_pretty(band)} may be opening; recent band score improved sharply."
+
+    if direction == "fading":
+        return f"{band_pretty(band)} remains useful, but the trend is fading."
+
+    if direction == "rising":
+        if band in ("40m", "80m"):
+            return f"{band_pretty(band)} activity is rising and may be a good domestic fallback."
+        return f"{band_pretty(band)} activity is improving."
+
+    if direction == "falling":
+        return f"{band_pretty(band)} activity is weakening."
+
+    return f"{band_pretty(band)} trend changed."
+
+
+def meaningful_trend_band_items(bands: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_items = bands.get("items")
+    if not isinstance(raw_items, list):
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+
+        trend = item.get("trend")
+        if not isinstance(trend, dict):
+            continue
+
+        direction = clean_str(trend.get("direction"))
+        delta = abs(to_int(trend.get("score_delta"), 0))
+        band = clean_str(item.get("band"))
+        score = to_int(item.get("score"), 0)
+
+        if direction not in ("opening", "rising", "fading", "falling"):
+            continue
+
+        # Conservative anti-spam gate:
+        # - opening/fading are meaningful by definition from the band advisor
+        # - rising/falling must have a meaningful score move
+        # - falling advisories are only useful if the band had been useful
+        if direction in ("rising", "falling") and delta < 15:
+            continue
+
+        if direction == "falling" and score < 60:
+            continue
+
+        if direction == "rising" and band not in ("10m", "12m", "15m", "17m", "40m", "80m"):
+            continue
+
+        candidates.append(item)
+
+    return sorted(candidates, key=trend_priority, reverse=True)
+
+
+def add_trend_advisories(
+    items: List[Dict[str, Any]],
+    bands: Dict[str, Any],
+    timestamp_utc: str,
+    expires_utc: str,
+    max_to_add: int = 2,
+) -> None:
+    count = 0
+
+    for band_item in meaningful_trend_band_items(bands):
+        if count >= max_to_add:
+            break
+
+        band = clean_str(band_item.get("band"), "HF")
+        trend = band_item.get("trend") if isinstance(band_item.get("trend"), dict) else {}
+        direction = clean_str(trend.get("direction"), "changed")
+        reason = clean_str(trend.get("reason"), "Recent trend history changed meaningfully.")
+
+        add_unique(
+            items,
+            advisory_item(
+                item_id=f"adv_trend_{stable_id(band)}_{stable_id(direction)}",
+                label=band,
+                category="propagation",
+                severity="info",
+                priority=trend_priority(band_item),
+                text=trend_text_for_band(band_item),
+                reason=reason,
+                timestamp_utc=timestamp_utc,
+                expires_utc=expires_utc,
+            ),
+        )
+        count += 1
+
 def best_band_item(bands: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     raw_items = bands.get("items")
     if not isinstance(raw_items, list):
@@ -419,7 +537,17 @@ def build_items(
                     ),
                 )
 
-    # 4. Mobile reminder.
+    # 4. Trend-aware propagation nudges.
+    if input_status.get("bands") == "ok":
+        add_trend_advisories(
+            items=items,
+            bands=bands,
+            timestamp_utc=ts,
+            expires_utc=expires,
+            max_to_add=2,
+        )
+
+    # 5. Mobile reminder.
     if input_status.get("mobile") == "ok" and to_bool(mobile.get("mobile_mode")):
         speed = to_int(mobile.get("speed_mph"), 0)
         reason = clean_str(mobile.get("reason") or mobile.get("motion_state"))
@@ -444,7 +572,7 @@ def build_items(
             ),
         )
 
-    # 5. Optional selected HF spot hint.
+    # 6. Optional selected HF spot hint.
     if input_status.get("hf_spots") == "ok":
         spot = selected_hf_spot(hf_spots)
         if spot:
@@ -470,7 +598,7 @@ def build_items(
                     ),
                 )
 
-    # 6. Fallback if data is missing or no strong item exists.
+    # 7. Fallback if data is missing or no strong item exists.
     if not items:
         missing = [k for k, v in input_status.items() if v != "ok"]
         if missing:

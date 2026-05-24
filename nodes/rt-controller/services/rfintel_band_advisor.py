@@ -31,6 +31,7 @@ import math
 import sys
 import time
 import os
+import sqlite3
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -50,6 +51,14 @@ SYSTEM_BUS = "rt:system:bus"
 SOURCE = "rfintel_band_advisor"
 
 BANDS = ["10m", "12m", "15m", "17m", "20m", "30m", "40m", "60m", "80m"]
+
+TREND_DB_PATH = os.environ.get(
+    "RT_RFINTEL_TREND_DB_PATH",
+    "/opt/rollingthunder/data/rfintel/rfintel_trends.sqlite3",
+)
+TREND_WINDOW_MINUTES = int(os.environ.get("RT_RFI_BAND_TREND_WINDOW_MINUTES", "60"))
+TREND_LOOKBACK_HOURS = int(os.environ.get("RT_RFI_BAND_TREND_LOOKBACK_HOURS", "3"))
+TREND_MIN_BUCKETS = int(os.environ.get("RT_RFI_BAND_TREND_MIN_BUCKETS", "4"))
 
 
 def now_utc():
@@ -404,6 +413,177 @@ def mode_for_band(band):
     return "SSB"
 
 
+def trend_insufficient(reason="Not enough trend history yet."):
+    return {
+        "direction": "insufficient_data",
+        "confidence": "low",
+        "score_delta": 0,
+        "score_adjustment": 0,
+        "window_minutes": TREND_WINDOW_MINUTES,
+        "reason": reason,
+    }
+
+
+def load_band_trend_rows(dt_utc):
+    """
+    Controller-side trend reader.
+
+    Reads compact 15-minute band history from the local SQLite trend DB.
+    The UI never reads this file. This service reduces the history to a
+    small per-band trend object before writing rt:rfintel:bands.
+    """
+    if not TREND_DB_PATH:
+        return {}
+
+    if not os.path.exists(TREND_DB_PATH):
+        return {}
+
+    cutoff = iso_utc(dt_utc - timedelta(hours=TREND_LOOKBACK_HOURS))
+
+    try:
+        conn = sqlite3.connect(TREND_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT bucket_start_utc, band, score, confidence, status, mode
+            FROM rfintel_band_15m
+            WHERE bucket_start_utc >= ?
+            ORDER BY bucket_start_utc ASC, band ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+
+    grouped = {band: [] for band in BANDS}
+
+    for row in rows:
+        band = str(row["band"] or "").strip()
+        if band not in grouped:
+            continue
+
+        score = parse_float(row["score"])
+        if score is None:
+            continue
+
+        grouped[band].append(
+            {
+                "bucket_start_utc": str(row["bucket_start_utc"] or ""),
+                "score": int(round(score)),
+                "confidence": str(row["confidence"] or ""),
+                "status": str(row["status"] or ""),
+                "mode": str(row["mode"] or ""),
+            }
+        )
+
+    return grouped
+
+
+def analyze_band_trend(band, rows):
+    """
+    Conservative v1 trend analysis.
+
+    Uses the latest one-hour window when at least four 15-minute buckets
+    are available. Score adjustment is intentionally small and bounded.
+    """
+    if not rows:
+        return trend_insufficient("No trend history is available yet.")
+
+    valid = [r for r in rows if isinstance(r, dict) and r.get("score") is not None]
+
+    if len(valid) < TREND_MIN_BUCKETS:
+        return trend_insufficient(
+            f"Only {len(valid)} trend bucket{'s' if len(valid) != 1 else ''} available."
+        )
+
+    window = valid[-TREND_MIN_BUCKETS:]
+    first = window[0]
+    latest = window[-1]
+
+    first_score = int(first.get("score", 0))
+    latest_score = int(latest.get("score", 0))
+    delta = latest_score - first_score
+
+    direction = "steady"
+    adjustment = 0
+
+    high_bands = {"10m", "12m"}
+    improving_mid_bands = {"15m", "17m"}
+
+    if band in high_bands and delta >= 15 and latest_score >= 35:
+        direction = "opening"
+        adjustment = 10
+    elif band in improving_mid_bands and delta >= 15:
+        direction = "rising"
+        adjustment = 10
+    elif delta >= 10:
+        direction = "rising"
+        adjustment = 5
+    elif delta <= -15:
+        direction = "fading"
+        adjustment = -10
+    elif delta <= -10:
+        direction = "falling"
+        adjustment = -5
+
+    confidence = "low"
+    if len(valid) >= 8 and abs(delta) >= 15:
+        confidence = "medium"
+
+    if direction == "opening":
+        reason = f"{band} score increased from {first_score} to {latest_score} over the last hour."
+    elif direction == "rising":
+        reason = f"{band} score increased from {first_score} to {latest_score} over the last hour."
+    elif direction == "fading":
+        reason = f"{band} score decreased from {first_score} to {latest_score} over the last hour."
+    elif direction == "falling":
+        reason = f"{band} score decreased from {first_score} to {latest_score} over the last hour."
+    else:
+        reason = f"{band} score stayed near {latest_score} over the last hour."
+
+    return {
+        "direction": direction,
+        "confidence": confidence,
+        "score_delta": delta,
+        "score_adjustment": adjustment,
+        "window_minutes": TREND_WINDOW_MINUTES,
+        "reason": reason,
+    }
+
+
+def load_trend_analysis(dt_utc):
+    rows_by_band = load_band_trend_rows(dt_utc)
+    trends = {}
+
+    for band in BANDS:
+        trends[band] = analyze_band_trend(band, rows_by_band.get(band, []))
+
+    return trends
+
+
+def append_trend_reason(reason, trend):
+    if not isinstance(trend, dict):
+        return reason
+
+    direction = str(trend.get("direction") or "").strip()
+    trend_reason = str(trend.get("reason") or "").strip()
+
+    if direction not in ("rising", "falling", "opening", "fading"):
+        return reason
+
+    if not trend_reason:
+        return reason
+
+    base = str(reason or "").strip()
+    if not base:
+        return trend_reason
+
+    if base.endswith("."):
+        return base[:-1] + f"; trend: {trend_reason}."
+
+    return base + f"; trend: {trend_reason}."
+
 def reason_for_band(band, phase, score, spot_count, sfi, kp, radio_band, inputs):
     parts = []
 
@@ -488,6 +668,7 @@ def build_model(solar, spots_model, radio, gps):
 
     spot_counts, selected_spot_band, total_spots = count_spots_by_band(spots_model)
     radio_band = extract_radio_band(radio)
+    trend_map = load_trend_analysis(dt)
 
     items = []
 
@@ -503,6 +684,9 @@ def build_model(solar, spots_model, radio, gps):
         if radio_band == band:
             score += 5
 
+        trend = trend_map.get(band, trend_insufficient())
+        score += int(trend.get("score_adjustment", 0) or 0)
+
         score = bucket_score(score)
         status = status_for_score(score)
         confidence = confidence_for(score, inputs, spot_counts.get(band, 0), kp)
@@ -517,6 +701,7 @@ def build_model(solar, spots_model, radio, gps):
             radio_band=radio_band,
             inputs=inputs,
         )
+        reason = append_trend_reason(reason, trend)
 
         items.append({
             "band": band,
@@ -526,6 +711,7 @@ def build_model(solar, spots_model, radio, gps):
             "reason": reason,
             "recommendation": reason,
             "status": status,
+            "trend": trend,
         })
 
     items.sort(key=lambda x: (-x["score"], BANDS.index(x["band"])))
