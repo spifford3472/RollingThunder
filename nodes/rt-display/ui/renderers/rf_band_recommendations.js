@@ -63,6 +63,20 @@ function compactTime(value) {
     .replace(/\+00:00$/, "Z");
 }
 
+function safeClassToken(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function scoreValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return String(Math.max(0, Math.min(100, Math.round(n))));
+}
+
 function badge(label, className = "") {
   const s = String(label ?? "").trim();
   if (!s) return "";
@@ -95,7 +109,7 @@ function bandStatus(item) {
 function bandRecommendation(item) {
   return firstText(
     item,
-    ["recommendation", "summary", "message", "detail"],
+    ["recommendation", "summary", "message", "detail", "reason"],
     ""
   );
 }
@@ -116,24 +130,51 @@ function bandMode(item) {
   );
 }
 
+function bandTrend(item) {
+  if (!item || typeof item !== "object") return "";
+
+  if (item.trend && typeof item.trend === "object") {
+    return firstText(item.trend, ["direction", "trend", "status"], "");
+  }
+
+  return firstText(item, ["trend"], "");
+}
+
 function renderBandRow(item, index) {
   const label = bandLabel(item, index);
   const status = typeof item === "object" ? bandStatus(item) : "";
   const recommendation = typeof item === "object" ? bandRecommendation(item) : "";
   const confidence = typeof item === "object" ? bandConfidence(item) : "";
   const mode = typeof item === "object" ? bandMode(item) : "";
+  const score = typeof item === "object" ? scoreValue(item.score) : "";
+  const trend = typeof item === "object" ? bandTrend(item) : "";
+
+  const rowClasses = [
+    "rt-rfintel-band-row",
+    index === 0 ? "rt-rfintel-band-row-primary" : "",
+    status ? `rt-rfintel-band-status-${safeClassToken(status)}` : "",
+    confidence ? `rt-rfintel-band-confidence-${safeClassToken(confidence)}` : "",
+    trend ? `rt-rfintel-band-trend-${safeClassToken(trend)}` : "",
+  ].filter(Boolean).join(" ");
+
+  const style = score ? ` style="--rt-band-score:${esc(score)};"` : "";
 
   return `
-    <div class="rt-rfintel-band-row">
-      <div class="rt-rfintel-band-name">${esc(label)}</div>
+    <div class="${rowClasses}"${style}>
+      <div class="rt-rfintel-band-card-top">
+        <div class="rt-rfintel-band-name">${esc(label)}</div>
+        ${score ? `<div class="rt-rfintel-band-score">${esc(score)}</div>` : ""}
+      </div>
 
       <div class="rt-rfintel-band-primary">
         ${esc(recommendation || status || "—")}
       </div>
 
       <div class="rt-rfintel-band-badges">
+        ${status ? badge(status, "rt-rfintel-band-status-badge") : ""}
         ${confidence ? badge(confidence) : ""}
         ${mode ? badge(mode) : ""}
+        ${trend ? badge(trend, "rt-rfintel-band-trend-badge") : ""}
       </div>
     </div>
   `;

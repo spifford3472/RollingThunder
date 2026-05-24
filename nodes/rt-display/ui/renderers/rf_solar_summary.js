@@ -131,6 +131,8 @@ export function renderRfSolarSummary(container, panel, data) {
   );
 
   const isMock = solar.mock === true || String(solar.source || "").toLowerCase().includes("mock");
+  const imageStatus = firstText(solar, ["image_status"], "");
+  const swpcScales = firstText(solar, ["swpc_scales"], "");
 
   const imageUrl = safeProjectedImageUrl(
     solar.image_url ||
@@ -145,7 +147,11 @@ export function renderRfSolarSummary(container, panel, data) {
     <div class="rt-rfintel-panel rt-rfintel-solar-panel">
       <div class="rt-rfintel-title-row">
         <div class="rt-rfintel-title">Solar</div>
-        ${isMock ? `<div class="rt-rfintel-badge rt-rfintel-badge-mock">MOCK</div>` : ""}
+        <div class="rt-rfintel-badge-row">
+          ${imageStatus ? `<div class="rt-rfintel-badge rt-rfintel-solar-image-status-${esc(imageStatus).toLowerCase()}">${esc(imageStatus)}</div>` : ""}
+          ${swpcScales ? `<div class="rt-rfintel-badge">${esc(swpcScales)}</div>` : ""}
+          ${isMock ? `<div class="rt-rfintel-badge rt-rfintel-badge-mock">MOCK</div>` : ""}
+        </div>
       </div>
 
       <div class="rt-rfintel-hero rt-rfintel-solar-condition">

@@ -1885,9 +1885,6 @@ body[data-page="pota"] .panel-title {
 /*------------------------------------------------------------------*/
 /*         RF Intel Band Recommendations visual renderer            */
 /*------------------------------------------------------------------*/
-rflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .rt-rfintel-band-reason {
   font-size: 0.95rem;
@@ -2105,4 +2102,441 @@ rflow: hidden;
 .rt-rfintel-advisor-row-text {
   font-size: 19px;
   line-height: 1.18;
+}
+
+/*-------------------------------------------------------------------*/
+/* RF Intel Public Demo Polish                                       */
+/* Presentation-only. No controller, Redis, polling, or logic change. */
+/*-------------------------------------------------------------------*/
+
+.rt-rfintel-panel {
+  position: relative;
+  isolation: isolate;
+  border-radius: 14px;
+}
+
+.rt-rfintel-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(80, 220, 255, 0.12), transparent 34%),
+    radial-gradient(circle at 86% 84%, rgba(0, 255, 170, 0.07), transparent 38%),
+    linear-gradient(135deg, rgba(255,255,255,0.035), rgba(255,255,255,0));
+}
+
+.rt-rfintel-title-row {
+  min-height: 30px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid rgba(120, 220, 255, 0.12);
+}
+
+.rt-rfintel-title {
+  text-transform: uppercase;
+  text-shadow:
+    0 0 10px rgba(120, 230, 255, 0.18),
+    0 0 22px rgba(120, 230, 255, 0.08);
+}
+
+.rt-rfintel-badge {
+  color: rgba(235, 252, 255, 0.96);
+  border-color: rgba(120, 220, 255, 0.34);
+  background: rgba(10, 28, 38, 0.46);
+  box-shadow:
+    inset 0 0 10px rgba(120, 220, 255, 0.06),
+    0 0 10px rgba(120, 220, 255, 0.08);
+}
+
+.rt-rfintel-badge-mock {
+  border-color: rgba(255, 210, 100, 0.35);
+  color: rgba(255, 236, 186, 0.95);
+  background: rgba(74, 49, 0, 0.28);
+}
+
+.rt-rfintel-hero,
+.rt-rfintel-advisor-hero,
+.rt-rfintel-map-status-card,
+.rt-rfintel-bands-empty,
+.rt-rfintel-metric,
+.rt-rfintel-map-region,
+.rt-rfintel-band-row,
+.rt-rfintel-advisor-row {
+  box-shadow:
+    inset 0 0 18px rgba(120, 220, 255, 0.035),
+    0 0 16px rgba(0, 0, 0, 0.14);
+}
+
+/* Solar polish */
+
+.rt-rfintel-solar-visual-card {
+  border: 1px solid rgba(120, 220, 255, 0.28);
+  box-shadow:
+    inset 0 0 24px rgba(120, 220, 255, 0.07),
+    0 0 18px rgba(120, 220, 255, 0.08),
+    0 0 34px rgba(255, 176, 62, 0.05);
+}
+
+.rt-rfintel-solar-visual-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background:
+    linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 22px 22px;
+  opacity: 0.32;
+}
+
+.rt-rfintel-solar-visual-card::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;
+  z-index: 3;
+  border: 1px solid rgba(255, 220, 120, 0.16);
+  border-radius: 6px;
+  box-shadow: inset 0 0 18px rgba(255, 196, 88, 0.05);
+}
+
+.rt-rfintel-solar-image {
+  filter: saturate(1.08) contrast(1.05);
+}
+
+.rt-rfintel-solar-image-status-fresh {
+  border-color: rgba(80, 255, 190, 0.38);
+  color: rgba(194, 255, 232, 0.96);
+}
+
+.rt-rfintel-solar-image-status-stale {
+  border-color: rgba(255, 210, 100, 0.42);
+  color: rgba(255, 236, 190, 0.96);
+}
+
+.rt-rfintel-solar-image-status-unavailable,
+.rt-rfintel-solar-image-status-offline,
+.rt-rfintel-solar-image-status-missing {
+  border-color: rgba(255, 110, 110, 0.44);
+  color: rgba(255, 210, 210, 0.96);
+}
+
+/* Band recommendation polish */
+
+.rt-rfintel-band-row {
+  position: relative;
+  isolation: isolate;
+  border-color: rgba(120, 220, 255, 0.16);
+  background:
+    radial-gradient(circle at 14% 12%, rgba(120, 220, 255, 0.12), transparent 42%),
+    linear-gradient(135deg, rgba(0, 34, 48, 0.34), rgba(0, 0, 0, 0.14));
+}
+
+.rt-rfintel-band-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: calc((var(--rt-band-score, 35) / 100) * 0.42);
+  background:
+    radial-gradient(circle at 85% 16%, rgba(120, 255, 220, 0.55), transparent 34%),
+    linear-gradient(90deg, rgba(120, 220, 255, 0.14), transparent 42%);
+}
+
+.rt-rfintel-band-row-primary {
+  border-color: rgba(110, 245, 255, 0.46);
+  box-shadow:
+    inset 0 0 24px rgba(110, 245, 255, 0.09),
+    0 0 20px rgba(110, 245, 255, 0.13);
+}
+
+.rt-rfintel-band-row-primary::after {
+  content: "TOP";
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  color: rgba(198, 255, 247, 0.86);
+  text-shadow: 0 0 10px rgba(110, 245, 255, 0.42);
+}
+
+.rt-rfintel-band-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.rt-rfintel-band-score {
+  flex: 0 0 auto;
+  min-width: 2.25rem;
+  padding: 0.16rem 0.35rem;
+  border: 1px solid rgba(120, 245, 255, 0.34);
+  border-radius: 0.45rem;
+  background: rgba(0, 0, 0, 0.26);
+  color: rgba(224, 255, 255, 0.96);
+  font-size: 1.05rem;
+  line-height: 1;
+  font-weight: 950;
+  text-align: center;
+  box-shadow: inset 0 0 12px rgba(120, 245, 255, 0.07);
+}
+
+.rt-rfintel-band-status-recommended {
+  border-color: rgba(104, 255, 206, 0.48);
+}
+
+.rt-rfintel-band-status-usable {
+  border-color: rgba(120, 220, 255, 0.28);
+}
+
+.rt-rfintel-band-status-marginal {
+  border-color: rgba(255, 214, 104, 0.36);
+}
+
+.rt-rfintel-band-status-poor {
+  border-color: rgba(255, 120, 120, 0.28);
+  opacity: 0.88;
+}
+
+.rt-rfintel-band-trend-rising .rt-rfintel-band-trend-badge,
+.rt-rfintel-band-trend-improving .rt-rfintel-band-trend-badge {
+  border-color: rgba(100, 255, 180, 0.38);
+  color: rgba(202, 255, 230, 0.95);
+}
+
+.rt-rfintel-band-trend-falling .rt-rfintel-band-trend-badge,
+.rt-rfintel-band-trend-fading .rt-rfintel-band-trend-badge {
+  border-color: rgba(255, 175, 100, 0.4);
+  color: rgba(255, 226, 196, 0.95);
+}
+
+/* Tactical map polish */
+
+.rt-rfintel-map-visual-card {
+  border-color: rgba(120, 220, 255, 0.28);
+  box-shadow:
+    inset 0 0 34px rgba(120, 220, 255, 0.075),
+    0 0 24px rgba(120, 220, 255, 0.09);
+}
+
+.rt-rfintel-map-placeholder {
+  background:
+    radial-gradient(circle at center, rgba(80, 220, 255, 0.20) 0%, rgba(0,0,0,0) 58%),
+    radial-gradient(circle at 25% 35%, rgba(0,255,170,0.09), transparent 30%),
+    linear-gradient(135deg, rgba(0,38,54,0.86), rgba(0,8,14,0.96));
+}
+
+.rt-rfintel-map-grid {
+  background:
+    linear-gradient(rgba(120,220,255,0.075) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120,220,255,0.06) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.024) 1px, transparent 1px);
+  background-size: 2.4rem 2.4rem, 2.4rem 2.4rem, 0.6rem 0.6rem, 0.6rem 0.6rem;
+  opacity: 0.7;
+}
+
+.rt-rfintel-map-sweep {
+  width: 12rem;
+  height: 12rem;
+  border-color: rgba(120, 245, 255, 0.42);
+  animation: rt-rfintel-soft-pulse 3.6s ease-in-out infinite;
+}
+
+.rt-rfintel-map-sweep::after {
+  width: 54%;
+  background: linear-gradient(to right, rgba(120,245,255,0.95), rgba(120,245,255,0));
+}
+
+.rt-rfintel-map-marker-ring {
+  animation: rt-rfintel-marker-pulse 2.8s ease-in-out infinite;
+}
+
+.rt-rfintel-map-marker-label {
+  border-color: rgba(120, 245, 255, 0.34);
+  background: rgba(0, 16, 24, 0.72);
+  text-shadow: 0 0 8px rgba(120, 245, 255, 0.22);
+}
+
+.rt-rfintel-map-center-label {
+  color: rgba(220, 252, 255, 0.92);
+  text-shadow: 0 0 12px rgba(120, 245, 255, 0.28);
+}
+
+/* Advisor polish */
+
+.rt-rfintel-advisor-panel {
+  position: relative;
+}
+
+.rt-rfintel-mobile-active-strip {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgba(100, 255, 190, 0.42);
+  border-radius: 0.55rem;
+  background:
+    linear-gradient(90deg, rgba(0, 255, 170, 0.20), rgba(0, 0, 0, 0.12));
+  color: rgba(205, 255, 232, 0.98);
+  font-size: 0.95rem;
+  line-height: 1;
+  font-weight: 950;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  box-shadow:
+    inset 0 0 18px rgba(100, 255, 190, 0.08),
+    0 0 18px rgba(100, 255, 190, 0.12);
+}
+
+.rt-rfintel-mobile-badge {
+  border-color: rgba(100, 255, 190, 0.44);
+  color: rgba(205, 255, 232, 0.96);
+}
+
+.rt-rfintel-advisor-row {
+  position: relative;
+  border-color: rgba(120, 220, 255, 0.15);
+  background:
+    radial-gradient(circle at 12% 30%, rgba(120, 220, 255, 0.08), transparent 36%),
+    rgba(0, 0, 0, 0.16);
+}
+
+.rt-rfintel-advisor-row-primary {
+  border-color: rgba(120, 245, 255, 0.42);
+  box-shadow:
+    inset 0 0 20px rgba(120, 245, 255, 0.08),
+    0 0 18px rgba(120, 245, 255, 0.10);
+}
+
+.rt-rfintel-advisor-category-mobile_advisor,
+.rt-rfintel-advisor-id-adv_mobile_mode_active {
+  border-color: rgba(100, 255, 190, 0.38);
+}
+
+.rt-rfintel-advisor-category-badge {
+  max-width: 7.5rem;
+}
+
+.rt-rfintel-advisor-priority-badge {
+  border-color: rgba(120, 245, 255, 0.42);
+  color: rgba(226, 255, 255, 0.98);
+}
+
+.rt-rfintel-advisor-severity-warning,
+.rt-rfintel-advisor-severity-warn {
+  border-color: rgba(255, 210, 100, 0.42);
+}
+
+.rt-rfintel-advisor-severity-critical,
+.rt-rfintel-advisor-severity-error {
+  border-color: rgba(255, 110, 110, 0.48);
+}
+
+/* Fallback/waiting states */
+
+.rt-rfintel-panel .rt-muted {
+  border: 1px dashed rgba(120, 220, 255, 0.22);
+  border-radius: 0.7rem;
+  padding: 0.8rem;
+  background:
+    linear-gradient(135deg, rgba(120, 220, 255, 0.055), rgba(0, 0, 0, 0.12));
+  color: rgba(220, 242, 255, 0.72);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+/* Lightweight CSS-only animation. No JavaScript timers. */
+
+@keyframes rt-rfintel-soft-pulse {
+  0%, 100% {
+    opacity: 0.78;
+    box-shadow:
+      0 0 1rem rgba(120,210,255,0.18),
+      inset 0 0 1rem rgba(120,210,255,0.10);
+  }
+  50% {
+    opacity: 1;
+    box-shadow:
+      0 0 1.4rem rgba(120,245,255,0.28),
+      inset 0 0 1.25rem rgba(120,245,255,0.16);
+  }
+}
+
+@keyframes rt-rfintel-marker-pulse {
+  0%, 100% {
+    opacity: 0.82;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+/*-------------------------------------------------------------------*/
+/* RF Intel Advisor clipping hotfix                                  */
+/* Presentation-only. Keeps advisor rows inside the panel.            */
+/*-------------------------------------------------------------------*/
+
+.rt-rfintel-advisor-panel {
+  gap: 0.35rem;
+}
+
+.rt-rfintel-advisor-hero {
+  padding: 0.5rem 0.65rem;
+}
+
+.rt-rfintel-advisor-main {
+  font-size: clamp(1.15rem, 1.55vw, 1.45rem);
+  line-height: 1.08;
+  -webkit-line-clamp: 2;
+}
+
+.rt-rfintel-advisor-list {
+  gap: 0.28rem;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+}
+
+.rt-rfintel-advisor-row {
+  min-height: 0;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.rt-rfintel-advisor-row-top {
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.rt-rfintel-advisor-row-label {
+  font-size: clamp(13px, 1.05vw, 15px);
+  line-height: 1;
+}
+
+.rt-rfintel-advisor-row-text {
+  margin-top: 0;
+  font-size: clamp(14px, 1.15vw, 17px);
+  line-height: 1.08;
+  max-height: 1.15em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-advisor-row .rt-rfintel-badge {
+  font-size: 0.66rem;
+  line-height: 1;
+  padding: 0.08rem 0.32rem;
 }
