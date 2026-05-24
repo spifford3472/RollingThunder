@@ -1,0 +1,24 @@
+[Unit]
+Description=RollingThunder RF Intel Lightweight Trend Recorder
+After=network-online.target redis-server.service rt-rfintel-swpc-collector.service rt-rfintel-band-advisor.service rt-weather-publisher.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_RFINTEL_TREND_INTERVAL_SEC=60
+Environment=RT_RFINTEL_TREND_BUCKET_MINUTES=15
+Environment=RT_RFINTEL_TREND_RETENTION_DAYS=1095
+Environment=RT_RFINTEL_TREND_RECENT_BUCKETS=96
+EnvironmentFile=/etc/rollingthunder/redis.env
+ExecStart=/opt/rollingthunder/.venv/bin/python /opt/rollingthunder/services/rfintel_trend_recorder.py
+Restart=always
+RestartSec=10
+User=spiff
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
