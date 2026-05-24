@@ -9,8 +9,8 @@
   },
   "runtimeVersion": {
     "major": 0,
-    "minor": 54,
-    "build": 52
+    "minor": 55,
+    "build": 8
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",

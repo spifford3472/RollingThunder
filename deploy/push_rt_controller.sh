@@ -43,7 +43,7 @@ COMMON_SERVICES_SRC_DIR="${REPO_ROOT}/nodes/common/services/"
 RT_TOOLS="/opt/rollingthunder/tools"
 POTA_PARK_DATA_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/POTA/"
 HF_FLAGS_SRC_DIR="${REPO_ROOT}/nodes/rt-controller/data/FLAGS/"
-
+OUTSIDE_TOOLS_SRC_DIR="${REPO_ROOT}/tools/upload/"
 
 # Thin-client UI/runtime sources (served by rt-controller)
 UI_SRC_DIR="${REPO_ROOT}/nodes/rt-display/ui/"
@@ -58,6 +58,7 @@ COMMON_SERVICES_DST_DIR="/opt/rollingthunder/nodes/common/services/"
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
 POTA_PARK_DATA_DST_DIR="/opt/rollingthunder/data/POTA/"
 HF_FLAGS_DST_DIR="/opt/rollingthunder/nodes/rt-controller/data/FLAGS/"
+OUTSIDE_TOOLS_DST_DIR="/opt/rollingthunder/upload/"
 
 # Thin-client UI/runtime destinations (served by rt-controller)
 UI_DST_DIR="/opt/rollingthunder/ui/"
@@ -109,11 +110,18 @@ ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
     /opt/rollingthunder/nodes/rt-controller \
     /opt/rollingthunder/ui \
     /opt/rollingthunder/data/POTA \
+    /opt/rollingthunder/upload \
     /opt/rollingthunder/config &&
   sudo chown root:root /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config &&
   sudo chmod 755 /opt/rollingthunder/services /etc/rollingthunder /opt/rollingthunder/ui /opt/rollingthunder/config  
 "
 
+echo "[push] Ensure upload dir exists (user-owned)"
+ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
+  sudo mkdir -p '${OUTSIDE_TOOLS_DST_DIR}';
+  sudo chown -R '${TARGET_USER}:${TARGET_USER}' '${OUTSIDE_TOOLS_DST_DIR}';
+  sudo chmod -R 755 '${OUTSIDE_TOOLS_DST_DIR}'
+"
 
 echo "[push] Ensure common services dir exists (user-owned)"
 ssh "${TARGET_USER}@${TARGET_HOST}" "set -e;
@@ -211,6 +219,11 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   --exclude='services/' \
   --exclude='ops/' \
   "${NODE_SRC_DIR}" "${TARGET_USER}@${TARGET_HOST}:${NODE_DST_DIR}"
+
+echo "[push] Sync outside tools for maintenance tasks -> ${OUTSIDE_TOOLS_DST_DIR} (user-owned)"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${OUTSIDE_TOOLS_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${OUTSIDE_TOOLS_DST_DIR}/"
 
 echo "[push] Sync POTA park data files dir ${POTA_PARK_DATA_SRC_DIR} -> ${POTA_PARK_DATA_DST_DIR}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
