@@ -1694,6 +1694,122 @@ body[data-page="pota"] .panel-title {
   opacity: 0.78;
 }
 
+.rt-rfintel-map-marker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.rt-rfintel-map-marker {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+  z-index: 9;
+}
+
+.rt-rfintel-map-marker-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(1.75rem * var(--rt-marker-scale, 1));
+  height: calc(1.75rem * var(--rt-marker-scale, 1));
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 2px solid rgba(120, 220, 255, 0.82);
+  box-shadow:
+    0 0 0.55rem rgba(120, 220, 255, 0.38),
+    inset 0 0 0.45rem rgba(120, 220, 255, 0.18);
+}
+
+.rt-rfintel-map-marker-ring::after {
+  content: "";
+  position: absolute;
+  inset: -0.42rem;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 220, 255, 0.32);
+}
+
+.rt-rfintel-map-marker-dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0.48rem;
+  height: 0.48rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgba(180, 245, 255, 0.96);
+  box-shadow:
+    0 0 0.45rem rgba(120, 220, 255, 0.85),
+    0 0 1.1rem rgba(120, 220, 255, 0.36);
+}
+
+.rt-rfintel-map-marker-label {
+  position: absolute;
+  left: 0.62rem;
+  top: -0.58rem;
+  max-width: 8.2rem;
+  padding: 0.16rem 0.38rem;
+  border: 1px solid rgba(120, 220, 255, 0.28);
+  border-radius: 0.35rem;
+  background: rgba(0, 0, 0, 0.48);
+  box-shadow: 0 0 0.7rem rgba(0,0,0,0.35);
+  font-size: 0.7rem;
+  line-height: 1.05;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(235, 252, 255, 0.96);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-rfintel-map-marker-label b {
+  margin-left: 0.28rem;
+  font-weight: 950;
+  color: rgba(255,255,255,0.88);
+}
+
+.rt-rfintel-map-marker-active .rt-rfintel-map-marker-ring {
+  border-color: rgba(120, 245, 255, 0.96);
+  box-shadow:
+    0 0 0.75rem rgba(120, 245, 255, 0.52),
+    0 0 1.45rem rgba(120, 245, 255, 0.22),
+    inset 0 0 0.55rem rgba(120, 245, 255, 0.24);
+}
+
+.rt-rfintel-map-marker-moderate .rt-rfintel-map-marker-ring {
+  border-color: rgba(170, 235, 255, 0.78);
+}
+
+.rt-rfintel-map-marker-light .rt-rfintel-map-marker-ring {
+  border-color: rgba(180, 220, 255, 0.56);
+  opacity: 0.82;
+}
+
+.rt-rfintel-map-marker-quiet .rt-rfintel-map-marker-ring {
+  border-color: rgba(255, 255, 255, 0.34);
+  box-shadow:
+    0 0 0.35rem rgba(255,255,255,0.14),
+    inset 0 0 0.35rem rgba(255,255,255,0.08);
+  opacity: 0.66;
+}
+
+.rt-rfintel-map-basis {
+  margin-top: 0.24rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.58;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .rt-rfintel-map-status-card {
   border: 1px solid rgba(255,255,255,0.18);
   border-radius: 0.7rem;

@@ -33,6 +33,16 @@ function unwrapItems(value) {
   return [];
 }
 
+function unwrapMarkers(value) {
+  const obj = unwrapObject(value);
+
+  if (Array.isArray(obj.markers)) return obj.markers;
+  if (Array.isArray(obj.points)) return obj.points;
+  if (Array.isArray(obj.pins)) return obj.pins;
+
+  return [];
+}
+
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -90,6 +100,26 @@ function badge(label, className = "") {
   `;
 }
 
+function pct(value, fallback = 50) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, n));
+}
+
+function intensityScale(value) {
+  const n = pct(value, 0);
+  return 0.72 + (n / 100) * 0.72;
+}
+
+function markerClass(item) {
+  const status = String(item?.status || "").trim().toLowerCase();
+  if (status === "active") return "rt-rfintel-map-marker-active";
+  if (status === "moderate") return "rt-rfintel-map-marker-moderate";
+  if (status === "light") return "rt-rfintel-map-marker-light";
+  if (status === "quiet") return "rt-rfintel-map-marker-quiet";
+  return "";
+}
+
 function itemLabel(item, index) {
   if (!item || typeof item !== "object") return `Region ${index + 1}`;
 
@@ -105,7 +135,7 @@ function itemText(item) {
 
   return firstText(
     item,
-    ["status", "message", "summary", "detail", "activity", "condition"],
+    ["summary", "status", "message", "detail", "activity", "condition"],
     ""
   );
 }
@@ -124,11 +154,62 @@ function renderRegionItem(item, index) {
   `;
 }
 
-function renderMapVisual(imageUrl, status, isMock) {
+function renderMarker(item, index) {
+  if (!item || typeof item !== "object") return "";
+
+  const x = pct(item.x_pct, 50);
+  const y = pct(item.y_pct, 50);
+  const intensity = pct(item.intensity, 0);
+  const scale = intensityScale(intensity);
+  const label = firstText(item, ["label", "band", "region", "name"], `M${index + 1}`);
+  const band = Array.isArray(item.bands) && item.bands.length
+    ? String(item.bands[0] || "").trim()
+    : String(item.band || "").trim();
+
+  const title = [
+    label,
+    band,
+    item.status,
+    item.summary,
+  ].filter(Boolean).join(" • ");
+
+  return `
+    <div
+      class="rt-rfintel-map-marker ${markerClass(item)}"
+      style="left:${x}%; top:${y}%; --rt-marker-scale:${scale}; --rt-marker-intensity:${intensity};"
+      title="${esc(title)}"
+    >
+      <div class="rt-rfintel-map-marker-ring"></div>
+      <div class="rt-rfintel-map-marker-dot"></div>
+      <div class="rt-rfintel-map-marker-label">
+        <span>${esc(label)}</span>
+        ${band ? `<b>${esc(band)}</b>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderMarkers(markers) {
+  const html = markers
+    .filter((item) => item && typeof item === "object")
+    .slice(0, 8)
+    .map((item, index) => renderMarker(item, index))
+    .filter(Boolean)
+    .join("");
+
+  return html || "";
+}
+
+function renderMapVisual(imageUrl, status, isMock, markers) {
+  const markerHtml = renderMarkers(markers);
+
   if (imageUrl) {
     return `
       <div class="rt-rfintel-map-visual-card">
         <img class="rt-rfintel-map-image" src="${esc(imageUrl)}" alt="Projected RF Intel map">
+        <div class="rt-rfintel-map-marker-layer">
+          ${markerHtml}
+        </div>
       </div>
     `;
   }
@@ -138,8 +219,11 @@ function renderMapVisual(imageUrl, status, isMock) {
       <div class="rt-rfintel-map-grid"></div>
       <div class="rt-rfintel-map-sweep"></div>
       <div class="rt-rfintel-map-crosshair"></div>
+      <div class="rt-rfintel-map-marker-layer">
+        ${markerHtml}
+      </div>
       <div class="rt-rfintel-map-center-label">
-        ${isMock ? "MOCK MAP DATA" : esc(status || "NO LIVE MAP DATA")}
+        ${markerHtml ? "TACTICAL RF ACTIVITY" : isMock ? "MOCK MAP DATA" : esc(status || "NO LIVE MAP DATA")}
       </div>
     </div>
   `;
@@ -148,8 +232,9 @@ function renderMapVisual(imageUrl, status, isMock) {
 export function renderRfDxMapSummary(container, panel, data) {
   const map = unwrapObject(data?.map);
   const items = unwrapItems(data?.map);
+  const markers = unwrapMarkers(data?.map);
 
-  if (Object.keys(map).length === 0 && items.length === 0) {
+  if (Object.keys(map).length === 0 && items.length === 0 && markers.length === 0) {
     container.innerHTML = `
       <div class="rt-rfintel-panel">
         <div class="rt-rfintel-title">DX / Propagation Map</div>
@@ -171,6 +256,11 @@ export function renderRfDxMapSummary(container, panel, data) {
     ""
   );
 
+  const mode = firstText(map, ["mode"], "");
+  const basis = firstText(map, ["basis"], "");
+  const background = unwrapObject(map.background);
+  const backgroundLabel = firstText(background, ["label", "type"], "");
+
   const updated = compactTime(
     map.updated_utc ||
     map.updated_at ||
@@ -183,6 +273,7 @@ export function renderRfDxMapSummary(container, panel, data) {
     String(map.source || "").toLowerCase().includes("mock");
 
   const imageUrl = safeProjectedImageUrl(
+    background.asset_url ||
     map.image_url ||
     map.map_url ||
     map.url
@@ -200,26 +291,28 @@ export function renderRfDxMapSummary(container, panel, data) {
         <div class="rt-rfintel-title">DX / Propagation Map</div>
         <div class="rt-rfintel-badge-row">
           ${status ? badge(status) : ""}
+          ${mode ? badge(mode) : ""}
           ${isMock ? badge("MOCK", "rt-rfintel-badge-mock") : ""}
         </div>
       </div>
 
       <div class="rt-rfintel-map-layout">
         <div class="rt-rfintel-map-left">
-          ${renderMapVisual(imageUrl, status, isMock)}
+          ${renderMapVisual(imageUrl, status, isMock, markers)}
         </div>
 
         <div class="rt-rfintel-map-right">
           <div class="rt-rfintel-map-status-card">
-            <div class="rt-rfintel-hero-label">Status</div>
+            <div class="rt-rfintel-hero-label">${esc(backgroundLabel || "Status")}</div>
             <div class="rt-rfintel-map-status">${esc(status)}</div>
             ${message ? `<div class="rt-rfintel-map-message">${esc(message)}</div>` : ""}
+            ${basis ? `<div class="rt-rfintel-map-basis">${esc(basis)}</div>` : ""}
           </div>
 
           <div class="rt-rfintel-map-region-list">
             ${
               visibleRegions ||
-              `<div class="rt-muted">No projected regions</div>`
+              `<div class="rt-muted">No projected markers</div>`
             }
           </div>
         </div>

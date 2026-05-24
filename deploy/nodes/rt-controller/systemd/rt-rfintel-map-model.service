@@ -1,0 +1,21 @@
+[Unit]
+Description=RollingThunder RF Intel Tactical Map Model
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rfintel_map_model.py
+Restart=always
+RestartSec=5
+
+Environment=PYTHONUNBUFFERED=1
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_RFINTEL_MAP_INTERVAL_SEC=90
+EnvironmentFile=/etc/rollingthunder/redis.env
+
+[Install]
+WantedBy=multi-user.target
