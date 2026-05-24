@@ -2540,3 +2540,22 @@ body[data-page="pota"] .panel-title {
   line-height: 1;
   padding: 0.08rem 0.32rem;
 }
+
+/*-------------------------------------------------------------------*/
+/* RF Intel kiosk performance guard                                  */
+/* Static tactical visuals only: no continuous animation on rt-display */
+/*-------------------------------------------------------------------*/
+
+.rt-rfintel-map-sweep,
+.rt-rfintel-map-marker-ring {
+  animation: none !important;
+}
+
+.rt-rfintel-panel,
+.rt-rfintel-panel::before,
+.rt-rfintel-solar-visual-card,
+.rt-rfintel-map-visual-card,
+.rt-rfintel-band-row,
+.rt-rfintel-advisor-row {
+  will-change: auto !important;
+}

@@ -83,10 +83,10 @@ while true; do
   "${CHROMIUM_BIN}" \
     --enable-features=UseOzonePlatform \
     --ozone-platform=wayland \
-    --disable-gpu \
-    --disable-gpu-compositing \
+    --enable-gpu-rasterization \
+    --enable-zero-copy \
+    --ignore-gpu-blocklist \
     --disable-features=Vulkan,MediaRouter,DialMediaRouteProvider \
-    --use-gl=swiftshader \
     --password-store=basic \
     --kiosk \
     --start-fullscreen \
