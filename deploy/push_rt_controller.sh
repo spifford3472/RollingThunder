@@ -96,6 +96,7 @@ UNITS=(
   "rt-rfintel-trend-recorder.service"
   "rt-rfintel-dx-activity.service"
   "rt-rfintel-map-model.service"
+  "rt-vhf-repeater-lookup.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
