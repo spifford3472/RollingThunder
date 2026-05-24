@@ -93,6 +93,7 @@ UNITS=(
   "rt-rfintel-advisor-engine.service"
   "rt-rfintel-advisor-alert-mirror.service"
   "rt-rfintel-trend-recorder.service"
+  "rt-rfintel-dx-activity.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

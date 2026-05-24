@@ -1,0 +1,23 @@
+[Unit]
+Description=RollingThunder RF Intel DX Activity Summary
+After=network-online.target redis-server.service rt-hf-dx-spider-poller.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+Environment=RT_RFI_DX_ACTIVITY_INTERVAL_SEC=60
+Environment=RT_RFI_DX_ACTIVITY_WINDOW_MIN=15
+Environment=RT_RFI_DX_ACTIVITY_MAX_AGE_MIN=30
+EnvironmentFile=/etc/rollingthunder/redis.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/rfintel_dx_activity.py
+Restart=always
+RestartSec=10
+User=spiff
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
