@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-RollingThunder IC-2730A adapter status publisher.
+RollingThunder IC-2730A adapter status/request publisher.
 
-Phase 7B-2 scope:
+Phase 8B scope:
 - Run on rt-radio, where the IC-2730A is physically connected.
 - Instantiate the safe IC2730AAdapter boundary.
 - Publish structured adapter status to Redis key rt:vhf:adapter.
+- Process one safe request model: rt:vhf:adapter:request.
+- Publish the last structured request result to rt:vhf:adapter:last_result.
 - Publish state.changed to rt:system:bus.
 - Avoid excessive Redis writes.
 - Do not write rt:ui:bus.
-- Do not program radio memories.
+- Do not program radio memories except through the adapter's explicitly gated
+  write_single_memory_test() path.
 - Do not clear memories.
+- Do not bulk-write memories.
 - Do not start or stop scan.
 - Do not program Side B.
 - Do not expose PTT/transmit controls.
@@ -30,9 +34,10 @@ import signal
 import socket
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Set, Tuple
 
 try:
     import redis  # type: ignore
@@ -46,11 +51,15 @@ from ic2730a_adapter import IC2730AAdapter, IC2730AConfig
 APP_CONFIG_PATH = Path("/opt/rollingthunder/config/app.json")
 
 KEY_ADAPTER = "rt:vhf:adapter"
+KEY_ADAPTER_REQUEST = "rt:vhf:adapter:request"
+KEY_ADAPTER_LAST_RESULT = "rt:vhf:adapter:last_result"
 BUS_SYSTEM = "rt:system:bus"
 SOURCE = "vhf_ic2730a_adapter_status"
 
 DEFAULT_PUBLISH_INTERVAL_SECONDS = 30
 DEFAULT_FORCE_PUBLISH_SECONDS = 300
+DEFAULT_REQUEST_POLL_SECONDS = 1
+MAX_REMEMBERED_REQUEST_IDS = 200
 
 _running = True
 
@@ -139,6 +148,12 @@ def get_publish_config(app: Dict[str, Any]) -> Dict[str, Any]:
             DEFAULT_FORCE_PUBLISH_SECONDS,
             30,
         ),
+        "request_poll_seconds": intish(
+            os.environ.get("RT_VHF_ADAPTER_REQUEST_POLL_SECONDS")
+            or ic.get("request_poll_seconds"),
+            DEFAULT_REQUEST_POLL_SECONDS,
+            1,
+        ),
     }
 
 
@@ -215,8 +230,9 @@ def normalize_adapter_status(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize adapter output into the rt:vhf:adapter Redis model.
 
-    The IC2730AAdapter already returns safe fields. This layer makes sure
-    publish-time fields are present and risky capabilities remain false.
+    The IC2730AAdapter already owns safe fields. This publisher preserves the
+    config gates it reports so Phase 8B can show whether the explicit write-test
+    gates are enabled, without adding UI-side logic or radio details.
     """
 
     model = dict(raw) if isinstance(raw, dict) else {}
@@ -230,12 +246,15 @@ def normalize_adapter_status(raw: Dict[str, Any]) -> Dict[str, Any]:
     model.setdefault("reason", "IC-2730A adapter status unavailable.")
     model.setdefault("source", "ic2730a_adapter")
 
-    # Phase 7B safety gates: keep all real write/control flags false here even
-    # if a bad config accidentally says otherwise.
-    model["writes_enabled"] = False
-    model["scan_control_enabled"] = False
-    model["side_b_programming_enabled"] = False
-    model["memory_programming_enabled"] = False
+    model["writes_enabled"] = boolish(model.get("writes_enabled"), False)
+    model["scan_control_enabled"] = boolish(model.get("scan_control_enabled"), False)
+    model["side_b_programming_enabled"] = boolish(model.get("side_b_programming_enabled"), False)
+    model["memory_programming_enabled"] = boolish(model.get("memory_programming_enabled"), False)
+    model["write_test_enabled"] = boolish(model.get("write_test_enabled"), False)
+    model["write_test_allow_single_memory_write"] = boolish(
+        model.get("write_test_allow_single_memory_write"),
+        False,
+    )
 
     model["updated_utc"] = utc_now_iso()
 
@@ -250,16 +269,20 @@ def stable_part(model: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in model.items() if k not in ignored}
 
 
-def read_existing(client: "redis.Redis") -> Optional[Dict[str, Any]]:
+def read_json_key(client: "redis.Redis", key: str) -> Optional[Dict[str, Any]]:
     try:
-        raw = client.get(KEY_ADAPTER)
+        raw = client.get(key)
         if not raw:
             return None
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else None
     except Exception as exc:
-        warn(f"unable to read existing {KEY_ADAPTER}: {exc}")
+        warn(f"unable to read existing {key}: {exc}")
         return None
+
+
+def read_existing(client: "redis.Redis") -> Optional[Dict[str, Any]]:
+    return read_json_key(client, KEY_ADAPTER)
 
 
 def should_publish(
@@ -280,15 +303,13 @@ def should_publish(
     return False, "unchanged"
 
 
-def publish(client: "redis.Redis", model: Dict[str, Any], reason: str) -> None:
-    client.set(KEY_ADAPTER, json.dumps(model, sort_keys=True, separators=(",", ":")))
-
+def publish_state_changed(client: "redis.Redis", keys: list[str], reason: str) -> None:
     event = {
         "type": "state.changed",
         "topic": "state.changed",
         "source": SOURCE,
-        "keys": [KEY_ADAPTER],
-        "changed_keys": [KEY_ADAPTER],
+        "keys": keys,
+        "changed_keys": keys,
         "deleted_keys": [],
         "reason": reason,
         "timestamp_utc": utc_now_iso(),
@@ -297,10 +318,120 @@ def publish(client: "redis.Redis", model: Dict[str, Any], reason: str) -> None:
     client.publish(BUS_SYSTEM, json.dumps(event, sort_keys=True, separators=(",", ":")))
 
 
+def publish(client: "redis.Redis", model: Dict[str, Any], reason: str) -> None:
+    client.set(KEY_ADAPTER, json.dumps(model, sort_keys=True, separators=(",", ":")))
+    publish_state_changed(client, [KEY_ADAPTER], reason)
+
+
+def publish_request_result(
+    client: "redis.Redis",
+    adapter_model: Dict[str, Any],
+    result: Dict[str, Any],
+    reason: str,
+) -> None:
+    client.set(KEY_ADAPTER, json.dumps(adapter_model, sort_keys=True, separators=(",", ":")))
+    client.set(KEY_ADAPTER_LAST_RESULT, json.dumps(result, sort_keys=True, separators=(",", ":")))
+    publish_state_changed(client, [KEY_ADAPTER, KEY_ADAPTER_LAST_RESULT], reason)
+
+
 def build_adapter_status(app: Dict[str, Any]) -> Dict[str, Any]:
     config = IC2730AConfig.from_app_config(app)
     adapter = IC2730AAdapter(config)
     return normalize_adapter_status(adapter.get_status())
+
+
+def remember_request_id(request_id: str, remembered: Set[str], order: Deque[str]) -> None:
+    if request_id in remembered:
+        return
+    remembered.add(request_id)
+    order.append(request_id)
+    while len(order) > MAX_REMEMBERED_REQUEST_IDS:
+        old = order.popleft()
+        remembered.discard(old)
+
+
+def request_already_handled(
+    client: "redis.Redis",
+    request_id: str,
+    remembered: Set[str],
+) -> bool:
+    if request_id in remembered:
+        return True
+
+    last_result = read_json_key(client, KEY_ADAPTER_LAST_RESULT)
+    if last_result and str(last_result.get("request_id", "")) == request_id:
+        return True
+
+    return False
+
+
+def rejected_request_result(request_id: str, action: str, reason: str) -> Dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "action": action,
+        "ok": False,
+        "status": "rejected",
+        "reason": reason,
+        "operation_performed": False,
+        "source": SOURCE,
+        "updated_utc": utc_now_iso(),
+    }
+
+
+def process_request_if_needed(
+    client: "redis.Redis",
+    app: Dict[str, Any],
+    remembered: Set[str],
+    remembered_order: Deque[str],
+) -> bool:
+    request = read_json_key(client, KEY_ADAPTER_REQUEST)
+    if not request:
+        return False
+
+    request_id = str(request.get("request_id") or "").strip()
+    action = str(request.get("action") or "").strip()
+
+    if not request_id:
+        request_id = f"missing-request-id-{utc_now_iso()}"
+        result = rejected_request_result(request_id, action or "unknown", "Adapter request missing request_id.")
+        adapter_model = build_adapter_status(app)
+        publish_request_result(client, adapter_model, result, "adapter_request_rejected")
+        remember_request_id(request_id, remembered, remembered_order)
+        log("rejected request with missing request_id")
+        return True
+
+    if request_already_handled(client, request_id, remembered):
+        return False
+
+    config = IC2730AConfig.from_app_config(app)
+    adapter = IC2730AAdapter(config)
+
+    if action != "write_single_memory_test":
+        result = rejected_request_result(
+            request_id,
+            action or "unknown",
+            f"Unknown or unsupported adapter request action: {action or 'missing'}",
+        )
+    else:
+        result = adapter.write_single_memory_test(
+            str(request.get("target_group") or ""),
+            intish(request.get("target_channel"), -1, -1),
+            request.get("payload") if isinstance(request.get("payload"), dict) else {},
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    adapter_model = normalize_adapter_status(adapter.get_status())
+    publish_request_result(client, adapter_model, result, "adapter_request_processed")
+    remember_request_id(request_id, remembered, remembered_order)
+
+    log(
+        f"processed request_id={request_id} action={action or 'unknown'} "
+        f"status={result.get('status')} operation_performed={result.get('operation_performed')}"
+    )
+    return True
 
 
 def main() -> int:
@@ -309,11 +440,14 @@ def main() -> int:
 
     client: Optional["redis.Redis"] = None
     last_publish_mono = 0.0
+    last_status_check_mono = 0.0
+    remembered_request_ids: Set[str] = set()
+    remembered_request_order: Deque[str] = deque()
 
     log("starting")
 
     while _running:
-        interval_sec = DEFAULT_PUBLISH_INTERVAL_SECONDS
+        sleep_seconds = DEFAULT_REQUEST_POLL_SECONDS
 
         try:
             app = load_app_config()
@@ -321,45 +455,53 @@ def main() -> int:
 
             interval_sec = int(publish_cfg["publish_interval_seconds"])
             force_publish_seconds = int(publish_cfg["force_publish_seconds"])
-
-            if not publish_cfg["publish_adapter_status"]:
-                log("publish_adapter_status=false; sleeping")
-                slept = 0
-                while _running and slept < interval_sec:
-                    time.sleep(1)
-                    slept += 1
-                continue
+            sleep_seconds = int(publish_cfg["request_poll_seconds"])
 
             if client is None:
                 client = get_redis_client(app)
 
-            model = build_adapter_status(app)
-            old_model = read_existing(client)
-
-            do_publish, publish_reason = should_publish(
-                model,
-                old_model,
-                last_publish_mono,
-                force_publish_seconds,
+            request_processed = process_request_if_needed(
+                client,
+                app,
+                remembered_request_ids,
+                remembered_request_order,
             )
 
-            if do_publish:
-                publish(client, model, publish_reason)
-                last_publish_mono = time.monotonic()
-                log(
-                    f"published status={model.get('status')} "
-                    f"available={model.get('available')} "
-                    f"mode={model.get('control_mode')} "
-                    f"reason={model.get('reason')} "
-                    f"publish_reason={publish_reason}"
+            publish_due = (time.monotonic() - last_status_check_mono) >= interval_sec
+            if publish_cfg["publish_adapter_status"] and (publish_due or request_processed):
+                model = build_adapter_status(app)
+                old_model = read_existing(client)
+
+                do_publish, publish_reason = should_publish(
+                    model,
+                    old_model,
+                    last_publish_mono,
+                    force_publish_seconds,
                 )
+
+                if do_publish:
+                    publish(client, model, publish_reason)
+                    last_publish_mono = time.monotonic()
+                    log(
+                        f"published status={model.get('status')} "
+                        f"available={model.get('available')} "
+                        f"mode={model.get('control_mode')} "
+                        f"reason={model.get('reason')} "
+                        f"publish_reason={publish_reason}"
+                    )
+
+                last_status_check_mono = time.monotonic()
+
+            elif not publish_cfg["publish_adapter_status"] and publish_due:
+                log("publish_adapter_status=false; request handling remains active")
+                last_status_check_mono = time.monotonic()
 
         except Exception as exc:
             client = None
             warn(f"cycle failed: {exc}")
 
         slept = 0
-        while _running and slept < interval_sec:
+        while _running and slept < sleep_seconds:
             time.sleep(1)
             slept += 1
 

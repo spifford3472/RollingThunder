@@ -22,3 +22,21 @@ The stable device path on `rt-radio` is:
 
 ```text
 /dev/ic2730a
+
+## Phase 8B — Controlled single-memory write-test request path
+
+Phase 8B adds a request/response path for one explicitly configured sacrificial memory channel test.
+
+Request key:
+
+```text
+rt:vhf:adapter:request
+
+Last result key:
+
+rt:vhf:adapter:last_result
+
+Supported request action:
+
+write_single_memory_test
+

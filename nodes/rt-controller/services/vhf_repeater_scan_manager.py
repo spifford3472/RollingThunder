@@ -2,24 +2,22 @@
 """
 RollingThunder VHF repeater scan manager.
 
-Phase 6 scope:
+Phase 8A scope:
 - Own and publish controller-side VHF repeater scan state.
 - Read requested scan state from rt:vhf:scan:request.
-- Read VHF radio availability from rt:vhf:radio.
+- Read IC-2730A adapter state from rt:vhf:adapter.
 - Read nearby repeater model from rt:vhf:repeaters:nearby.
+- Read GPS position from rt:gps:pos for controller-side movement tracking.
 - Publish rt:vhf:scan.
-- Publish state.changed to rt:system:bus when rt:vhf:scan changes.
+- Publish rt:vhf:repeaters:planned_memory in dry-run only.
+- Publish state.changed to rt:system:bus when state changes.
 
-Does NOT:
-- write rt:ui:bus
-- read SQLite
-- calculate repeater distance
-- filter repeaters by distance
-- program radio memories
-- choose memory channels
-- start or stop scanning
-- call serial, Hamlib, CI-V, rigctld, or radio APIs
-- expose transmit or PTT controls
+Safety boundary:
+- This service never imports or calls radio adapter code.
+- This service never opens serial devices.
+- This service never shells out to radio-control utilities.
+- This service never clears, writes, selects, starts, stops, transmits, or keys anything.
+- The UI remains a renderer-only dumb terminal.
 """
 
 from __future__ import annotations
@@ -27,13 +25,14 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import socket
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 APP_CONFIG_PATH = Path("/opt/rollingthunder/config/app.json")
@@ -42,18 +41,24 @@ SOURCE = "vhf_repeater_scan_manager"
 
 KEY_SCAN = "rt:vhf:scan"
 KEY_SCAN_REQUEST = "rt:vhf:scan:request"
-KEY_VHF_RADIO = "rt:vhf:radio"
 KEY_VHF_ADAPTER = "rt:vhf:adapter"
 KEY_NEARBY = "rt:vhf:repeaters:nearby"
+KEY_GPS_POS = "rt:gps:pos"
+KEY_PLANNED_MEMORY = "rt:vhf:repeaters:planned_memory"
 
 SYSTEM_BUS = "rt:system:bus"
 
 DEFAULT_ENABLED = False
-DEFAULT_RADIUS_MILES = 25.0
+DEFAULT_RADIUS_MILES = 40.0
 DEFAULT_RELOAD_DISTANCE_MILES = 20.0
+DEFAULT_MOVEMENT_MIN_DELTA_MILES = 0.05
+DEFAULT_MOVEMENT_JUMP_REJECT_MILES = 5.0
+DEFAULT_MAX_MEMORY_CHANNELS_PER_GROUP = 100
+DEFAULT_DRY_RUN_RELOAD_ONLY = True
 DEFAULT_PUBLISH_INTERVAL_SECONDS = 30.0
 DEFAULT_FORCE_PUBLISH_SECONDS = 300.0
 DEFAULT_NEXT_GROUP = "C"
+VALID_GROUPS = {"C", "D"}
 
 
 def utc_now() -> str:
@@ -94,26 +99,25 @@ def deep_get(config: Dict[str, Any], dotted: str, default: Any) -> Any:
     return cur
 
 
+def boolish(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if val in {"0", "false", "no", "n", "off", "disabled"}:
+            return False
+    return default
+
+
 def cfg_bool(config: Dict[str, Any], dotted: str, env_name: str, default: bool) -> bool:
     raw = os.environ.get(env_name)
     if raw is None:
         raw = deep_get(config, dotted, default)
-
-    if isinstance(raw, bool):
-        return raw
-
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-
-    if isinstance(raw, str):
-        value = raw.strip().lower()
-        if value in {"1", "true", "yes", "y", "on", "enabled"}:
-            return True
-        if value in {"0", "false", "no", "n", "off", "disabled"}:
-            return False
-
-    warn(f"invalid boolean config {dotted}={raw!r}; using {default!r}")
-    return default
+    return boolish(raw, default)
 
 
 def cfg_float(
@@ -139,33 +143,52 @@ def cfg_float(
         return float(default)
 
 
-def cfg_str(config: Dict[str, Any], dotted: str, env_name: str, default: str) -> str:
+def cfg_int(
+    config: Dict[str, Any],
+    dotted: str,
+    env_name: str,
+    default: int,
+    minimum: Optional[int] = None,
+) -> int:
     raw = os.environ.get(env_name)
     if raw is None:
         raw = deep_get(config, dotted, default)
 
+    try:
+        value = int(raw)
+        if minimum is not None and value < minimum:
+            raise ValueError(f"value below minimum {minimum}")
+        return value
+    except Exception:
+        warn(f"invalid integer config {dotted}={raw!r}; using {default!r}")
+        return int(default)
+
+
+def cfg_str(config: Dict[str, Any], dotted: str, env_name: str, default: str) -> str:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        raw = deep_get(config, dotted, default)
     if raw is None:
         return default
-
     value = str(raw).strip()
     return value or default
 
 
-class RedisCli:
-    """
-    Small Redis wrapper using redis-cli.
+def rounded_miles(value: float) -> float:
+    return round(float(value), 3)
 
-    Honors:
-      REDIS_CLI
-      REDIS_AUTH_ARGS
-      RT_REDIS_HOST / REDIS_HOST
-      RT_REDIS_PORT / REDIS_PORT
-      RT_REDIS_DB / REDIS_DB
-    """
+
+def display_number(value: float) -> float | int:
+    v = float(value)
+    return int(v) if v.is_integer() else round(v, 3)
+
+
+class RedisCli:
+    """Small Redis wrapper using redis-cli, following existing project style."""
 
     def __init__(self) -> None:
         self.redis_cli = os.environ.get("REDIS_CLI", "redis-cli")
-        self.base_args = [self.redis_cli]
+        self.base_args: List[str] = [self.redis_cli]
 
         host = os.environ.get("RT_REDIS_HOST") or os.environ.get("REDIS_HOST")
         port = os.environ.get("RT_REDIS_PORT") or os.environ.get("REDIS_PORT")
@@ -180,11 +203,11 @@ class RedisCli:
 
         auth_args = os.environ.get("REDIS_AUTH_ARGS", "").strip()
         if auth_args:
-            self.base_args += auth_args.split()
+            self.base_args += shlex.split(auth_args)
 
-    def _run(self, args: list[str], input_text: Optional[str] = None) -> str:
+    def _run(self, args: Sequence[str], input_text: Optional[str] = None) -> str:
         proc = subprocess.run(
-            self.base_args + args,
+            self.base_args + list(args),
             input=input_text,
             text=True,
             capture_output=True,
@@ -199,6 +222,14 @@ class RedisCli:
         if out == "":
             return None
         return out.rstrip("\n")
+
+    def hgetall(self, key: str) -> Dict[str, str]:
+        out = self._run(["--raw", "HGETALL", key])
+        lines = out.splitlines()
+        result: Dict[str, str] = {}
+        for i in range(0, len(lines) - 1, 2):
+            result[lines[i]] = lines[i + 1]
+        return result
 
     def set(self, key: str, value: str) -> None:
         self._run(["SET", key, value])
@@ -232,21 +263,114 @@ def parse_requested(request_model: Dict[str, Any], config: Dict[str, Any]) -> bo
     return cfg_bool(config, "vhf.scan.enabled_default", "RT_VHF_SCAN_ENABLED_DEFAULT", DEFAULT_ENABLED)
 
 
-def boolish(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
+def parse_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return None
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            return None
+        return parsed
+    except Exception:
+        return None
 
-    if isinstance(value, (int, float)):
-        return bool(value)
 
-    if isinstance(value, str):
-        val = value.strip().lower()
-        if val in {"1", "true", "yes", "y", "on", "enabled"}:
-            return True
-        if val in {"0", "false", "no", "n", "off", "disabled"}:
-            return False
+def first_present_float(data: Dict[str, Any], names: Iterable[str]) -> Optional[float]:
+    lower = {str(k).lower(): v for k, v in data.items()}
+    for name in names:
+        if name in data:
+            val = parse_float(data.get(name))
+            if val is not None:
+                return val
+        lname = name.lower()
+        if lname in lower:
+            val = parse_float(lower.get(lname))
+            if val is not None:
+                return val
+    return None
 
-    return default
+
+def read_gps(redis_client: RedisCli) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Read rt:gps:pos as either a Redis hash or JSON string."""
+    gps: Dict[str, Any] = {}
+
+    try:
+        gps = dict(redis_client.hgetall(KEY_GPS_POS))
+    except Exception:
+        gps = {}
+
+    if not gps:
+        raw_model = load_json_model(redis_client, KEY_GPS_POS)
+        gps = raw_model if isinstance(raw_model, dict) else {}
+
+    if not gps:
+        return None, "missing_gps"
+
+    status = str(gps.get("status") or gps.get("gps_status") or gps.get("fix_status") or "").strip().lower()
+    if status and status not in {"ok", "valid", "ready", "fix", "fixed", "3d", "2d"}:
+        return None, "invalid_gps"
+
+    fix = str(gps.get("fix") or gps.get("mode") or gps.get("quality") or "").strip().lower()
+    if fix in {"0", "none", "no", "nofix", "invalid"}:
+        return None, "invalid_gps"
+
+    lat = first_present_float(
+        gps,
+        (
+            "lat",
+            "latitude",
+            "gps_lat",
+            "gps_latitude",
+            "fix_lat",
+            "position_lat",
+        ),
+    )
+    lon = first_present_float(
+        gps,
+        (
+            "lon",
+            "lng",
+            "longitude",
+            "gps_lon",
+            "gps_lng",
+            "gps_longitude",
+            "fix_lon",
+            "position_lon",
+        ),
+    )
+
+    if lat is None or lon is None:
+        return None, "missing_gps"
+
+    if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+        return None, "invalid_gps"
+
+    timestamp = str(
+        gps.get("updated_utc")
+        or gps.get("timestamp_utc")
+        or gps.get("utc")
+        or gps.get("time_utc")
+        or utc_now()
+    )
+
+    return {"lat": round(lat, 6), "lon": round(lon, 6), "updated_utc": timestamp}, "ok"
+
+
+def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius_miles = 3958.7613
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    )
+    return 2.0 * radius_miles * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
 def count_nearby(nearby: Dict[str, Any]) -> int:
@@ -266,6 +390,14 @@ def count_nearby(nearby: Dict[str, Any]) -> int:
     return 0
 
 
+def nearby_items(nearby: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for key in ("items", "repeaters", "rows", "nearby"):
+        value = nearby.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def nearby_available(nearby: Dict[str, Any]) -> bool:
     if not nearby:
         return False
@@ -281,19 +413,6 @@ def nearby_available(nearby: Dict[str, Any]) -> bool:
     return True
 
 
-def vhf_radio_available(radio: Dict[str, Any]) -> bool:
-    if not radio:
-        return False
-
-    if radio.get("available") is True:
-        return True
-
-    status = str(radio.get("status", "")).strip().lower()
-    if status in {"online", "available", "ready"}:
-        return True
-
-    return False
-
 def adapter_status(adapter: Dict[str, Any]) -> str:
     return str(adapter.get("status", "")).strip().lower()
 
@@ -301,19 +420,14 @@ def adapter_status(adapter: Dict[str, Any]) -> str:
 def adapter_available(adapter: Dict[str, Any]) -> bool:
     if not adapter:
         return False
-
     if adapter.get("available") is True:
         return True
-
     status = adapter_status(adapter)
-    if status in {"dry_run", "detected", "available", "ready"}:
-        return True
-
-    return False
+    return status in {"dry_run", "detected", "available", "ready"}
 
 
 def adapter_in_dry_run(adapter: Dict[str, Any]) -> bool:
-    return adapter_status(adapter) == "dry_run"
+    return adapter_status(adapter) == "dry_run" or str(adapter.get("control_mode", "")).strip().lower() == "dry_run"
 
 
 def adapter_detected(adapter: Dict[str, Any]) -> bool:
@@ -327,17 +441,246 @@ def adapter_memory_programming_enabled(adapter: Dict[str, Any]) -> bool:
 def adapter_scan_control_enabled(adapter: Dict[str, Any]) -> bool:
     return boolish(adapter.get("scan_control_enabled"), False)
 
-def build_model(config: Dict[str, Any], request: Dict[str, Any], adapter: Dict[str, Any], nearby: Dict[str, Any]) -> Dict[str, Any]:
+
+def adapter_writes_enabled(adapter: Dict[str, Any]) -> bool:
+    return boolish(adapter.get("writes_enabled"), False)
+
+
+def normalize_group(value: Any, default: str = DEFAULT_NEXT_GROUP) -> str:
+    text = str(value or default).strip().upper()
+    return text if text in VALID_GROUPS else default
+
+
+def other_group(group: str) -> str:
+    return "D" if group == "C" else "C"
+
+
+def numeric_tone(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in {"NONE", "OFF", "N/A", "NA", "NULL", "-"}:
+        return None
+    val = parse_float(text.replace("Hz", "").replace("HZ", "").strip())
+    if val is None or val <= 0:
+        return None
+    return round(val, 1)
+
+
+def item_frequency(item: Dict[str, Any]) -> Optional[float]:
+    for key in ("rx_frequency_mhz", "frequency_mhz", "output_mhz", "receive_frequency_mhz"):
+        val = parse_float(item.get(key))
+        if val is not None and 100.0 <= val <= 999.999:
+            return round(val, 6)
+    return None
+
+
+def item_tx_frequency(item: Dict[str, Any]) -> Optional[float]:
+    for key in ("tx_frequency_mhz", "input_mhz", "transmit_frequency_mhz"):
+        val = parse_float(item.get(key))
+        if val is not None and 100.0 <= val <= 999.999:
+            return round(val, 6)
+    return None
+
+
+def is_transmit_prohibited(item: Dict[str, Any]) -> bool:
+    for key in ("transmit_prohibited", "tx_prohibited", "receive_only", "rx_only", "no_tx"):
+        if key in item and boolish(item.get(key), False):
+            return True
+    text = " ".join(str(item.get(k, "")) for k in ("special", "notes", "tags", "category")).lower()
+    return any(token in text for token in ("receive only", "rx only", "no transmit", "tx prohibited"))
+
+
+def is_analog_fm(item: Dict[str, Any]) -> bool:
+    mode = str(item.get("mode") or item.get("fm_mode") or "FM").strip().upper()
+    if not mode:
+        return True
+    if mode in {"FM", "NFM", "WFM"}:
+        return True
+    text = " ".join(str(item.get(k, "")) for k in ("mode", "type", "special", "notes", "tags", "category")).lower()
+    digital_markers = ("dmr", "d-star", "dstar", "fusion", "ysf", "p25", "nxdn", "m17", "aprs")
+    return not any(marker in text for marker in digital_markers)
+
+
+def repeater_name(item: Dict[str, Any]) -> str:
+    for key in ("channel_name", "name", "callsign", "call_sign", "repeater_name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value[:32]
+    return "REPEATER"
+
+
+def repeater_callsign(item: Dict[str, Any]) -> str:
+    for key in ("callsign", "call_sign", "station", "owner_call"):
+        value = str(item.get(key) or "").strip().upper()
+        if value:
+            return value[:16]
+    return ""
+
+
+def build_planned_memory_model(
+    nearby: Dict[str, Any],
+    target_group: str,
+    source_group: Optional[str],
+    radius_miles: float,
+    max_memory_channels: int,
+) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    skipped_invalid = 0
+    skipped_digital = 0
+    skipped_tx_prohibited = 0
+
+    for raw_item in nearby_items(nearby):
+        freq = item_frequency(raw_item)
+        if freq is None:
+            skipped_invalid += 1
+            continue
+
+        distance = parse_float(raw_item.get("distance_miles"))
+        if distance is not None and distance > radius_miles:
+            continue
+
+        if not is_analog_fm(raw_item):
+            skipped_digital += 1
+            continue
+
+        if is_transmit_prohibited(raw_item):
+            skipped_tx_prohibited += 1
+            continue
+
+        tx_freq = item_tx_frequency(raw_item)
+        offset: Optional[float] = None
+        if tx_freq is not None:
+            offset = round(tx_freq - freq, 6)
+
+        tone = numeric_tone(raw_item.get("tx_tone"))
+        if tone is None:
+            tone = numeric_tone(raw_item.get("rx_tone"))
+        if tone is None:
+            tone = numeric_tone(raw_item.get("tone_hz"))
+
+        planned: Dict[str, Any] = {
+            "channel": len(items) + 1,
+            "name": repeater_name(raw_item),
+            "callsign": repeater_callsign(raw_item),
+            "frequency_mhz": freq,
+            "offset_mhz": offset,
+            "tone_hz": tone,
+            "mode": "FM",
+            "distance_miles": round(distance, 1) if distance is not None else None,
+        }
+
+        for key in ("repeater_id", "state", "special"):
+            if key in raw_item and raw_item.get(key) not in (None, ""):
+                planned[key] = raw_item.get(key)
+
+        items.append(planned)
+        if len(items) >= max_memory_channels:
+            break
+
+    now = utc_now()
+    status = "dry_run" if items else "unavailable"
+    reason = (
+        "Dry-run memory reload plan generated; no radio programming performed."
+        if items
+        else "No eligible analog FM repeaters available for dry-run memory reload plan."
+    )
+
+    return {
+        "status": status,
+        "target_group": target_group,
+        "source_group": source_group,
+        "repeater_count": count_nearby(nearby),
+        "memory_count": len(items),
+        "radius_miles": display_number(radius_miles),
+        "nearby_model_radius_miles": nearby.get("radius_miles"),
+        "max_memory_channels": max_memory_channels,
+        "skipped_invalid_frequency": skipped_invalid,
+        "skipped_non_fm": skipped_digital,
+        "skipped_transmit_prohibited": skipped_tx_prohibited,
+        "reason": reason,
+        "items": items,
+        "source": SOURCE,
+        "updated_utc": now,
+    }
+
+
+def initial_state_from_previous(previous: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    configured_next = cfg_str(config, "vhf.scan.next_group", "RT_VHF_SCAN_NEXT_GROUP", DEFAULT_NEXT_GROUP)
+    return {
+        "active_group": previous.get("active_group"),
+        "next_group": normalize_group(previous.get("next_group") or configured_next),
+        "distance_since_reload_miles": parse_float(previous.get("distance_since_reload_miles")) or 0.0,
+        "last_movement_location": previous.get("last_movement_location"),
+        "last_movement_utc": previous.get("last_movement_utc"),
+        "last_reload_utc": previous.get("last_reload_utc"),
+        "last_reload_location": previous.get("last_reload_location"),
+        "last_successful_group": previous.get("last_successful_group"),
+        "last_reload_status": previous.get("last_reload_status"),
+        "last_reload_reason": previous.get("last_reload_reason"),
+    }
+
+
+def apply_movement_tracking(
+    redis_client: RedisCli,
+    state: Dict[str, Any],
+    movement_min_delta_miles: float,
+    movement_jump_reject_miles: float,
+) -> Tuple[Dict[str, Any], str]:
+    gps, gps_status = read_gps(redis_client)
+    if gps_status != "ok" or gps is None:
+        return state, gps_status
+
+    last = state.get("last_movement_location")
+    if not isinstance(last, dict):
+        state["last_movement_location"] = {"lat": gps["lat"], "lon": gps["lon"]}
+        state["last_movement_utc"] = gps.get("updated_utc") or utc_now()
+        return state, "ok_initialized"
+
+    old_lat = parse_float(last.get("lat"))
+    old_lon = parse_float(last.get("lon"))
+    if old_lat is None or old_lon is None:
+        state["last_movement_location"] = {"lat": gps["lat"], "lon": gps["lon"]}
+        state["last_movement_utc"] = gps.get("updated_utc") or utc_now()
+        return state, "ok_initialized"
+
+    delta = haversine_miles(old_lat, old_lon, float(gps["lat"]), float(gps["lon"]))
+    if delta < movement_min_delta_miles:
+        return state, "ok_ignored_jitter"
+
+    if delta > movement_jump_reject_miles:
+        state["last_movement_location"] = {"lat": gps["lat"], "lon": gps["lon"]}
+        state["last_movement_utc"] = gps.get("updated_utc") or utc_now()
+        return state, "ok_rejected_jump"
+
+    state["distance_since_reload_miles"] = rounded_miles(
+        (parse_float(state.get("distance_since_reload_miles")) or 0.0) + delta
+    )
+    state["last_movement_location"] = {"lat": gps["lat"], "lon": gps["lon"]}
+    state["last_movement_utc"] = gps.get("updated_utc") or utc_now()
+    return state, "ok_added"
+
+
+def build_model(
+    redis_client: RedisCli,
+    config: Dict[str, Any],
+    request: Dict[str, Any],
+    adapter: Dict[str, Any],
+    nearby: Dict[str, Any],
+    previous: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     requested = parse_requested(request, config)
 
     radius_miles = cfg_float(
         config,
-        "vhf.repeater_radius_miles",
-        "RT_VHF_REPEATER_RADIUS_MILES",
+        "vhf.scan.reload_radius_miles",
+        "RT_VHF_SCAN_RELOAD_RADIUS_MILES",
         DEFAULT_RADIUS_MILES,
         minimum=0.0,
     )
-
     reload_distance_miles = cfg_float(
         config,
         "vhf.scan.reload_distance_miles",
@@ -345,25 +688,53 @@ def build_model(config: Dict[str, Any], request: Dict[str, Any], adapter: Dict[s
         DEFAULT_RELOAD_DISTANCE_MILES,
         minimum=0.0,
     )
-
-    next_group = cfg_str(
+    movement_min_delta_miles = cfg_float(
         config,
-        "vhf.scan.next_group",
-        "RT_VHF_SCAN_NEXT_GROUP",
-        DEFAULT_NEXT_GROUP,
-    ).upper()
+        "vhf.scan.movement_min_delta_miles",
+        "RT_VHF_SCAN_MOVEMENT_MIN_DELTA_MILES",
+        DEFAULT_MOVEMENT_MIN_DELTA_MILES,
+        minimum=0.0,
+    )
+    movement_jump_reject_miles = cfg_float(
+        config,
+        "vhf.scan.movement_jump_reject_miles",
+        "RT_VHF_SCAN_MOVEMENT_JUMP_REJECT_MILES",
+        DEFAULT_MOVEMENT_JUMP_REJECT_MILES,
+        minimum=0.0,
+    )
+    max_memory_channels = cfg_int(
+        config,
+        "vhf.scan.max_memory_channels_per_group",
+        "RT_VHF_SCAN_MAX_MEMORY_CHANNELS_PER_GROUP",
+        DEFAULT_MAX_MEMORY_CHANNELS_PER_GROUP,
+        minimum=1,
+    )
+    dry_run_reload_only = cfg_bool(
+        config,
+        "vhf.scan.dry_run_reload_only",
+        "RT_VHF_SCAN_DRY_RUN_RELOAD_ONLY",
+        DEFAULT_DRY_RUN_RELOAD_ONLY,
+    )
+
+    state = initial_state_from_previous(previous, config)
+    planned_memory: Optional[Dict[str, Any]] = None
+    movement_status: Optional[str] = None
 
     nearby_count = count_nearby(nearby)
     eligible_count = nearby_count
-
     adapter_status_value = adapter_status(adapter)
     adapter_reason = str(adapter.get("reason", "")).strip()
+
+    reload_pending = False
+    reload_in_progress = False
 
     if not requested:
         status = "disabled"
         reason = "Repeater scanning disabled."
         actual_scan_state = "not_scanning"
         enabled = False
+        reload_pending = False
+        reload_in_progress = False
 
     elif not adapter:
         status = "unavailable"
@@ -379,16 +750,56 @@ def build_model(config: Dict[str, Any], request: Dict[str, Any], adapter: Dict[s
 
     elif adapter_in_dry_run(adapter):
         status = "dry_run"
-        reason = "IC-2730A adapter is in dry-run mode; no radio programming or scan start performed."
+        reason = "IC-2730A adapter is in dry-run mode; dry-run planning only."
         actual_scan_state = "not_scanning"
         enabled = False
 
+        if dry_run_reload_only:
+            state, movement_status = apply_movement_tracking(
+                redis_client,
+                state,
+                movement_min_delta_miles,
+                movement_jump_reject_miles,
+            )
+
+            current_distance = parse_float(state.get("distance_since_reload_miles")) or 0.0
+            if current_distance >= reload_distance_miles:
+                reload_pending = True
+                target_group = normalize_group(state.get("next_group"))
+                source_group = state.get("active_group") or state.get("last_successful_group") or other_group(target_group)
+                planned_memory = build_planned_memory_model(
+                    nearby,
+                    target_group=target_group,
+                    source_group=str(source_group) if source_group else None,
+                    radius_miles=radius_miles,
+                    max_memory_channels=max_memory_channels,
+                )
+                if planned_memory.get("status") == "dry_run" and planned_memory.get("memory_count", 0) > 0:
+                    now = utc_now()
+                    state["last_reload_status"] = "dry_run"
+                    state["last_reload_reason"] = "Dry-run reload plan generated; no radio programming performed."
+                    state["last_reload_utc"] = now
+                    state["last_reload_location"] = state.get("last_movement_location")
+                    state["last_successful_group"] = target_group
+                    state["next_group"] = other_group(target_group)
+                    state["distance_since_reload_miles"] = 0.0
+                    reload_pending = False
+                    reason = "Dry-run reload plan generated; no radio programming performed."
+                else:
+                    state["last_reload_status"] = "unavailable"
+                    state["last_reload_reason"] = planned_memory.get("reason") if planned_memory else "Dry-run reload plan failed."
+                    reload_pending = True
+                    reason = str(state["last_reload_reason"])
+        else:
+            reason = "Dry-run reload planning disabled by config."
+
     elif adapter_detected(adapter) and (
-        not adapter_memory_programming_enabled(adapter)
+        not adapter_writes_enabled(adapter)
+        or not adapter_memory_programming_enabled(adapter)
         or not adapter_scan_control_enabled(adapter)
     ):
         status = "pending"
-        reason = "IC-2730A detected, but memory programming and scan control are disabled."
+        reason = "IC-2730A detected, but memory programming/write/scan-control gates are disabled."
         actual_scan_state = "unknown"
         enabled = False
 
@@ -400,45 +811,62 @@ def build_model(config: Dict[str, Any], request: Dict[str, Any], adapter: Dict[s
 
     else:
         status = "pending"
-        reason = "Repeater scanning requested; Phase 7B does not start scans or program memories."
+        reason = "All adapter gates appear enabled, but Phase 8A remains dry-run only; no radio command issued."
         actual_scan_state = "unknown"
         enabled = False
 
-    return {
+    distance = parse_float(state.get("distance_since_reload_miles")) or 0.0
+
+    model: Dict[str, Any] = {
         "enabled": enabled,
         "requested": requested,
         "actual_scan_state": actual_scan_state,
         "status": status,
         "reason": reason,
-        "active_group": None,
-        "next_group": next_group,
-        "radius_miles": int(radius_miles) if radius_miles.is_integer() else round(radius_miles, 2),
-        "reload_distance_miles": int(reload_distance_miles) if reload_distance_miles.is_integer() else round(reload_distance_miles, 2),
-        "distance_since_reload_miles": 0,
+        "active_group": state.get("active_group"),
+        "next_group": normalize_group(state.get("next_group")),
+        "distance_since_reload_miles": rounded_miles(distance),
+        "last_movement_location": state.get("last_movement_location"),
+        "last_movement_utc": state.get("last_movement_utc"),
+        "last_reload_utc": state.get("last_reload_utc"),
+        "last_reload_location": state.get("last_reload_location"),
+        "last_successful_group": state.get("last_successful_group"),
+        "last_reload_status": state.get("last_reload_status"),
+        "last_reload_reason": state.get("last_reload_reason"),
+        "reload_pending": reload_pending,
+        "reload_in_progress": reload_in_progress,
+        "reload_distance_miles": display_number(reload_distance_miles),
+        "radius_miles": display_number(radius_miles),
+        "movement_min_delta_miles": display_number(movement_min_delta_miles),
+        "movement_jump_reject_miles": display_number(movement_jump_reject_miles),
+        "movement_status": movement_status,
         "nearby_count": nearby_count,
         "eligible_count": eligible_count,
+        "nearby_model_radius_miles": nearby.get("radius_miles"),
         "adapter_status": adapter_status_value or None,
         "adapter_available": bool(adapter_available(adapter)),
         "adapter_control_mode": adapter.get("control_mode") if isinstance(adapter, dict) else None,
-        "adapter_writes_enabled": boolish(adapter.get("writes_enabled"), False) if isinstance(adapter, dict) else False,
-        "adapter_memory_programming_enabled": boolish(adapter.get("memory_programming_enabled"), False) if isinstance(adapter, dict) else False,
-        "adapter_scan_control_enabled": boolish(adapter.get("scan_control_enabled"), False) if isinstance(adapter, dict) else False,
+        "adapter_writes_enabled": adapter_writes_enabled(adapter) if isinstance(adapter, dict) else False,
+        "adapter_memory_programming_enabled": adapter_memory_programming_enabled(adapter) if isinstance(adapter, dict) else False,
+        "adapter_scan_control_enabled": adapter_scan_control_enabled(adapter) if isinstance(adapter, dict) else False,
         "source": SOURCE,
         "updated_utc": utc_now(),
     }
+
+    return model, planned_memory
 
 
 def comparable_model(model: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in model.items() if k != "updated_utc"}
 
 
-def publish_state_changed(redis_client: RedisCli, reason: str) -> None:
+def publish_state_changed(redis_client: RedisCli, keys: List[str], reason: str) -> None:
     event = {
         "topic": "state.changed",
         "type": "state.changed",
         "source": SOURCE,
-        "keys": [KEY_SCAN],
-        "changed_keys": [KEY_SCAN],
+        "keys": keys,
+        "changed_keys": keys,
         "deleted_keys": [],
         "reason": reason,
         "timestamp_utc": utc_now(),
@@ -447,14 +875,20 @@ def publish_state_changed(redis_client: RedisCli, reason: str) -> None:
     redis_client.publish_json(SYSTEM_BUS, event)
 
 
-def publish_if_changed(redis_client: RedisCli, model: Dict[str, Any], force: bool = False) -> bool:
-    old = load_json_model(redis_client, KEY_SCAN)
+def publish_json_if_changed(
+    redis_client: RedisCli,
+    key: str,
+    model: Dict[str, Any],
+    force: bool = False,
+    reason: str = "model_changed",
+) -> bool:
+    old = load_json_model(redis_client, key)
 
     if not force and comparable_model(old) == comparable_model(model):
         return False
 
-    redis_client.set(KEY_SCAN, json.dumps(model, separators=(",", ":"), sort_keys=True))
-    publish_state_changed(redis_client, "scan_model_changed" if not force else "scan_model_heartbeat")
+    redis_client.set(key, json.dumps(model, separators=(",", ":"), sort_keys=True))
+    publish_state_changed(redis_client, [key], reason if not force else f"{reason}_heartbeat")
     return True
 
 
@@ -492,19 +926,39 @@ def main() -> int:
             request = load_json_model(redis_client, KEY_SCAN_REQUEST)
             adapter = load_json_model(redis_client, KEY_VHF_ADAPTER)
             nearby = load_json_model(redis_client, KEY_NEARBY)
+            previous = load_json_model(redis_client, KEY_SCAN)
 
-            model = build_model(config, request, adapter, nearby)
+            model, planned_memory = build_model(redis_client, config, request, adapter, nearby, previous)
 
             force = (time.monotonic() - last_force_publish) >= force_publish_seconds
-            wrote = publish_if_changed(redis_client, model, force=force)
 
-            if wrote:
+            planned_wrote = False
+            if planned_memory is not None:
+                planned_wrote = publish_json_if_changed(
+                    redis_client,
+                    KEY_PLANNED_MEMORY,
+                    planned_memory,
+                    force=False,
+                    reason="vhf_planned_memory_changed",
+                )
+
+            wrote = publish_json_if_changed(
+                redis_client,
+                KEY_SCAN,
+                model,
+                force=force,
+                reason="vhf_scan_model_changed",
+            )
+
+            if wrote or planned_wrote:
                 last_force_publish = time.monotonic()
                 log(
                     f"published requested={model['requested']} "
                     f"enabled={model['enabled']} "
                     f"status={model['status']} "
                     f"actual_scan_state={model['actual_scan_state']} "
+                    f"distance_since_reload_miles={model['distance_since_reload_miles']} "
+                    f"next_group={model['next_group']} "
                     f"nearby_count={model['nearby_count']}"
                 )
 
