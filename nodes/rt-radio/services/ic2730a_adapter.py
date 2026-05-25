@@ -80,6 +80,42 @@ DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS = (
     "rx_tx_status",
 )
 
+DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED = False
+
+DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS = (
+    "tone_setting",
+    "repeater_tone_frequency",
+    "tone_squelch_frequency",
+    "dtcs_code_polarity",
+)
+
+DIRECT_CIV_READONLY_TONE_COMMANDS = {
+    "tone_setting": {
+        "documented_command_code": "1A 00",
+        "command": bytes([0x1A, 0x00]),
+        "response_prefix": bytes([0x1A, 0x00]),
+        "dual_purpose_family": True,
+    },
+    "repeater_tone_frequency": {
+        "documented_command_code": "1B 00",
+        "command": bytes([0x1B, 0x00]),
+        "response_prefix": bytes([0x1B, 0x00]),
+        "dual_purpose_family": True,
+    },
+    "tone_squelch_frequency": {
+        "documented_command_code": "1B 01",
+        "command": bytes([0x1B, 0x01]),
+        "response_prefix": bytes([0x1B, 0x01]),
+        "dual_purpose_family": True,
+    },
+    "dtcs_code_polarity": {
+        "documented_command_code": "1B 02",
+        "command": bytes([0x1B, 0x02]),
+        "response_prefix": bytes([0x1B, 0x02]),
+        "dual_purpose_family": True,
+    },
+}
+
 DIRECT_CIV_READONLY_COMMANDS = {
     "transceiver_id": {
         "documented_command_code": "19 00",
@@ -285,12 +321,15 @@ class IC2730AConfig:
 
     direct_civ_enabled: bool = DEFAULT_DIRECT_CIV_ENABLED
     direct_civ_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED
+    direct_civ_tone_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
     direct_civ_controller_address_hex: str = DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX
     direct_civ_transceiver_address_hex: str = DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX
     direct_civ_timeout_seconds: float = DEFAULT_DIRECT_CIV_TIMEOUT_SECONDS
     direct_civ_readonly_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS
+    direct_civ_readonly_tone_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS
+
     write_test_enabled: bool = False
     write_test_allow_single_memory_write: bool = False
     write_test_sacrificial_group: str = "D"
@@ -344,6 +383,21 @@ class IC2730AConfig:
         if not direct_commands:
             direct_commands = list(DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS)
 
+        tone_raw_commands = ic.get(
+            "direct_civ_readonly_tone_probe_commands",
+            DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS,
+        )
+        tone_commands: list[str] = []
+
+        if isinstance(tone_raw_commands, list):
+            for item in tone_raw_commands:
+                name = str(item or "").strip()
+                if name in DIRECT_CIV_READONLY_TONE_COMMANDS and name not in tone_commands:
+                    tone_commands.append(name)
+
+        if not tone_commands:
+            tone_commands = list(DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS)
+
         return cls(
             radio_name=_safe_str(vhf.get("radio_name"), DEFAULT_RADIO_NAME),
             enabled=_safe_bool(ic.get("enabled"), True),
@@ -362,10 +416,17 @@ class IC2730AConfig:
             memory_programming_enabled=_safe_bool(ic.get("memory_programming_enabled"), False),
             detect_enabled=_safe_bool(ic.get("detect_enabled"), True),
 
-            direct_civ_enabled=_safe_bool(ic.get("direct_civ_enabled"), DEFAULT_DIRECT_CIV_ENABLED),
+            direct_civ_enabled=_safe_bool(
+                ic.get("direct_civ_enabled"),
+                DEFAULT_DIRECT_CIV_ENABLED,
+            ),
             direct_civ_readonly_probe_enabled=_safe_bool(
                 ic.get("direct_civ_readonly_probe_enabled"),
                 DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED,
+            ),
+            direct_civ_tone_readonly_probe_enabled=_safe_bool(
+                ic.get("direct_civ_tone_readonly_probe_enabled"),
+                DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED,
             ),
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
@@ -388,6 +449,7 @@ class IC2730AConfig:
                 minimum=0.1,
             ),
             direct_civ_readonly_probe_commands=tuple(direct_commands),
+            direct_civ_readonly_tone_probe_commands=tuple(tone_commands),
 
             write_test_enabled=bool(write_test["enabled"]),
             write_test_allow_single_memory_write=bool(write_test["allow_single_memory_write"]),
@@ -1266,6 +1328,185 @@ class IC2730AAdapter:
                 except Exception:
                     pass
 
+    def direct_civ_readonly_tone_probe(self) -> Dict[str, Any]:
+        """
+        Phase 8C-3A direct CI-V tone readback probe.
+
+        This manual CLI-only probe:
+        - requires explicit direct CI-V and tone-probe config gates
+        - opens the configured serial port only after gates pass
+        - sends only documented IC-2730A/IC-2730E tone-related readback command frames
+        - sends no tone value bytes, DTCS value bytes, polarity bytes, or write-shaped payloads
+        - does not publish Redis
+        - does not write rt:ui:bus
+        - does not write rt:system:bus
+        - does not use Hamlib or rigctl
+        - does not write frequency, mode, duplex, offset, tone, memory, bank/group, scan, Side B, PTT, or transmit
+        """
+
+        cfg = self.config
+
+        disabled_result = {
+            "action": "direct_civ_readonly_tone_probe",
+            "phase": "8C-3A",
+            "status": "disabled",
+            "ok": False,
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "tone_write_performed": False,
+            "repeater_tone_write_performed": False,
+            "tone_squelch_write_performed": False,
+            "dtcs_write_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "system_bus_written": False,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "commands": [],
+            "summary": {
+                "tone_setting_ok": False,
+                "repeater_tone_frequency_ok": False,
+                "tone_squelch_frequency_ok": False,
+                "dtcs_code_polarity_ok": False,
+            },
+            "reason": "Direct CI-V tone read-only probe disabled by config.",
+            "updated_utc": utc_now(),
+        }
+
+        if not cfg.direct_civ_enabled or not cfg.direct_civ_tone_readonly_probe_enabled:
+            return disabled_result
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        result: Dict[str, Any] = {
+            "action": "direct_civ_readonly_tone_probe",
+            "phase": "8C-3A",
+            "status": "starting",
+            "ok": False,
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "tone_write_performed": False,
+            "repeater_tone_write_performed": False,
+            "tone_squelch_write_performed": False,
+            "dtcs_write_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "system_bus_written": False,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "controller_address_hex": f"{controller_addr:02X}",
+            "transceiver_address_hex": f"{transceiver_addr:02X}",
+            "commands": [],
+            "summary": {
+                "tone_setting_ok": False,
+                "repeater_tone_frequency_ok": False,
+                "tone_squelch_frequency_ok": False,
+                "dtcs_code_polarity_ok": False,
+            },
+            "reason": "",
+            "updated_utc": utc_now(),
+        }
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "unavailable",
+                    "ok": False,
+                    "operation_performed": False,
+                    "reason": "Python pyserial module is not available; no CI-V tone command was sent.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        port = None
+
+        try:
+            port = serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            )
+
+            result["operation_performed"] = True
+
+            for command_name in cfg.direct_civ_readonly_tone_probe_commands:
+                command_result = self._direct_civ_send_readonly_tone_command(
+                    port=port,
+                    name=command_name,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+                result["commands"].append(command_result)
+
+            summary = self._direct_civ_tone_probe_summary(result["commands"])
+            result["summary"] = summary
+            result["status"] = "ok" if all(
+                [
+                    summary.get("tone_setting_ok"),
+                    summary.get("repeater_tone_frequency_ok"),
+                    summary.get("tone_squelch_frequency_ok"),
+                    summary.get("dtcs_code_polarity_ok"),
+                ]
+            ) else "partial"
+
+            result["ok"] = bool(result["commands"]) and any(bool(cmd.get("ok")) for cmd in result["commands"])
+            result["reason"] = (
+                "Direct CI-V tone read-only probe completed. "
+                "No tone write/control payload values were included."
+            )
+            result["updated_utc"] = utc_now()
+            return result
+
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "error",
+                    "ok": False,
+                    "reason": "Direct CI-V tone read-only probe failed.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        finally:
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+
     def _direct_civ_send_readonly_command(
         self,
         *,
@@ -1338,6 +1579,298 @@ class IC2730AAdapter:
         except Exception as exc:
             command_result["reason"] = f"CI-V read-only command failed: {exc}"
             return command_result
+
+    def _direct_civ_send_readonly_tone_command(
+        self,
+        *,
+        port: Any,
+        name: str,
+        controller_addr: int,
+        transceiver_addr: int,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        spec = DIRECT_CIV_READONLY_TONE_COMMANDS.get(name)
+
+        if not spec:
+            return {
+                "name": name,
+                "documented": False,
+                "read_only": False,
+                "dual_purpose_family": False,
+                "sent": False,
+                "ok": False,
+                "raw_response_hex": "",
+                "parsed": {},
+                "reason": "Command name is not in the Phase 8C-3A tone readback command table.",
+            }
+
+        command = spec["command"]
+
+        # Important safety rule:
+        # This frame includes only the documented command family/subcommand bytes.
+        # It intentionally does not include tone frequency, tone setting, DTCS code,
+        # polarity, memory, bank, scan, PTT, transmit, frequency, mode, duplex, offset,
+        # Side B, or Main-band-selection payload bytes.
+        frame = bytes([0xFE, 0xFE, transceiver_addr, controller_addr]) + command + bytes([0xFD])
+
+        command_result: Dict[str, Any] = {
+            "name": name,
+            "documented": True,
+            "read_only": True,
+            "dual_purpose_family": bool(spec.get("dual_purpose_family")),
+            "documented_command_code": str(spec["documented_command_code"]),
+            "sent": False,
+            "ok": False,
+            "raw_response_hex": "",
+            "parsed": {},
+            "reason": "",
+        }
+
+        try:
+            try:
+                port.reset_input_buffer()
+            except Exception:
+                pass
+
+            port.write(frame)
+            port.flush()
+            command_result["sent"] = True
+
+            raw = self._direct_civ_read_raw(port=port, timeout_seconds=timeout_seconds)
+            command_result["raw_response_hex"] = raw.hex(" ").upper()
+
+            frames = self._direct_civ_split_frames(raw)
+            response_payload = self._direct_civ_find_response_payload(
+                frames=frames,
+                controller_addr=controller_addr,
+                transceiver_addr=transceiver_addr,
+                expected_prefix=spec["response_prefix"],
+            )
+
+            if response_payload is None:
+                command_result["reason"] = (
+                    "No matching CI-V tone readback response frame was parsed. "
+                    "No alternate or guessed command was attempted."
+                )
+                return command_result
+
+            parsed = self._direct_civ_parse_tone_payload(name, response_payload)
+            command_result["parsed"] = parsed
+            command_result["ok"] = bool(parsed.get("ok"))
+            command_result["reason"] = parsed.get("reason", "CI-V tone readback response parsed conservatively.")
+            return command_result
+
+        except Exception as exc:
+            command_result["reason"] = f"CI-V tone readback command failed: {exc}"
+            return command_result
+
+    @staticmethod
+    def _direct_civ_parse_tone_payload(name: str, payload: bytes) -> Dict[str, Any]:
+        spec = DIRECT_CIV_READONLY_TONE_COMMANDS.get(name)
+        if not spec:
+            return {
+                "ok": False,
+                "reason": f"No tone parser implemented for unknown command {name}.",
+            }
+
+        prefix = spec["response_prefix"]
+        data = payload[len(prefix):] if payload.startswith(prefix) else b""
+
+        base: Dict[str, Any] = {
+            "ok": bool(data),
+            "raw_data_hex": data.hex(" ").upper(),
+            "parsing_confidence": "conservative",
+        }
+
+        if name == "tone_setting":
+            base.update(
+                {
+                    "tone_setting_code_hex": data.hex(" ").upper() if data else None,
+                    "reason": (
+                        "Tone setting readback response received. Raw value recorded; setting-code meaning is not interpreted in this phase."
+                        if data
+                        else "Tone setting readback response had no data."
+                    ),
+                }
+            )
+            return base
+
+        if name in {"repeater_tone_frequency", "tone_squelch_frequency"}:
+            parsed = IC2730AAdapter._direct_civ_parse_tone_bcd_hz(data)
+            base.update(
+                {
+                    "raw_bcd_hex": data.hex(" ").upper(),
+                    "tone_hz": parsed.get("tone_hz"),
+                    "tone_hz_parse_confidence": parsed.get("confidence"),
+                    "tone_raw_bcd_integer": parsed.get("raw_bcd_integer"),
+                    "reason": parsed.get("reason"),
+                }
+            )
+            return base
+
+        if name == "dtcs_code_polarity":
+            parsed = IC2730AAdapter._direct_civ_parse_dtcs_raw(data)
+            base.update(parsed)
+            return base
+
+        return {
+            "ok": False,
+            "raw_data_hex": data.hex(" ").upper(),
+            "reason": f"No parser implemented for tone readback command {name}.",
+        }
+
+    @staticmethod
+    def _direct_civ_parse_tone_bcd_hz(data: bytes) -> Dict[str, Any]:
+        if not data:
+            return {
+                "tone_hz": None,
+                "raw_bcd_integer": None,
+                "confidence": "none",
+                "reason": "Tone frequency response had no data.",
+            }
+
+        raw_little = IC2730AAdapter._direct_civ_parse_bcd_little_endian(data)
+        raw_big = IC2730AAdapter._direct_civ_parse_bcd_big_endian(data)
+
+        candidates: list[Dict[str, Any]] = []
+
+        if raw_big is not None:
+            candidates.append(
+                {
+                    "tone_hz": raw_big / 10.0,
+                    "raw_bcd_integer": raw_big,
+                    "confidence": "tentative_big_endian_one_decimal_bcd",
+                    "byte_order": "big_endian",
+                    "scale": "one_decimal",
+                }
+            )
+            candidates.append(
+                {
+                    "tone_hz": float(raw_big),
+                    "raw_bcd_integer": raw_big,
+                    "confidence": "tentative_big_endian_integer_bcd",
+                    "byte_order": "big_endian",
+                    "scale": "integer",
+                }
+            )
+
+        if raw_little is not None:
+            candidates.append(
+                {
+                    "tone_hz": raw_little / 10.0,
+                    "raw_bcd_integer": raw_little,
+                    "confidence": "tentative_little_endian_one_decimal_bcd",
+                    "byte_order": "little_endian",
+                    "scale": "one_decimal",
+                }
+            )
+            candidates.append(
+                {
+                    "tone_hz": float(raw_little),
+                    "raw_bcd_integer": raw_little,
+                    "confidence": "tentative_little_endian_integer_bcd",
+                    "byte_order": "little_endian",
+                    "scale": "integer",
+                }
+            )
+
+        for candidate in candidates:
+            tone_hz = float(candidate["tone_hz"])
+            if 50.0 <= tone_hz <= 300.0:
+                candidate["tone_hz"] = round(tone_hz, 1)
+                candidate["reason"] = (
+                    "Tone frequency response parsed as BCD into a plausible CTCSS tone. "
+                    "Interpretation remains tentative until confirmed against the IC-2730A/IC-2730E reference."
+                )
+                return candidate
+
+        return {
+            "tone_hz": None,
+            "raw_bcd_integer": raw_big if raw_big is not None else raw_little,
+            "raw_bcd_big_endian_integer": raw_big,
+            "raw_bcd_little_endian_integer": raw_little,
+            "confidence": "raw_only",
+            "reason": (
+                "Tone frequency response was valid BCD, but no tested interpretation produced a plausible CTCSS range. "
+                "Raw BCD recorded only."
+            ),
+        }
+
+    @staticmethod
+    def _direct_civ_parse_bcd_big_endian(data: bytes) -> Optional[int]:
+        if not data:
+            return None
+
+        digits: list[str] = []
+
+        for byte in data:
+            high = (byte >> 4) & 0x0F
+            low = byte & 0x0F
+
+            if high > 9 or low > 9:
+                return None
+
+            digits.append(str(high))
+            digits.append(str(low))
+
+        text = "".join(digits).lstrip("0")
+        if not text:
+            return 0
+
+        try:
+            return int(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _direct_civ_parse_dtcs_raw(data: bytes) -> Dict[str, Any]:
+        if not data:
+            return {
+                "ok": False,
+                "raw_dtcs_data_hex": "",
+                "dtcs_code": None,
+                "dtcs_code_display": None,
+                "polarity": None,
+                "parsing_confidence": "none",
+                "reason": "DTCS code/polarity readback response had no data.",
+            }
+
+        raw_big = IC2730AAdapter._direct_civ_parse_bcd_big_endian(data)
+        raw_little = IC2730AAdapter._direct_civ_parse_bcd_little_endian(data)
+
+        display = None
+        confidence = "raw_only"
+
+        if raw_big is not None and 0 <= raw_big <= 999:
+            display = f"D{raw_big:03d}"
+            confidence = "tentative_big_endian_bcd"
+
+        return {
+            "ok": True,
+            "raw_dtcs_data_hex": data.hex(" ").upper(),
+            "dtcs_code": raw_big,
+            "dtcs_code_display": display,
+            "raw_dtcs_big_endian_integer": raw_big,
+            "raw_dtcs_little_endian_integer": raw_little,
+            "polarity": None,
+            "parsing_confidence": confidence,
+            "reason": (
+                "DTCS code/polarity response received. DTCS code parsed tentatively from big-endian BCD; polarity layout is not interpreted in this phase."
+                if display
+                else "DTCS code/polarity response received. Raw value recorded; DTCS code/polarity byte layout is not interpreted in this phase."
+            ),
+        }
+
+    @staticmethod
+    def _direct_civ_tone_probe_summary(commands: list[Dict[str, Any]]) -> Dict[str, Any]:
+        by_name = {str(cmd.get("name")): cmd for cmd in commands}
+
+        return {
+            "tone_setting_ok": bool(by_name.get("tone_setting", {}).get("ok")),
+            "repeater_tone_frequency_ok": bool(by_name.get("repeater_tone_frequency", {}).get("ok")),
+            "tone_squelch_frequency_ok": bool(by_name.get("tone_squelch_frequency", {}).get("ok")),
+            "dtcs_code_polarity_ok": bool(by_name.get("dtcs_code_polarity", {}).get("ok")),
+        }
 
     @staticmethod
     def _direct_civ_read_raw(*, port: Any, timeout_seconds: float) -> bytes:
@@ -1689,6 +2222,10 @@ def main() -> int:
 
     if "--direct-civ-readonly-probe" in sys.argv:
         print(json.dumps(adapter.direct_civ_readonly_probe(), indent=2, sort_keys=True))
+        return 0
+
+    if "--direct-civ-readonly-tone-probe" in sys.argv:
+        print(json.dumps(adapter.direct_civ_readonly_tone_probe(), indent=2, sort_keys=True))
         return 0
 
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))

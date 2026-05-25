@@ -611,3 +611,55 @@ The direct CI-V probe is disabled unless both gates are true:
     }
   }
 }
+
+## Phase 8C-3A — Direct CI-V Tone Readback Probe
+
+Phase 8C-3A extends the successful Phase 8C-3 direct CI-V read-only probe with a separate manual CLI-only tone readback probe.
+
+This phase remains read-only.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+### Files inspected
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+- local IC-2730A/IC-2730E EXMENU/CI-V reference, when present
+
+The implementation uses only the IC-2730A/IC-2730E command families previously recorded from the local reference.
+
+Commands must not be inferred from another Icom radio.
+
+### Operator authorization context
+
+The control operator has stated:
+
+- FCC Amateur Extra license
+- callsign `KI5VNB`
+- physical access to the IC-2730A radio
+- control operator present for station operation
+
+Legal/control-operator authorization is not the limiting issue.
+
+The limiting issue remains technical caution and use of only documented IC-2730A/IC-2730E CI-V commands.
+
+### New manual CLI command
+
+```bash
+cd /opt/rollingthunder
+
+python3 nodes/rt-radio/services/ic2730a_adapter.py \
+  --direct-civ-readonly-tone-probe
+
+  
