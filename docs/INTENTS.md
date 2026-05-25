@@ -183,7 +183,28 @@ Future (gated): - radio.hf.set.freq - radio.hf.set.mode - radio.hf.ptt
 
 -   node.reboot
 
+### 4.82 VHF scan intent
 
+#### `vhf.scan.set_enabled`
+
+Purpose:
+
+Requests that the controller enable or disable the VHF repeater scan state machine.
+
+Payload examples:
+
+```json
+{
+  "intent": "vhf.scan.set_enabled",
+  "enabled": true
+}
+
+{
+  "type": "vhf.scan.set_enabled",
+  "payload": {
+    "enabled": false
+  }
+}
 ----------------------------------------------------------------------------------------------------------------------------
 ## 5. Safety Model
 

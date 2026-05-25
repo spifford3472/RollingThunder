@@ -58,6 +58,9 @@ HF_MAP_SELECTED_KEY = os.environ.get(
 HF_QRZ_API_ENABLED = os.environ.get("RT_QRZ_API_ENABLED", "0").strip() == "1"
 HF_BANDS_KEY = os.environ.get("RT_HF_BANDS_KEY", "rt:hf:bands")
 
+# VHF Constants
+VHF_SCAN_REQUEST_KEY = os.environ.get("RT_VHF_SCAN_REQUEST_KEY", "rt:vhf:scan:request")
+
 # POTA UI context key in Redis, used by both the context manager and the UI intent worker.
 POTA_CONTEXT_KEY = os.environ.get("RT_POTA_CONTEXT_KEY", "rt:pota:context")
 
@@ -247,6 +250,54 @@ def _hf_publish_state_changed(r: redis.Redis, keys: list[str]) -> None:
             "ts_ms": ts,
         })
     )
+
+def _intent_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if val in {"0", "false", "no", "n", "off", "disabled"}:
+            return False
+
+    return default
+
+
+def handle_vhf_scan_set_enabled(r: redis.Redis, params: Dict[str, Any]) -> None:
+    """
+    Phase 6 VHF scan request handler.
+
+    This only persists requested scan state.
+    It does not command the radio, program memories, start scan, stop scan,
+    calculate distance, read SQLite, or write rt:ui:bus.
+    """
+    nested = params.get("payload")
+    if isinstance(nested, dict) and "enabled" in nested:
+        raw_enabled = nested.get("enabled")
+    elif "enabled" in params:
+        raw_enabled = params.get("enabled")
+    elif "requested" in params:
+        raw_enabled = params.get("requested")
+    else:
+        raw_enabled = False
+
+    requested = _intent_bool(raw_enabled, False)
+
+    model = {
+        "requested": requested,
+        "source": "ui_intent_worker",
+        "intent": "vhf.scan.set_enabled",
+        "updated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+    r.set(VHF_SCAN_REQUEST_KEY, json.dumps(model, sort_keys=True, separators=(",", ":")))
+    publish_state_changed(r, [VHF_SCAN_REQUEST_KEY], source="ui_intent_worker")
+    print(f"vhf.scan.set_enabled requested={requested}", flush=True)
 
 def _hf_update_bands_selected_id(r: redis.Redis, band: str) -> None:
     band = str(band or "").strip()
@@ -1935,7 +1986,7 @@ def main() -> None:
         except Exception:
             continue
 
-        intent = str(obj.get("intent") or "").strip()
+        intent = str(obj.get("intent") or obj.get("type") or "").strip()
         params = obj.get("params") if isinstance(obj.get("params"), dict) else {}
 
         if intent == "node.reboot":
@@ -1944,6 +1995,20 @@ def main() -> None:
 
         if intent == "ui.browse.delta":
             handle_ui_browse_delta(r, params)
+            continue
+
+#=================================================================================
+# VHF intents
+#=================================================================================
+        if intent == "vhf.scan.set_enabled":
+            vhf_params = dict(params)
+            if "enabled" in obj:
+                vhf_params["enabled"] = obj.get("enabled")
+            if "requested" in obj:
+                vhf_params["requested"] = obj.get("requested")
+            if isinstance(obj.get("payload"), dict):
+                vhf_params["payload"] = obj.get("payload")
+            handle_vhf_scan_set_enabled(r, vhf_params)
             continue
 
 #=================================================================================

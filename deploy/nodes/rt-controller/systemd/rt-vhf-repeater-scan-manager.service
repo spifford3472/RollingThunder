@@ -1,0 +1,25 @@
+[Unit]
+Description=RollingThunder VHF repeater scan state manager
+After=network-online.target redis-server.service rt-vhf-radio-monitor.service rt-vhf-repeater-lookup.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=PYTHONUNBUFFERED=1
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+EnvironmentFile=-/etc/rollingthunder/rollingthunder.env
+EnvironmentFile=-/opt/rollingthunder/config/rollingthunder.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/vhf_repeater_scan_manager.py
+Restart=always
+RestartSec=5
+User=spiff
+
+# Phase 6 safety: this service only publishes scan state.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
