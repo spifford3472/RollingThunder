@@ -88,6 +88,18 @@ DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED = False
 
+DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED = False
+
+STANDARD_CTCSS_TONES_HZ = (
+    67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4,
+    88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9,
+    114.8, 118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2,
+    151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3, 173.8,
+    177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5,
+    203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8,
+    250.3, 254.1,
+)
+
 DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS = (
     "tone_setting",
     "repeater_tone_frequency",
@@ -349,6 +361,7 @@ class IC2730AConfig:
     direct_civ_side_a_readiness_probe_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED
     direct_civ_side_a_write_plan_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED
     direct_civ_side_a_real_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED
+    direct_civ_side_a_repeater_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
@@ -482,7 +495,11 @@ class IC2730AConfig:
             direct_civ_side_a_real_tune_test_enabled=_safe_bool(
                 ic.get("direct_civ_side_a_real_tune_test_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED,
-            ),            
+            ),
+            direct_civ_side_a_repeater_tune_test_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_repeater_tune_test_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED,
+            ),
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
                 _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
@@ -1628,10 +1645,12 @@ class IC2730AAdapter:
         current_tone_mode = None
         if isinstance(current_tone_setting_code, str):
             code = current_tone_setting_code.replace(" ", "").upper()
-            if code == "00":
-                current_tone_mode = "none"
-            elif code:
-                current_tone_mode = "unknown"
+            current_tone_mode = {
+                "00": "none",
+                "01": "tone",
+                "02": "tsql",
+                "03": "dtcs",
+            }.get(code, "unknown" if code else None)
 
         current_duplex_raw = duplex_parsed.get("duplex")
         current_duplex = {
@@ -1788,13 +1807,13 @@ class IC2730AAdapter:
 
         tone_setting_required = current_tone_mode != candidate_tone_mode
         add_plan(
-            name="future_write_tone_setting",
-            documented_command_code="1A 00",
+            name="future_write_tone_mode",
+            documented_command_code="16 42",
             required=tone_setting_required,
             current_value=current_tone_mode,
             candidate_value=candidate_tone_mode,
             reason=(
-                "Candidate tone mode differs from current readback or current tone mode is not fully interpreted."
+                "Candidate tone mode differs from current readback; Phase 8C-8 uses supplied IC-2730A sample-program command 16 42 for tone-mode activation, not 1A 00."
                 if tone_setting_required
                 else "Candidate tone mode already matches current readback."
             ),
@@ -2891,6 +2910,673 @@ class IC2730AAdapter:
         result["summary"]["ready_for_future_automation"] = False
         return result
 
+    def direct_civ_side_a_repeater_tune_test(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Phase 8C-8 first real direct CI-V Side-A/Main-band repeater-style tune test.
+
+        Manual CLI-only.
+        No Redis writes.
+        No UI bus writes.
+        No system bus writes.
+        No Hamlib.
+        No rigctl.
+        No memory programming.
+        No scan control.
+        No Side B programming.
+        No PTT/transmit controls.
+        """
+
+        cfg = self.config
+
+        def safety_model() -> Dict[str, Any]:
+            return {
+                "read_only": False,
+                "manual_cli_only": True,
+                "ptt_or_transmit_control_added": False,
+                "memory_write_performed": False,
+                "bank_write_performed": False,
+                "scan_start_performed": False,
+                "side_b_programming_performed": False,
+                "redis_written": False,
+                "ui_bus_written": False,
+                "system_bus_written": False,
+                "rigctl_used": False,
+            }
+
+        def base_result(status: str = "aborted", ok: bool = False, reason: str = "") -> Dict[str, Any]:
+            return {
+                "action": "direct_civ_side_a_repeater_tune_test",
+                "phase": "8C-8",
+                "status": status,
+                "ok": bool(ok),
+                "reason": reason,
+                "candidate": candidate if isinstance(candidate, dict) else {},
+                "before": {},
+                "plan": [],
+                "commands_sent": [],
+                "after": {},
+                "summary": {
+                    "readback_before_ok": False,
+                    "rx_not_tx_before": False,
+                    "writes_attempted": False,
+                    "write_count": 0,
+                    "readback_after_ok": False,
+                    "frequency_matches": False,
+                    "mode_matches": False,
+                    "duplex_matches": False,
+                    "offset_matches": False,
+                    "tone_frequency_matches": False,
+                    "tone_mode_matches": False,
+                    "tone_setting_write_deferred": False,
+                    "ready_for_future_automation": False,
+                },
+                "safety": safety_model(),
+                "updated_utc": utc_now(),
+            }
+
+        def candidate_float(
+            raw: Dict[str, Any],
+            name: str,
+            *,
+            required: bool,
+            minimum: Optional[float] = None,
+            maximum: Optional[float] = None,
+        ) -> tuple[Optional[float], list[str]]:
+            errors: list[str] = []
+            value = raw.get(name)
+
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if required:
+                    errors.append(f"{name} is required")
+                return None, errors
+
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be numeric")
+                return None, errors
+
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+
+            return parsed, errors
+
+        def candidate_str(raw: Dict[str, Any], name: str, default: str = "") -> str:
+            value = raw.get(name, default)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        def normalize_candidate(raw_candidate: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], list[str]]:
+            raw = raw_candidate if isinstance(raw_candidate, dict) else {}
+            errors: list[str] = []
+
+            if not isinstance(raw_candidate, dict):
+                errors.append("candidate JSON must be an object")
+
+            if "__candidate_json_parse_error" in raw:
+                errors.append(f"candidate JSON could not be parsed: {raw.get('__candidate_json_parse_error')}")
+
+            frequency_mhz, frequency_errors = candidate_float(
+                raw, "frequency_mhz", required=True, minimum=118.0, maximum=550.0
+            )
+            errors.extend(frequency_errors)
+
+            mode = candidate_str(raw, "mode", "FM").upper()
+            if mode != "FM":
+                errors.append("mode must be FM")
+
+            duplex_raw = candidate_str(raw, "duplex", "simplex").lower()
+            duplex_aliases = {
+                "simplex": "simplex",
+                "none": "simplex",
+                "off": "simplex",
+                "plus": "plus",
+                "+": "plus",
+                "dup+": "plus",
+                "duplex+": "plus",
+                "minus": "minus",
+                "-": "minus",
+                "dup-": "minus",
+                "duplex-": "minus",
+            }
+            duplex = duplex_aliases.get(duplex_raw)
+            if duplex is None:
+                errors.append("duplex must be one of: simplex, plus, minus, dup+, dup-, none")
+                duplex = duplex_raw or "unknown"
+
+            offset_mhz, offset_errors = candidate_float(
+                raw, "offset_mhz", required=False, minimum=0.0
+            )
+            errors.extend(offset_errors)
+            if offset_mhz is None:
+                offset_mhz = 0.0
+
+            tone_hz_present = raw.get("tone_hz") is not None and not (
+                isinstance(raw.get("tone_hz"), str) and not str(raw.get("tone_hz")).strip()
+            )
+            tone_hz, tone_errors = candidate_float(
+                raw, "tone_hz", required=False, minimum=50.0, maximum=300.0
+            )
+            errors.extend(tone_errors)
+
+            tone_mode_raw = candidate_str(raw, "tone_mode", "none").lower()
+            tone_mode_aliases = {
+                "none": "none",
+                "off": "none",
+                "no": "none",
+                "": "none",
+                "tone": "tone",
+                "encode": "tone",
+                "ctcss": "tone",
+                "tsql": "tsql",
+                "tone_sql": "tsql",
+                "tonesql": "tsql",
+                "tone_squelch": "tsql",
+                "dtcs": "dtcs",
+                "dcs": "dtcs",
+            }
+            tone_mode = tone_mode_aliases.get(tone_mode_raw)
+            if tone_mode is None:
+                errors.append("tone_mode must be one of: none, off, tone, tsql, dtcs")
+                tone_mode = tone_mode_raw or "unknown"
+
+            if tone_mode == "dtcs":
+                errors.append("tone_mode dtcs is rejected in Phase 8C-8")
+
+            if tone_mode in {"tone", "tsql"} and not tone_hz_present:
+                errors.append("tone_hz is required when tone_mode is tone or tsql")
+
+            if tone_mode == "none" and tone_hz_present:
+                errors.append("tone_hz must be null or absent when tone_mode is none")
+
+            if tone_hz is not None:
+                normalized_tone = round(float(tone_hz), 1)
+                if normalized_tone not in STANDARD_CTCSS_TONES_HZ:
+                    errors.append("tone_hz must be one of the standard CTCSS tone values")
+            else:
+                normalized_tone = None
+
+            normalized = {
+                "frequency_mhz": round(float(frequency_mhz or 0.0), 6),
+                "mode": mode,
+                "duplex": duplex,
+                "offset_mhz": round(float(offset_mhz or 0.0), 6),
+                "tone_hz": normalized_tone,
+                "tone_mode": tone_mode,
+            }
+
+            return normalized, errors
+
+        def mhz_to_icom_frequency_bcd(frequency_mhz: float) -> bytes:
+            hz = int(round(float(frequency_mhz) * 1_000_000.0))
+            digits = f"{hz:010d}"
+            out = bytearray()
+            for idx in range(8, -1, -2):
+                lo = int(digits[idx + 1])
+                hi = int(digits[idx])
+                out.append((hi << 4) | lo)
+            return bytes(out)
+
+        def integer_to_icom_bcd_little(value: int, *, byte_count: int) -> bytes:
+            digits = f"{int(value):0{byte_count * 2}d}"
+            out = bytearray()
+            for idx in range((byte_count * 2) - 2, -1, -2):
+                hi = int(digits[idx])
+                lo = int(digits[idx + 1])
+                out.append((hi << 4) | lo)
+            return bytes(out)
+
+        def offset_mhz_to_bcd(offset_mhz: float) -> bytes:
+            raw = int(round(float(offset_mhz) * 10000.0))
+            return integer_to_icom_bcd_little(raw, byte_count=3)
+
+        def tone_hz_to_bcd_big(tone_hz: float) -> bytes:
+            raw_tenths = int(round(float(tone_hz) * 10.0))
+            digits = f"{raw_tenths:04d}"
+            return bytes([
+                (int(digits[0]) << 4) | int(digits[1]),
+                (int(digits[2]) << 4) | int(digits[3]),
+            ])
+
+        def hex_bytes(data: bytes) -> str:
+            return " ".join(f"{b:02X}" for b in data)
+
+        def frame_for(payload: bytes) -> bytes:
+            to_addr = int(str(cfg.direct_civ_transceiver_address_hex), 16)
+            from_addr = int(str(cfg.direct_civ_controller_address_hex), 16)
+            return bytes([0xFE, 0xFE, to_addr, from_addr]) + bytes(payload) + b"\xFD"
+
+        def parse_frames(raw: bytes) -> list[bytes]:
+            frames: list[bytes] = []
+            start = 0
+            while True:
+                try:
+                    fe = raw.index(b"\xFE\xFE", start)
+                    fd = raw.index(b"\xFD", fe)
+                except ValueError:
+                    break
+                frames.append(raw[fe:fd + 1])
+                start = fd + 1
+            return frames
+
+        def response_status(raw: bytes) -> tuple[str, str]:
+            frames = parse_frames(raw)
+            for frame in frames:
+                if b"\xFB" in frame:
+                    return "ok", "CI-V OK response received."
+                if b"\xFA" in frame:
+                    return "ng", "CI-V NG response received."
+            if frames:
+                return "unknown", "CI-V response frame received, but no OK/NG byte was found."
+            return "unknown", "No complete CI-V response frame was parsed."
+
+        def send_control_command(ser: Any, name: str, payload: bytes) -> Dict[str, Any]:
+            frame = frame_for(payload)
+            command_result: Dict[str, Any] = {
+                "name": name,
+                "payload_hex": hex_bytes(payload),
+                "frame_hex": hex_bytes(frame),
+                "response_hex": "",
+                "status": "unknown",
+                "ok": False,
+                "reason": "",
+            }
+
+            try:
+                try:
+                    ser.reset_input_buffer()
+                except Exception:
+                    pass
+                try:
+                    ser.reset_output_buffer()
+                except Exception:
+                    pass
+
+                ser.write(frame)
+                ser.flush()
+
+                deadline = time.monotonic() + float(cfg.direct_civ_timeout_seconds)
+                raw = bytearray()
+                while time.monotonic() < deadline:
+                    chunk = ser.read(1)
+                    if chunk:
+                        raw.extend(chunk)
+                        if raw.endswith(b"\xFD") and len(raw) >= 6:
+                            if b"\xFB" in raw or b"\xFA" in raw:
+                                break
+                    else:
+                        time.sleep(0.02)
+
+                command_result["response_hex"] = hex_bytes(bytes(raw))
+                status, reason = response_status(bytes(raw))
+                command_result["status"] = status
+                command_result["ok"] = status == "ok"
+                command_result["reason"] = reason
+                return command_result
+            except Exception as exc:
+                command_result["status"] = "error"
+                command_result["ok"] = False
+                command_result["reason"] = f"CI-V control command failed: {exc}"
+                return command_result
+
+        def numeric_changed(current_value: Any, candidate_value: Any, tolerance: float) -> bool:
+            if current_value is None:
+                return True
+            try:
+                return abs(float(current_value) - float(candidate_value)) > tolerance
+            except Exception:
+                return True
+
+        def normalize_duplex_readback(value: Any) -> str:
+            return {
+                "simplex": "simplex",
+                "none": "simplex",
+                "10": "simplex",
+                "dup-": "minus",
+                "minus": "minus",
+                "11": "minus",
+                "dup+": "plus",
+                "plus": "plus",
+                "12": "plus",
+            }.get(str(value or "").strip().lower(), str(value or "").strip().lower())
+
+        def parsed_after(after_readback: Dict[str, Any], command_name: str) -> Dict[str, Any]:
+            commands = after_readback.get("commands") if isinstance(after_readback.get("commands"), list) else []
+            for command in commands:
+                if not isinstance(command, dict):
+                    continue
+                if command.get("name") != command_name:
+                    continue
+                parsed = command.get("parsed")
+                return parsed if isinstance(parsed, dict) else {}
+            return {}
+
+        result = base_result()
+
+        normalized_candidate, validation_errors = normalize_candidate(candidate if isinstance(candidate, dict) else {})
+        result["candidate"] = normalized_candidate if normalized_candidate is not None else {}
+
+        if validation_errors:
+            result.update(
+                {
+                    "status": "rejected",
+                    "ok": False,
+                    "reason": "Phase 8C-8 repeater tune candidate rejected before serial open: "
+                    + "; ".join(validation_errors),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        gate_failures: list[str] = []
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_side_a_readiness_probe_enabled:
+            gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
+        if not cfg.direct_civ_side_a_write_plan_enabled:
+            gate_failures.append("direct_civ_side_a_write_plan_enabled=false")
+        if not cfg.direct_civ_side_a_repeater_tune_test_enabled:
+            gate_failures.append("direct_civ_side_a_repeater_tune_test_enabled=false")
+
+        if gate_failures:
+            result.update(
+                {
+                    "status": "disabled",
+                    "ok": False,
+                    "reason": "Direct CI-V Side-A repeater tune test disabled by config: "
+                    + ", ".join(gate_failures),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        plan_result = self.direct_civ_side_a_write_plan(normalized_candidate)
+        result["before"] = {
+            "write_plan_status": plan_result.get("status"),
+            "write_plan_ok": plan_result.get("ok"),
+            "current": plan_result.get("current", {}),
+            "readback_summary": plan_result.get("readback_summary", {}),
+        }
+        result["plan"] = plan_result.get("plan", []) if isinstance(plan_result.get("plan"), list) else []
+
+        before_summary = result["before"].get("readback_summary", {})
+        current = result["before"].get("current", {}) if isinstance(result["before"].get("current"), dict) else {}
+
+        readback_before_ok = bool(plan_result.get("summary", {}).get("readback_ok"))
+        if not readback_before_ok:
+            readback_before_ok = bool(
+                before_summary.get("rx_tx_status_ok")
+                and before_summary.get("frequency_ok")
+                and before_summary.get("mode_ok")
+                and before_summary.get("duplex_ok")
+                and before_summary.get("offset_ok")
+                and before_summary.get("tone_setting_ok")
+                and before_summary.get("repeater_tone_frequency_ok")
+            )
+
+        rx_not_tx_before = bool(before_summary.get("rx_not_tx") is True)
+        result["summary"]["readback_before_ok"] = bool(readback_before_ok)
+        result["summary"]["rx_not_tx_before"] = bool(rx_not_tx_before)
+
+        if not readback_before_ok:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": "Aborted before write: readiness/write-plan readback was not fully OK.",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        if not rx_not_tx_before:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": "Aborted before write: radio RX/TX status was not confirmed RX/not-TX.",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        candidate_frequency = float(normalized_candidate["frequency_mhz"])
+        candidate_mode = str(normalized_candidate["mode"]).upper()
+        candidate_duplex = str(normalized_candidate["duplex"])
+        candidate_offset = float(normalized_candidate["offset_mhz"])
+        candidate_tone_hz = normalized_candidate["tone_hz"]
+        candidate_tone_mode = str(normalized_candidate["tone_mode"])
+
+        frequency_required = numeric_changed(current.get("frequency_mhz"), candidate_frequency, 0.000005)
+        mode_required = str(current.get("mode") or "").upper() != candidate_mode
+        duplex_required = normalize_duplex_readback(current.get("duplex")) != candidate_duplex
+        offset_required = numeric_changed(current.get("offset_mhz_tentative"), candidate_offset, 0.0005)
+
+        tone_frequency_required = False
+        if candidate_tone_mode in {"tone", "tsql"} and candidate_tone_hz is not None:
+            tone_frequency_required = numeric_changed(current.get("repeater_tone_hz"), candidate_tone_hz, 0.05)
+
+        tone_mode_required = str(current.get("tone_mode_tentative") or "") != candidate_tone_mode
+
+        commands_to_send: list[tuple[str, bytes]] = []
+        any_setting_write_required = bool(
+            frequency_required
+            or mode_required
+            or duplex_required
+            or offset_required
+            or tone_frequency_required
+            or tone_mode_required
+        )
+
+        if any_setting_write_required:
+            commands_to_send.append(("select_a_band_as_main", bytes([0x07, 0xD0])))
+
+        if frequency_required:
+            commands_to_send.append(
+                (
+                    f"write_operating_frequency_{candidate_frequency:.6f}_mhz",
+                    bytes([0x05]) + mhz_to_icom_frequency_bcd(candidate_frequency),
+                )
+            )
+
+        if mode_required:
+            commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05])))
+
+        if duplex_required:
+            if candidate_duplex == "minus":
+                commands_to_send.append(("set_dup_minus", bytes([0x11])))
+            elif candidate_duplex == "plus":
+                commands_to_send.append(("set_dup_plus", bytes([0x12])))
+            elif candidate_duplex == "simplex":
+                commands_to_send.append(("set_simplex", bytes([0x10])))
+            else:
+                result.update(
+                    {
+                        "status": "rejected",
+                        "ok": False,
+                        "reason": f"Candidate duplex {candidate_duplex!r} is not allowed for Phase 8C-8 command send.",
+                        "updated_utc": utc_now(),
+                    }
+                )
+                return result
+
+        if offset_required:
+            commands_to_send.append(("write_offset", bytes([0x0D]) + offset_mhz_to_bcd(candidate_offset)))
+
+        if tone_frequency_required and candidate_tone_hz is not None:
+            commands_to_send.append(
+                (
+                    f"write_repeater_ctcss_tone_{candidate_tone_hz:.1f}_hz",
+                    bytes([0x1B, 0x00]) + tone_hz_to_bcd_big(candidate_tone_hz),
+                )
+            )
+
+        if tone_mode_required:
+            if candidate_tone_mode == "none":
+                commands_to_send.append(("set_tone_mode_off", bytes([0x16, 0x42, 0x00])))
+            elif candidate_tone_mode == "tone":
+                commands_to_send.append(("set_tone_encode_mode", bytes([0x16, 0x42, 0x01])))
+            elif candidate_tone_mode == "tsql":
+                commands_to_send.append(("set_tone_squelch_mode", bytes([0x16, 0x42, 0x02])))
+            else:
+                result.update(
+                    {
+                        "status": "rejected",
+                        "ok": False,
+                        "reason": f"Candidate tone_mode {candidate_tone_mode!r} is not allowed for Phase 8C-8 command send.",
+                        "updated_utc": utc_now(),
+                    }
+                )
+                return result
+
+        if not commands_to_send:
+            after_readback = self.direct_civ_side_a_readiness_probe(candidate=normalized_candidate)
+            result["after"] = after_readback
+            result["summary"]["readback_after_ok"] = bool(after_readback.get("ok"))
+            result["summary"]["frequency_matches"] = True
+            result["summary"]["mode_matches"] = True
+            result["summary"]["duplex_matches"] = True
+            result["summary"]["offset_matches"] = True
+            result["summary"]["tone_frequency_matches"] = True
+            result["summary"]["tone_mode_matches"] = True
+            result.update(
+                {
+                    "status": "ok",
+                    "ok": True,
+                    "reason": "Repeater candidate already matched current readback. No write/control commands were sent.",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": f"Python pyserial module is not available; no CI-V write/control command was sent: {exc}",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        serial_opened = False
+        try:
+            with serial.Serial(
+                cfg.direct_civ_serial_port,
+                cfg.direct_civ_baud,
+                timeout=float(cfg.direct_civ_timeout_seconds),
+            ) as ser:
+                serial_opened = True
+                for name, payload in commands_to_send:
+                    command_result = send_control_command(ser, name, payload)
+                    result["commands_sent"].append(command_result)
+                    if not command_result.get("ok"):
+                        result["summary"]["writes_attempted"] = True
+                        result["summary"]["write_count"] = len(result["commands_sent"])
+                        result.update(
+                            {
+                                "status": "partial",
+                                "ok": False,
+                                "reason": f"Aborted after CI-V command failure: {name}",
+                                "updated_utc": utc_now(),
+                            }
+                        )
+                        break
+        except Exception as exc:
+            result["summary"]["writes_attempted"] = bool(result["commands_sent"])
+            result["summary"]["write_count"] = len(result["commands_sent"])
+            result.update(
+                {
+                    "status": "partial" if serial_opened else "aborted",
+                    "ok": False,
+                    "reason": f"Direct CI-V repeater tune serial/control path failed: {exc}",
+                    "updated_utc": utc_now(),
+                }
+            )
+
+        result["summary"]["writes_attempted"] = bool(result["commands_sent"])
+        result["summary"]["write_count"] = len(result["commands_sent"])
+
+        after_readback = self.direct_civ_side_a_readiness_probe(candidate=normalized_candidate)
+        result["after"] = after_readback
+        result["summary"]["readback_after_ok"] = bool(after_readback.get("ok"))
+
+        after_frequency_parsed = parsed_after(after_readback, "operating_frequency")
+        try:
+            after_frequency = float(after_frequency_parsed.get("frequency_mhz"))
+        except (TypeError, ValueError):
+            after_frequency = 0.0
+        result["summary"]["frequency_matches"] = abs(after_frequency - candidate_frequency) <= 0.000005
+
+        after_mode_parsed = parsed_after(after_readback, "operating_mode")
+        after_mode = str(after_mode_parsed.get("mode") or "").upper()
+        result["summary"]["mode_matches"] = after_mode == candidate_mode
+
+        after_duplex_parsed = parsed_after(after_readback, "duplex")
+        after_duplex = normalize_duplex_readback(after_duplex_parsed.get("duplex"))
+        result["summary"]["duplex_matches"] = after_duplex == candidate_duplex
+
+        after_offset_parsed = parsed_after(after_readback, "offset")
+        try:
+            after_offset_raw = int(after_offset_parsed.get("offset_raw_bcd_integer"))
+            after_offset_mhz = round(float(after_offset_raw) / 10000.0, 6)
+        except (TypeError, ValueError):
+            after_offset_mhz = -1.0
+        result["summary"]["offset_matches"] = abs(after_offset_mhz - candidate_offset) <= 0.0005
+
+        after_repeater_tone_parsed = parsed_after(after_readback, "repeater_tone_frequency")
+        try:
+            after_tone_hz = float(after_repeater_tone_parsed.get("tone_hz"))
+        except (TypeError, ValueError):
+            after_tone_hz = -1.0
+
+        if candidate_tone_hz is None:
+            result["summary"]["tone_frequency_matches"] = True
+        else:
+            result["summary"]["tone_frequency_matches"] = abs(after_tone_hz - float(candidate_tone_hz)) <= 0.05
+
+        after_tone_setting_parsed = parsed_after(after_readback, "tone_setting")
+        after_tone_mode = str(after_tone_setting_parsed.get("tone_mode") or "").lower()
+        result["summary"]["tone_mode_matches"] = after_tone_mode == candidate_tone_mode
+
+        final_ok = bool(
+            result["summary"]["writes_attempted"]
+            and result["summary"]["write_count"] > 0
+            and result["summary"]["readback_after_ok"]
+            and result["summary"]["frequency_matches"]
+            and result["summary"]["mode_matches"]
+            and result["summary"]["duplex_matches"]
+            and result["summary"]["offset_matches"]
+            and result["summary"]["tone_frequency_matches"]
+            and result["summary"]["tone_mode_matches"]
+        )
+
+        if result["status"] == "partial" and not final_ok:
+            result["summary"]["ready_for_future_automation"] = False
+            return result
+
+        result.update(
+            {
+                "status": "ok" if final_ok else "partial",
+                "ok": bool(final_ok),
+                "reason": (
+                    "Direct CI-V Side-A repeater tune test completed and readback matched."
+                    if final_ok
+                    else "Direct CI-V Side-A repeater tune test completed, but final readback did not fully match."
+                ),
+                "updated_utc": utc_now(),
+            }
+        )
+        result["summary"]["tone_setting_write_deferred"] = False
+        result["summary"]["ready_for_future_automation"] = False
+        return result
+
     def direct_civ_side_a_readiness_probe(self, candidate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Phase 8C-5 direct CI-V Side-A/Main-band readiness probe.
@@ -3305,11 +3991,24 @@ class IC2730AAdapter:
         }
 
         if name == "tone_setting":
+            code_hex = data.hex(" ").upper() if data else None
+            code_compact = code_hex.replace(" ", "") if isinstance(code_hex, str) else None
+            tone_mode = {
+                "00": "none",
+                "01": "tone",
+                "02": "tsql",
+                "03": "dtcs",
+            }.get(code_compact)
+
             base.update(
                 {
-                    "tone_setting_code_hex": data.hex(" ").upper() if data else None,
+                    "tone_setting_code_hex": code_hex,
+                    "tone_mode": tone_mode,
+                    "tone_mode_parse_confidence": "sample_program_mapping" if tone_mode is not None else "raw_only",
                     "reason": (
-                        "Tone setting readback response received. Raw value recorded; setting-code meaning is not interpreted in this phase."
+                        "Tone setting readback response parsed using supplied IC-2730A sample-program tone-mode values."
+                        if tone_mode is not None
+                        else "Tone setting readback response received, but tone-mode value is not recognized."
                         if data
                         else "Tone setting readback response had no data."
                     ),
@@ -3917,6 +4616,27 @@ def main() -> int:
         print(json.dumps(adapter.direct_civ_side_a_real_tune_test(candidate), indent=2, sort_keys=True))
         return 0
     
+    if "--direct-civ-side-a-repeater-tune-test" in sys.argv:
+        candidate_json = None
+        if "--candidate-json" in sys.argv:
+            idx = sys.argv.index("--candidate-json")
+            if idx + 1 < len(sys.argv):
+                candidate_json = sys.argv[idx + 1]
+
+        if candidate_json is None:
+            candidate = {"__candidate_json_parse_error": "--candidate-json is required"}
+        else:
+            try:
+                parsed = json.loads(candidate_json)
+                candidate = parsed if isinstance(parsed, dict) else {
+                    "__candidate_json_parse_error": "candidate JSON must be an object"
+                }
+            except Exception as exc:
+                candidate = {"__candidate_json_parse_error": str(exc)}
+
+        print(json.dumps(adapter.direct_civ_side_a_repeater_tune_test(candidate), indent=2, sort_keys=True))
+        return 0
+
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))
     return 0
 

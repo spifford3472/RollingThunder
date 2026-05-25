@@ -893,3 +893,35 @@ cd /opt/rollingthunder
 python3 nodes/rt-radio/services/ic2730a_adapter.py \
   --direct-civ-side-a-real-tune-test \
   --candidate-json '{"frequency_mhz":146.52,"mode":"FM","duplex":"simplex","offset_mhz":0.0,"tone_hz":null,"tone_mode":"none"}'
+
+  ## Phase 8C-8 — First Real Direct CI-V Side-A Repeater Tune Test
+
+Phase 8C-8 adds a separate manual CLI-only direct CI-V Side-A/Main-band repeater-style tune test.
+
+This phase is not automation.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+No memory programming was added.
+
+No scan control was added.
+
+No Side B programming was added.
+
+No PTT/transmit control was added.
+
+### New config gate
+
+The repeater tune test has its own gate:
+
+```json
+"direct_civ_side_a_repeater_tune_test_enabled": false
+
