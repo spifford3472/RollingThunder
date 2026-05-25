@@ -369,6 +369,37 @@ export function renderTopbarCore(container, panel, data) {
     rigSymbol = "✗";   // real failure
   }
 
+  // ---- VHF radio availability
+  // Renderer consumes projected/controller-owned state only.
+  // It does not test, tune, scan, or infer radio availability.
+  const vhfRadio = data?.vhf_radio || null;
+
+  let vhfSymbol = "●";
+  let vhfOpacity = 0.55;
+
+  if (isObj(vhfRadio)) {
+    const vhfStatus = String(vhfRadio.status || "unknown").toLowerCase();
+    const vhfAvailable =
+      vhfRadio.available === true ||
+      vhfRadio.available === 1 ||
+      vhfRadio.available === "1" ||
+      String(vhfRadio.available || "").toLowerCase() === "true";
+
+    if (vhfStatus === "online" && vhfAvailable) {
+      vhfSymbol = "✔";
+      vhfOpacity = 1.0;
+    } else if (vhfStatus === "degraded") {
+      vhfSymbol = "⚠";
+      vhfOpacity = 0.9;
+    } else if (vhfStatus === "offline") {
+      vhfSymbol = "✗";
+      vhfOpacity = 0.6;
+    } else {
+      vhfSymbol = "●";
+      vhfOpacity = 0.55;
+    }
+  }
+
   container.innerHTML = `
     <div class="rt-topbar"
         style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:6px 10px;">
@@ -398,6 +429,7 @@ export function renderTopbarCore(container, panel, data) {
           ${iconBadge({ symbol: timeSymbol, label: timeLabel, opacity: timeOpacity })}
           ${iconBadge({ symbol: gpsSymbol, label: gpsLabel, opacity: gpsOpacity })}
           ${iconBadge({ symbol: rigSymbol, label: "RIG", opacity: rigOpacity })}
+          ${iconBadge({ symbol: vhfSymbol, label: "VHF", opacity: vhfOpacity })}
           ${iconBadge({ symbol: cpuSymbol, label: "CPU", opacity: 1.0 })}
           ${weatherBadge({ symbol: weatherSymbol, label: weatherText, opacity: weatherOpacity, iconClass: weatherIconClass })}
         </div>

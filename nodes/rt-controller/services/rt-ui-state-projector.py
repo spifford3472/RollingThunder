@@ -87,6 +87,7 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:env:temp",
     "rt:weather:current",
     "rt:radio:state",
+    "rt:vhf:radio",
     "rt:ui:model:controller_services_summary",
     "rt:hf:bands",
     "rt:hf:context",

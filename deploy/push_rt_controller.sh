@@ -97,6 +97,7 @@ UNITS=(
   "rt-rfintel-dx-activity.service"
   "rt-rfintel-map-model.service"
   "rt-vhf-repeater-lookup.service"
+  "rt-vhf-radio-monitor.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage
@@ -194,6 +195,8 @@ fail_missing "${STATE_ENV_SRC}"
 fail_missing "${GPS_UNIT_SRC}"
 fail_missing "${ALERT_UNIT_SRC}"
 fail_missing "${ALERT_RECONCILE_SRC}"
+fail_missing "${SERVICES_SRC_DIR}/vhf_radio_monitor.py"
+
 
 
 # Thin-client runtime assets must exist locally in repo
@@ -507,20 +510,24 @@ PY
 
   echo "[smoke] Redis auth and controller presence"
   ssh "${TARGET_USER}@${TARGET_HOST}" '
-    set -e
-    set -a
-    [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
-    set +a
+    sudo bash -c '"'"'
+      set -e
+      set -a
+      [ -f /etc/rollingthunder/redis.env ] && . /etc/rollingthunder/redis.env
+      set +a
 
-    REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli ping | grep -q PONG
+      export REDISCLI_AUTH="${RT_REDIS_PASSWORD:-${REDIS_PASSWORD:-}}"
 
-    status="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli HGET rt:nodes:rt-controller status || true)"
-    test -n "$status" || { echo "[error] missing rt:nodes:rt-controller status"; exit 1; }
+      redis-cli ping | grep -q PONG
 
-    model="$(REDISCLI_AUTH="${RT_REDIS_PASSWORD:-}" redis-cli EXISTS rt:ui:model:node_health_summary || true)"
-    test "$model" = "1" || { echo "[error] missing rt:ui:model:node_health_summary"; exit 1; }
+      status="$(redis-cli HGET rt:nodes:rt-controller status || true)"
+      test -n "$status" || { echo "[error] missing rt:nodes:rt-controller status"; exit 1; }
 
-    echo "redis=ok controller_status=$status"
+      model="$(redis-cli EXISTS rt:ui:model:node_health_summary || true)"
+      test "$model" = "1" || { echo "[error] missing rt:ui:model:node_health_summary"; exit 1; }
+
+      echo "redis=ok controller_status=$status"
+    '"'"'
   '
 
   echo "[smoke] deployed commit marker"

@@ -1,0 +1,22 @@
+[Unit]
+Description=RollingThunder VHF Radio Availability Monitor
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/vhf_radio_monitor.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/rollingthunder/rollingthunder.env
+EnvironmentFile=-/opt/rollingthunder/config/rollingthunder.env
+# Redis
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+
+[Install]
+WantedBy=multi-user.target

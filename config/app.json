@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 15
+    "build": 21
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -631,6 +631,11 @@
     "repeater_radius_miles": 25,
     "repeater_db_path": "/opt/rollingthunder/data/vhf/repeaters.sqlite3",
     "repeater_bucket_degrees": 0.25,
-    "repeater_lookup_interval_sec": 30
+    "repeater_lookup_interval_sec": 30,
+    "radio_name": "Icom IC-2730A",
+    "radio_monitor_enabled": true,
+    "radio_control_mode": "stub",
+    "radio_monitor_interval_sec": 30,
+    "radio_force_publish_sec": 300
   }
 }
