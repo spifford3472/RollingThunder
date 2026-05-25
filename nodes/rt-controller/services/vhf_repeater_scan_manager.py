@@ -43,6 +43,7 @@ SOURCE = "vhf_repeater_scan_manager"
 KEY_SCAN = "rt:vhf:scan"
 KEY_SCAN_REQUEST = "rt:vhf:scan:request"
 KEY_VHF_RADIO = "rt:vhf:radio"
+KEY_VHF_ADAPTER = "rt:vhf:adapter"
 KEY_NEARBY = "rt:vhf:repeaters:nearby"
 
 SYSTEM_BUS = "rt:system:bus"
@@ -293,8 +294,40 @@ def vhf_radio_available(radio: Dict[str, Any]) -> bool:
 
     return False
 
+def adapter_status(adapter: Dict[str, Any]) -> str:
+    return str(adapter.get("status", "")).strip().lower()
 
-def build_model(config: Dict[str, Any], request: Dict[str, Any], radio: Dict[str, Any], nearby: Dict[str, Any]) -> Dict[str, Any]:
+
+def adapter_available(adapter: Dict[str, Any]) -> bool:
+    if not adapter:
+        return False
+
+    if adapter.get("available") is True:
+        return True
+
+    status = adapter_status(adapter)
+    if status in {"dry_run", "detected", "available", "ready"}:
+        return True
+
+    return False
+
+
+def adapter_in_dry_run(adapter: Dict[str, Any]) -> bool:
+    return adapter_status(adapter) == "dry_run"
+
+
+def adapter_detected(adapter: Dict[str, Any]) -> bool:
+    return adapter_status(adapter) in {"detected", "available", "ready"}
+
+
+def adapter_memory_programming_enabled(adapter: Dict[str, Any]) -> bool:
+    return boolish(adapter.get("memory_programming_enabled"), False)
+
+
+def adapter_scan_control_enabled(adapter: Dict[str, Any]) -> bool:
+    return boolish(adapter.get("scan_control_enabled"), False)
+
+def build_model(config: Dict[str, Any], request: Dict[str, Any], adapter: Dict[str, Any], nearby: Dict[str, Any]) -> Dict[str, Any]:
     requested = parse_requested(request, config)
 
     radius_miles = cfg_float(
@@ -323,24 +356,51 @@ def build_model(config: Dict[str, Any], request: Dict[str, Any], radio: Dict[str
     nearby_count = count_nearby(nearby)
     eligible_count = nearby_count
 
+    adapter_status_value = adapter_status(adapter)
+    adapter_reason = str(adapter.get("reason", "")).strip()
+
     if not requested:
         status = "disabled"
         reason = "Repeater scanning disabled."
         actual_scan_state = "not_scanning"
         enabled = False
-    elif not vhf_radio_available(radio):
+
+    elif not adapter:
         status = "unavailable"
-        reason = "VHF radio unavailable."
+        reason = "IC-2730A adapter status unavailable."
         actual_scan_state = "unknown"
         enabled = False
+
+    elif not adapter_available(adapter):
+        status = "unavailable"
+        reason = adapter_reason or "IC-2730A adapter/control path unavailable."
+        actual_scan_state = "unknown"
+        enabled = False
+
+    elif adapter_in_dry_run(adapter):
+        status = "dry_run"
+        reason = "IC-2730A adapter is in dry-run mode; no radio programming or scan start performed."
+        actual_scan_state = "not_scanning"
+        enabled = False
+
+    elif adapter_detected(adapter) and (
+        not adapter_memory_programming_enabled(adapter)
+        or not adapter_scan_control_enabled(adapter)
+    ):
+        status = "pending"
+        reason = "IC-2730A detected, but memory programming and scan control are disabled."
+        actual_scan_state = "unknown"
+        enabled = False
+
     elif not nearby_available(nearby):
         status = "unavailable"
         reason = "Nearby repeater model unavailable."
         actual_scan_state = "unknown"
         enabled = False
+
     else:
         status = "pending"
-        reason = "Repeater scanning requested; radio programming is not implemented in this phase."
+        reason = "Repeater scanning requested; Phase 7B does not start scans or program memories."
         actual_scan_state = "unknown"
         enabled = False
 
@@ -357,6 +417,12 @@ def build_model(config: Dict[str, Any], request: Dict[str, Any], radio: Dict[str
         "distance_since_reload_miles": 0,
         "nearby_count": nearby_count,
         "eligible_count": eligible_count,
+        "adapter_status": adapter_status_value or None,
+        "adapter_available": bool(adapter_available(adapter)),
+        "adapter_control_mode": adapter.get("control_mode") if isinstance(adapter, dict) else None,
+        "adapter_writes_enabled": boolish(adapter.get("writes_enabled"), False) if isinstance(adapter, dict) else False,
+        "adapter_memory_programming_enabled": boolish(adapter.get("memory_programming_enabled"), False) if isinstance(adapter, dict) else False,
+        "adapter_scan_control_enabled": boolish(adapter.get("scan_control_enabled"), False) if isinstance(adapter, dict) else False,
         "source": SOURCE,
         "updated_utc": utc_now(),
     }
@@ -424,10 +490,10 @@ def main() -> int:
                 redis_client = RedisCli()
 
             request = load_json_model(redis_client, KEY_SCAN_REQUEST)
-            radio = load_json_model(redis_client, KEY_VHF_RADIO)
+            adapter = load_json_model(redis_client, KEY_VHF_ADAPTER)
             nearby = load_json_model(redis_client, KEY_NEARBY)
 
-            model = build_model(config, request, radio, nearby)
+            model = build_model(config, request, adapter, nearby)
 
             force = (time.monotonic() - last_force_publish) >= force_publish_seconds
             wrote = publish_if_changed(redis_client, model, force=force)

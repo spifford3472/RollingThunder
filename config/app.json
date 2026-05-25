@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 27
+    "build": 29
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -628,7 +628,7 @@
     "10m": 28.4
   },
   "vhf": {
-    "radio_control_mode": "stub",
+    "radio_control_mode": "dry_run",
     "radio_force_publish_sec": 300,
     "radio_monitor_enabled": true,
     "radio_monitor_interval_sec": 30,
@@ -651,6 +651,22 @@
       "publish_interval_seconds": 30,
       "force_publish_seconds": 300,
       "next_group": "C"
+    },
+    "ic2730a": {
+      "enabled": true,
+      "control_mode": "dry_run",
+      "hamlib_model": 3085,
+      "serial_port": "/dev/ic2730a",
+      "baud": 9600,
+      "timeout_seconds": 2.0,
+      "writes_enabled": false,
+      "scan_control_enabled": false,
+      "side_b_programming_enabled": false,
+      "memory_programming_enabled": false,
+      "detect_enabled": true,
+      "publish_adapter_status": true,
+      "publish_interval_seconds": 30,
+      "force_publish_seconds": 300
     }
   }
 }

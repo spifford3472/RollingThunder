@@ -33,6 +33,7 @@ ENV_SRC_DIR="${NODE_SRC_DIR}/env"
 UDEV_SRC_DIR="${NODE_SRC_DIR}/udev"
 
 GLOBAL_TOOLS_DIR="${REPO_ROOT}/tools"
+CONFIG_SRC_DIR="${REPO_ROOT}/config"
 
 # ---- Runtime destinations (spiff-owned where appropriate) ----
 RT_ROOT="/opt/rollingthunder"
@@ -40,6 +41,7 @@ RT_NODE="${RT_ROOT}/nodes/rt-radio"
 RT_SVC="${RT_NODE}/services"
 RT_OPS="${RT_NODE}/ops"
 RT_TOOLS="${RT_ROOT}/tools"
+RT_CONFIG="${RT_ROOT}/config"
 
 ENV_DST_DIR="/etc/rollingthunder"
 UDEV_DST_DIR="/etc/udev/rules.d"
@@ -59,6 +61,7 @@ UNITS=(
   "rigctld.service"
   "rt-rigctld-watchdog.service"
   "rt-radio-service-state-publisher.service"
+  "rt-vhf-ic2730a-adapter-status.service"
 )
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
@@ -71,6 +74,8 @@ fail_missing_dir "${SVC_DIR}"
 fail_missing_dir "${ENV_SRC_DIR}"
 fail_missing_dir "${UDEV_SRC_DIR}"
 fail_missing_dir "${GLOBAL_TOOLS_DIR}"
+fail_missing_dir "${CONFIG_SRC_DIR}"
+fail_missing "${CONFIG_SRC_DIR}/app.json"
 
 fail_missing "${UDEV_SRC_DIR}/99-rollingthunder-ft891.rules"
 fail_missing "${ENV_SRC_DIR}/radio.env"
@@ -93,6 +98,10 @@ fail_missing "${SVC_DIR}/radio/hamlib_client.py"
 fail_missing "${SVC_DIR}/radio/service.py"
 fail_missing "${SVC_DIR}/radio/radios/__init__.py"
 fail_missing "${SVC_DIR}/radio/radios/ft891.py"
+fail_missing "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service"
+fail_missing "${SVC_DIR}/ic2730a_adapter.py"
+fail_missing "${SVC_DIR}/vhf_ic2730a_adapter_status.py"
+
 
 
 # Common rsync excludes
@@ -108,7 +117,7 @@ RSYNC_EXCLUDES=(
 echo "[push] Ensure runtime dirs exist"
 if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
-    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_ROOT}/.deploy'
+    sudo mkdir -p '${RT_ROOT}' '${RT_NODE}' '${RT_SVC}' '${RT_OPS}' '${RT_TOOLS}' '${RT_CONFIG}' '${RT_ROOT}/.deploy'
     sudo mkdir -p '${ENV_DST_DIR}' '${UDEV_DST_DIR}'
     sudo chown -R ${TARGET_USER}:${TARGET_USER} '${RT_ROOT}'
     sudo chmod 0755 '${ENV_DST_DIR}'
@@ -182,6 +191,12 @@ rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
   "${GLOBAL_TOOLS_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_TOOLS}/"
 
+echo "[push] Sync shared config dir -> ${RT_CONFIG}"
+rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
+  --no-group --no-perms --omit-dir-times \
+  "${RSYNC_EXCLUDES[@]}" \
+  "${CONFIG_SRC_DIR}/" "${TARGET_USER}@${TARGET_HOST}:${RT_CONFIG}/"
+
 echo "[push] Sync node tools dir -> ${RT_TOOLS}"
 rsync -avz --checksum --itemize-changes "${RSYNC_DRY[@]}" \
   "${RSYNC_EXCLUDES[@]}" \
@@ -253,6 +268,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service" \
     "${UNIT_DST_DIR}/rt-radio-service-state-publisher.service" "644"
 
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-vhf-ic2730a-adapter-status.service" \
+    "${UNIT_DST_DIR}/rt-vhf-ic2730a-adapter-status.service" "644"
+
 else
   echo "[dry] would install units to ${UNIT_DST_DIR}: ${UNITS[*]}"
   echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"
@@ -291,6 +310,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl --no-pager --full status rigctld.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-service-state-publisher.service | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-vhf-ic2730a-adapter-status.service | sed -n '1,40p' || true
     exit 0
   "
 

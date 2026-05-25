@@ -1,0 +1,18 @@
+[Unit]
+Description=RollingThunder IC-2730A Adapter Status Publisher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spiff
+Group=spiff
+SupplementaryGroups=dialout
+Environment=RT_NODE_ID=rt-radio
+EnvironmentFile=/etc/rollingthunder/redis.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/vhf_ic2730a_adapter_status.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

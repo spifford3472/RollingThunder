@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2100", ATTRS{idProduct}=="9e53", ATTRS{serial}=="RT7QALLM", SYMLINK+="ic2730a", MODE="0660", GROUP="dialout"
