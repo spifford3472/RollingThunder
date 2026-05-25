@@ -363,3 +363,176 @@ Future Side B design should separate:
 - whether Side B is passive display state only, manually configured on the radio, or adapter-controlled
 
 Until this is redesigned, Side B programming should remain disabled.
+
+## Phase 8C-2 — Side-A Direct CI-V Scan/Search Strategy
+
+Phase 8C-2 is an inspection, design, and documentation phase.
+
+No executable direct-CI-V send code was added in this phase.
+
+No CI-V command was sent to the radio in this phase.
+
+No memory write occurred.
+
+No memory bank/group write occurred.
+
+No memory bank/group clear occurred.
+
+No scan start occurred.
+
+No Side B programming occurred.
+
+No PTT/transmit controls were added.
+
+### Files inspected
+
+Phase 8C-2 inspection covered the current VHF/IC-2730A boundary files:
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `config/pages/vhf.json`
+- `config/panels/vhf_repeater_scan_summary.json`
+- `config/panels/vhf_side_b_summary.json`
+- `nodes/rt-display/ui/renderers/vhf_repeater_scan_summary.js`
+- `nodes/rt-display/ui/renderers/vhf_side_b_summary.js`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+The local IC-2730A/IC-2730E command reference remains the authoritative source for future direct CI-V work:
+
+- `ic-2730_exmenu-ci-v.pdf`
+- Title: `IC-2730A/IC-2730E EXMENU items and CI-V information`
+
+Only IC-2730A/IC-2730E documented CI-V commands from that reference may be used.
+
+Commands must not be inferred from another Icom radio.
+
+Undocumented operations remain `not_implemented`.
+
+### Operator authorization context
+
+The control operator has stated:
+
+- FCC Amateur Extra license
+- callsign `KI5VNB`
+- physical access to the IC-2730A radio
+- control operator present for station operation
+
+Legal/control-operator authorization is not the limiting issue for this phase.
+
+The limiting issue is technical caution and command certainty.
+
+### Hamlib conclusion from 8C-1 / 8C-1B
+
+The Python Hamlib path is not considered reliable for IC-2730A memory, bank/group, or scan automation.
+
+Known findings:
+
+- `RIG_MODEL_IC2730 = 3072`
+- previously configured `3085` is IC-705 on this system and should be corrected in a later config-focused phase
+- Python Hamlib exposes some generic channel/memory-looking objects and fields
+- IC-2730 backend capability calls did not prove usable memory/channel/scan operations
+- `get_channel`, `set_channel`, `get_mem`, `set_mem`, and `scan` were not proven usable for this backend
+- `scan_ops = 0`
+- low-level memory capability calls returned no useful memory capability data
+
+Therefore:
+
+- Python Hamlib memory write remains deferred
+- Python Hamlib bank/group programming remains deferred
+- Python Hamlib scan control remains deferred
+- direct CI-V read-only probing is the safer next path
+
+### Side B / right-side deprecation decision
+
+Adapter-controlled Side B/right-side monitoring is retired from the near-term design.
+
+Reason:
+
+The IC-2730A/IC-2730E EXMENU/CI-V reference states that when using the OPC-478UC connection, audio received on the right side band cannot be heard.
+
+Therefore RollingThunder must not treat the IC-2730A right side as an active adapter-controlled monitored audio resource while CI-V is connected through OPC-478UC.
+
+Near-term rules:
+
+- Do not implement Side B 146.520 adapter programming.
+- Do not present Side B as an active monitored right-side audio resource.
+- Do not rely on right-side audio while CI-V is connected.
+- Do not expose Side B transmit/PTT controls.
+- Treat existing `rt:vhf:side_b` model as passive/deprecated unless retained as a compatibility placeholder.
+- Future “Side B options” should become Side A/Main-band options where appropriate.
+
+Existing UI Side B renderer behavior is acceptable only as a passive projected model display.
+
+The UI must remain renderer-only and must not program, command, infer, or control the radio.
+
+### Memory write / C-D bank strategy status
+
+The original near-term C/D memory group reload strategy is retired/deferred.
+
+Phase 8A dry-run planning may remain as a controller-side planning artifact until replaced, but real memory programming is not a near-term target.
+
+The IC-2730A/IC-2730E CI-V reference did not document direct CI-V commands for:
+
+- memory channel write
+- memory channel 99 selection
+- memory bank/group write
+- bank/group clear
+- bank/group select
+- memory/channel name write
+- direct scan start/stop
+- direct scan-state readback beyond general RX/TX status
+
+Therefore these adapter operations remain `not_implemented`:
+
+- memory write
+- memory group/bank clear
+- memory group/bank switch
+- scan start
+- scan stop
+- Side B programming
+
+### Banks terminology note
+
+Icom documentation may use “bank” terminology where earlier RollingThunder prompts used “group.”
+
+Terms to search and preserve in future inspections:
+
+- memory group
+- group
+- memory bank
+- bank
+- Bank Link
+- B-LINK
+- Memory Bank
+- BND.BNK
+
+The EXMENU document mentions scan/bank-related user-interface features such as Bank Link / B-LINK and banks A-J, but those are not automatically direct CI-V commands.
+
+No bank programming may be implemented unless the IC-2730A/IC-2730E CI-V command table documents the exact direct CI-V command.
+
+### Revised feature direction
+
+RollingThunder should shift toward a Side-A/Main-band repeater scan/search mode.
+
+When the VHF page is active:
+
+- the controller may select a nearby repeater candidate
+- the controller may publish a tightly gated adapter request
+- the rt-radio adapter may eventually tune/check the IC-2730A Main band / Side A using documented CI-V commands only
+- the controller owns dwell timing and candidate advancement
+- the UI renders controller-owned state only
+
+When the VHF page is not active:
+
+- the controller must not request adapter-controlled VHF scan/search
+- RollingThunder must not take over Side A in the background
+- the operator can rely on manually programmed IC-2730A memories/banks/groups
+
+### Candidate future request action
+
+The old near-term request action:
+
+```text
+write_single_memory_test
