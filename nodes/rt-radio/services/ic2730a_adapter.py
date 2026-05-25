@@ -84,6 +84,8 @@ DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED = False
 
+DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED = False
+
 DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS = (
     "tone_setting",
     "repeater_tone_frequency",
@@ -343,6 +345,7 @@ class IC2730AConfig:
     direct_civ_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED
     direct_civ_tone_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED
     direct_civ_side_a_readiness_probe_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED
+    direct_civ_side_a_write_plan_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
@@ -468,7 +471,11 @@ class IC2730AConfig:
             direct_civ_side_a_readiness_probe_enabled=_safe_bool(
                 ic.get("direct_civ_side_a_readiness_probe_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED,
-            ),            
+            ),
+            direct_civ_side_a_write_plan_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_write_plan_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED,
+            ),
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
                 _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
@@ -1330,7 +1337,534 @@ class IC2730AAdapter:
             available=bool(self.config.enabled and self.config.control_mode != "disabled"),
             reason="Phase 8C-4 dry-run request contract accepted; no radio command was sent.",
             extra=common,
-        )    
+        )
+
+    def direct_civ_side_a_write_plan(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Phase 8C-6 direct CI-V Side-A/Main-band candidate write-plan builder.
+
+        This method is CLI-only and plan-only in Phase 8C-6.
+
+        It may validate a candidate and, when explicitly gated, call the existing
+        Phase 8C-5 read-only readiness probe to read current Main-band state.
+
+        It must not:
+        - select A band as Main
+        - write frequency
+        - write mode
+        - write duplex/simplex
+        - write offset
+        - write tone
+        - write memory
+        - write bank/group
+        - start scan
+        - program Side B
+        - expose PTT/transmit control
+        - publish Redis
+        - write rt:ui:bus
+        - write rt:system:bus
+        """
+
+        cfg = self.config
+        raw = candidate if isinstance(candidate, dict) else {}
+
+        safety_flags = {
+            "read_only": True,
+            "plan_only": True,
+            "writes_performed": False,
+            "frequency_write_performed": False,
+            "mode_write_performed": False,
+            "duplex_write_performed": False,
+            "offset_write_performed": False,
+            "tone_write_performed": False,
+            "repeater_tone_write_performed": False,
+            "tone_squelch_write_performed": False,
+            "dtcs_write_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_a_main_select_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "system_bus_written": False,
+            "write_commands_sent": False,
+        }
+
+        def base_result() -> Dict[str, Any]:
+            return {
+                "action": "direct_civ_side_a_write_plan",
+                "phase": "8C-6",
+                "radio": cfg.radio_name,
+                "control_path": "direct_civ",
+                "serial_port": cfg.direct_civ_serial_port,
+                "baud": cfg.direct_civ_baud,
+                **safety_flags,
+                "ready_for_future_write_phase": False,
+                "updated_utc": utc_now(),
+            }
+
+        def result_with(
+            *,
+            status: str,
+            ok: bool,
+            operation_performed: bool,
+            serial_opened: bool,
+            civ_command_sent: bool,
+            reason: str,
+            normalized_candidate: Optional[Dict[str, Any]] = None,
+            current: Optional[Dict[str, Any]] = None,
+            plan: Optional[list[Dict[str, Any]]] = None,
+            summary: Optional[Dict[str, Any]] = None,
+            validation_errors: Optional[list[str]] = None,
+            readback_summary: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            out = base_result()
+            out.update(
+                {
+                    "status": status,
+                    "ok": bool(ok),
+                    "operation_performed": bool(operation_performed),
+                    "serial_opened": bool(serial_opened),
+                    "civ_command_sent": bool(civ_command_sent),
+                    "candidate": normalized_candidate,
+                    "current": current,
+                    "plan": plan or [],
+                    "summary": summary
+                    or {
+                        "readback_ok": False,
+                        "rx_not_tx": False,
+                        "changes_required": False,
+                        "change_count": 0,
+                        "ready_for_future_write_phase": False,
+                    },
+                    "reason": reason,
+                    "updated_utc": utc_now(),
+                }
+            )
+            if validation_errors:
+                out["validation_errors"] = validation_errors
+            if readback_summary is not None:
+                out["readback_summary"] = readback_summary
+            return out
+
+        errors: list[str] = []
+
+        def candidate_float(
+            name: str,
+            *,
+            required: bool,
+            minimum: Optional[float] = None,
+            maximum: Optional[float] = None,
+        ) -> Optional[float]:
+            value = raw.get(name)
+
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if required:
+                    errors.append(f"{name} is required")
+                return None
+
+            try:
+                parsed = float(value)
+            except Exception:
+                errors.append(f"{name} must be numeric")
+                return None
+
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+
+            return parsed
+
+        def candidate_str(name: str, default: str = "") -> str:
+            value = raw.get(name)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        if "__candidate_json_parse_error" in raw:
+            errors.append(f"candidate JSON could not be parsed: {raw.get('__candidate_json_parse_error')}")
+
+        frequency_mhz = candidate_float("frequency_mhz", required=True, minimum=118.0, maximum=550.0)
+
+        mode = candidate_str("mode", "FM").upper()
+        if mode != "FM":
+            errors.append("mode must be FM")
+
+        duplex_raw = candidate_str("duplex", "simplex").lower()
+        duplex_aliases = {
+            "simplex": "simplex",
+            "none": "none",
+            "plus": "plus",
+            "+": "plus",
+            "dup+": "plus",
+            "minus": "minus",
+            "-": "minus",
+            "dup-": "minus",
+        }
+
+        duplex = duplex_aliases.get(duplex_raw)
+        if duplex is None:
+            errors.append("duplex must be one of: simplex, none, plus, minus, dup+, dup-")
+            duplex = duplex_raw or "unknown"
+
+        offset_mhz = candidate_float("offset_mhz", required=False, minimum=0.0)
+        if offset_mhz is None:
+            offset_mhz = 0.0
+
+        tone_hz_present = raw.get("tone_hz") is not None and not (
+            isinstance(raw.get("tone_hz"), str) and not str(raw.get("tone_hz")).strip()
+        )
+        tone_hz = candidate_float("tone_hz", required=False, minimum=50.0, maximum=300.0)
+
+        tone_mode_raw = candidate_str("tone_mode", "none").lower()
+        tone_mode_aliases = {
+            "": "none",
+            "none": "none",
+            "off": "none",
+            "tone": "tone",
+            "ctcss": "tone",
+            "tsql": "tsql",
+            "tone_sql": "tsql",
+            "tone_squelch": "tsql",
+            "dtcs": "dtcs",
+            "dcs": "dtcs",
+        }
+        tone_mode = tone_mode_aliases.get(tone_mode_raw)
+
+        if tone_mode is None:
+            errors.append("tone_mode must normalize to one of: none, tone, tsql, dtcs")
+            tone_mode = tone_mode_raw or "unknown"
+
+        if tone_mode in {"tone", "tsql"} and not tone_hz_present:
+            errors.append("tone_hz is required when tone_mode is tone or tsql")
+
+        normalized_candidate = {
+            "frequency_mhz": round(float(frequency_mhz), 6) if frequency_mhz is not None else None,
+            "mode": mode,
+            "duplex": duplex,
+            "offset_mhz": round(float(offset_mhz), 6),
+            "tone_hz": round(float(tone_hz), 1) if tone_hz is not None else None,
+            "tone_mode": tone_mode,
+        }
+
+        if errors:
+            return result_with(
+                status="rejected",
+                ok=False,
+                operation_performed=False,
+                serial_opened=False,
+                civ_command_sent=False,
+                reason="Phase 8C-6 write-plan candidate rejected before serial open: " + "; ".join(errors),
+                normalized_candidate=normalized_candidate,
+                current=None,
+                plan=[],
+                validation_errors=errors,
+            )
+
+        if (
+            not cfg.direct_civ_enabled
+            or not cfg.direct_civ_side_a_readiness_probe_enabled
+            or not cfg.direct_civ_side_a_write_plan_enabled
+        ):
+            gate_failures = []
+            if not cfg.direct_civ_enabled:
+                gate_failures.append("direct_civ_enabled=false")
+            if not cfg.direct_civ_side_a_readiness_probe_enabled:
+                gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
+            if not cfg.direct_civ_side_a_write_plan_enabled:
+                gate_failures.append("direct_civ_side_a_write_plan_enabled=false")
+
+            return result_with(
+                status="disabled",
+                ok=False,
+                operation_performed=False,
+                serial_opened=False,
+                civ_command_sent=False,
+                reason="Direct CI-V Side-A write-plan builder disabled by config: " + ", ".join(gate_failures),
+                normalized_candidate=None,
+                current=None,
+                plan=[],
+            )
+
+        readiness = self.direct_civ_side_a_readiness_probe(candidate=normalized_candidate)
+        commands = readiness.get("commands") if isinstance(readiness.get("commands"), list) else []
+        readback_summary = readiness.get("summary") if isinstance(readiness.get("summary"), dict) else {}
+
+        by_name = {str(cmd.get("name")): cmd for cmd in commands if isinstance(cmd, dict)}
+
+        def parsed_for(name: str) -> Dict[str, Any]:
+            cmd = by_name.get(name, {})
+            parsed = cmd.get("parsed") if isinstance(cmd, dict) else {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        rx_tx_parsed = parsed_for("rx_tx_status")
+        freq_parsed = parsed_for("operating_frequency")
+        mode_parsed = parsed_for("operating_mode")
+        duplex_parsed = parsed_for("duplex")
+        offset_parsed = parsed_for("offset")
+        tone_setting_parsed = parsed_for("tone_setting")
+        repeater_tone_parsed = parsed_for("repeater_tone_frequency")
+        tone_sql_parsed = parsed_for("tone_squelch_frequency")
+        dtcs_parsed = parsed_for("dtcs_code_polarity")
+
+        current_offset_raw = offset_parsed.get("offset_raw_bcd_integer")
+        current_offset_mhz = None
+        if isinstance(current_offset_raw, (int, float)):
+            # Observed Phase 8C-5 example: raw BCD integer 6000 represents 0.600 MHz.
+            current_offset_mhz = round(float(current_offset_raw) / 10000.0, 6)
+
+        current_tone_setting_code = tone_setting_parsed.get("tone_setting_code_hex")
+        current_tone_mode = None
+        if isinstance(current_tone_setting_code, str):
+            code = current_tone_setting_code.replace(" ", "").upper()
+            if code == "00":
+                current_tone_mode = "none"
+            elif code:
+                current_tone_mode = "unknown"
+
+        current_duplex_raw = duplex_parsed.get("duplex")
+        current_duplex = {
+            "simplex": "simplex",
+            "none": "none",
+            "dup-": "minus",
+            "minus": "minus",
+            "dup+": "plus",
+            "plus": "plus",
+        }.get(str(current_duplex_raw or "").lower(), current_duplex_raw)
+
+        current: Dict[str, Any] = {
+            "rx_not_tx": rx_tx_parsed.get("rx_not_tx"),
+            "frequency_mhz": freq_parsed.get("frequency_mhz"),
+            "mode": mode_parsed.get("mode"),
+            "duplex": current_duplex,
+            "offset_raw_bcd_integer": current_offset_raw,
+            "offset_mhz_tentative": current_offset_mhz,
+            "tone_setting_code_hex": current_tone_setting_code,
+            "tone_mode_tentative": current_tone_mode,
+            "repeater_tone_hz": repeater_tone_parsed.get("tone_hz"),
+            "tone_squelch_hz": tone_sql_parsed.get("tone_hz"),
+            "dtcs_code_display": dtcs_parsed.get("dtcs_code_display"),
+        }
+
+        plan: list[Dict[str, Any]] = []
+
+        def numeric_changed(current_value: Any, candidate_value: Any, tolerance: float) -> bool:
+            if current_value is None:
+                return True
+            try:
+                return abs(float(current_value) - float(candidate_value)) > tolerance
+            except Exception:
+                return True
+
+        def add_plan(
+            *,
+            name: str,
+            documented_command_code: str,
+            required: bool,
+            reason: str,
+            current_value: Any = None,
+            candidate_value: Any = None,
+        ) -> None:
+            entry: Dict[str, Any] = {
+                "name": name,
+                "documented_command_code": documented_command_code,
+                "would_send": False,
+                "required": bool(required),
+                "reason": reason,
+            }
+            if current_value is not None:
+                entry["current"] = current_value
+            if candidate_value is not None:
+                entry["candidate"] = candidate_value
+            plan.append(entry)
+
+        current_frequency = current.get("frequency_mhz")
+        candidate_frequency = normalized_candidate["frequency_mhz"]
+        frequency_required = numeric_changed(current_frequency, candidate_frequency, 0.000005)
+        add_plan(
+            name="future_write_frequency",
+            documented_command_code="05",
+            required=frequency_required,
+            current_value=current_frequency,
+            candidate_value=candidate_frequency,
+            reason=(
+                "Candidate frequency differs from current readback."
+                if frequency_required
+                else "Candidate frequency matches current readback."
+            ),
+        )
+
+        current_mode = str(current.get("mode") or "").upper()
+        mode_required = current_mode != normalized_candidate["mode"]
+        add_plan(
+            name="future_set_fm_mode",
+            documented_command_code="06 05",
+            required=mode_required,
+            current_value=current.get("mode"),
+            candidate_value=normalized_candidate["mode"],
+            reason=(
+                "Candidate mode differs from current readback."
+                if mode_required
+                else "Candidate mode already matches current readback."
+            ),
+        )
+
+        candidate_duplex = str(normalized_candidate["duplex"])
+        current_duplex_text = str(current.get("duplex") or "")
+        duplex_required = current_duplex_text != candidate_duplex
+
+        if candidate_duplex in {"simplex", "none"}:
+            duplex_name = "future_set_simplex"
+            duplex_code = "10"
+        elif candidate_duplex == "minus":
+            duplex_name = "future_set_dup_minus"
+            duplex_code = "11"
+        elif candidate_duplex == "plus":
+            duplex_name = "future_set_dup_plus"
+            duplex_code = "12"
+        else:
+            duplex_name = "future_set_duplex_unknown"
+            duplex_code = "10/11/12"
+
+        add_plan(
+            name=duplex_name,
+            documented_command_code=duplex_code,
+            required=duplex_required,
+            current_value=current.get("duplex"),
+            candidate_value=candidate_duplex,
+            reason=(
+                "Candidate duplex setting differs from current readback."
+                if duplex_required
+                else "Candidate duplex setting already matches current readback."
+            ),
+        )
+
+        candidate_offset = normalized_candidate["offset_mhz"]
+        offset_required = numeric_changed(current_offset_mhz, candidate_offset, 0.0005)
+        add_plan(
+            name="future_write_offset",
+            documented_command_code="0D",
+            required=offset_required,
+            current_value=current_offset_mhz,
+            candidate_value=candidate_offset,
+            reason=(
+                "Candidate offset differs from current readback. Current offset interpretation is based on the Phase 8C-5 observed BCD scale."
+                if offset_required
+                else "Candidate offset appears to match current readback using the Phase 8C-5 observed BCD scale."
+            ),
+        )
+
+        candidate_tone_mode = str(normalized_candidate["tone_mode"])
+        candidate_tone_hz = normalized_candidate["tone_hz"]
+        current_repeater_tone_hz = current.get("repeater_tone_hz")
+
+        tone_frequency_required = False
+        if candidate_tone_mode in {"tone", "tsql"} and candidate_tone_hz is not None:
+            tone_frequency_required = numeric_changed(current_repeater_tone_hz, candidate_tone_hz, 0.05)
+
+        add_plan(
+            name="future_write_repeater_tone_frequency",
+            documented_command_code="1B 00",
+            required=tone_frequency_required,
+            current_value=current_repeater_tone_hz,
+            candidate_value=candidate_tone_hz,
+            reason=(
+                "Candidate repeater tone differs from current readback."
+                if tone_frequency_required
+                else "Repeater tone frequency write is not needed for this candidate, or current readback already matches."
+            ),
+        )
+
+        tone_setting_required = current_tone_mode != candidate_tone_mode
+        add_plan(
+            name="future_write_tone_setting",
+            documented_command_code="1A 00",
+            required=tone_setting_required,
+            current_value=current_tone_mode,
+            candidate_value=candidate_tone_mode,
+            reason=(
+                "Candidate tone mode differs from current readback or current tone mode is not fully interpreted."
+                if tone_setting_required
+                else "Candidate tone mode already matches current readback."
+            ),
+        )
+
+        change_count = sum(1 for item in plan if item.get("required") is True)
+        changes_required = change_count > 0
+
+        plan.insert(
+            0,
+            {
+                "name": "future_select_a_band_as_main",
+                "documented_command_code": "07 D0",
+                "would_send": False,
+                "required": bool(changes_required),
+                "reason": (
+                    "Future write phase must explicitly target A band/Main before changing Side-A candidate settings."
+                    if changes_required
+                    else "No candidate setting changes are required, so A band/Main selection is not required in this plan."
+                ),
+            },
+        )
+
+        if changes_required:
+            change_count += 1
+
+        readback_ok = all(
+            [
+                readback_summary.get("rx_tx_status_ok"),
+                readback_summary.get("frequency_ok"),
+                readback_summary.get("mode_ok"),
+                readback_summary.get("duplex_ok"),
+                readback_summary.get("offset_ok"),
+                readback_summary.get("tone_setting_ok"),
+                readback_summary.get("repeater_tone_frequency_ok"),
+            ]
+        )
+
+        rx_not_tx = bool(readback_summary.get("rx_not_tx") is True)
+
+        if not readback_ok or not rx_not_tx:
+            status = "partial"
+            ok = False
+            reason = (
+                "Direct CI-V Side-A candidate write plan built partially from readback. "
+                "No write/control commands were sent."
+            )
+        elif changes_required:
+            status = "planned"
+            ok = True
+            reason = "Direct CI-V Side-A candidate write plan built. No write/control commands were sent."
+        else:
+            status = "no_change_needed"
+            ok = True
+            reason = "Direct CI-V Side-A candidate already matches current readback. No write/control commands were sent."
+
+        summary = {
+            "readback_ok": bool(readback_ok),
+            "rx_not_tx": bool(rx_not_tx),
+            "changes_required": bool(changes_required),
+            "change_count": int(change_count),
+            "ready_for_future_write_phase": False,
+        }
+
+        return result_with(
+            status=status,
+            ok=ok,
+            operation_performed=bool(readiness.get("operation_performed")),
+            serial_opened=bool(readiness.get("serial_opened")),
+            civ_command_sent=bool(readiness.get("civ_command_sent")),
+            reason=reason,
+            normalized_candidate=normalized_candidate,
+            current=current,
+            plan=plan,
+            summary=summary,
+            readback_summary=readback_summary,
+        )
 
     def set_side_b_146520_fm(self) -> Dict[str, Any]:
         return self._stubbed_risky_operation(
@@ -2764,6 +3298,27 @@ def main() -> int:
 
     if "--direct-civ-side-a-readiness-probe" in sys.argv:
         print(json.dumps(adapter.direct_civ_side_a_readiness_probe(), indent=2, sort_keys=True))
+        return 0
+
+    if "--direct-civ-side-a-write-plan" in sys.argv:
+        candidate_json = None
+        if "--candidate-json" in sys.argv:
+            idx = sys.argv.index("--candidate-json")
+            if idx + 1 < len(sys.argv):
+                candidate_json = sys.argv[idx + 1]
+
+        if candidate_json is None:
+            candidate = {"__candidate_json_parse_error": "--candidate-json is required"}
+        else:
+            try:
+                parsed = json.loads(candidate_json)
+                candidate = parsed if isinstance(parsed, dict) else {
+                    "__candidate_json_parse_error": "candidate JSON must be an object"
+                }
+            except Exception as exc:
+                candidate = {"__candidate_json_parse_error": str(exc)}
+
+        print(json.dumps(adapter.direct_civ_side_a_write_plan(candidate), indent=2, sort_keys=True))
         return 0
 
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))

@@ -759,3 +759,106 @@ Phase 8C-3 successfully proved the direct CI-V read-only baseline probe:
 ```bash
 python3 nodes/rt-radio/services/ic2730a_adapter.py --direct-civ-readonly-probe
 
+
+## Phase 8C-6 — Direct CI-V Side-A Candidate Write Plan Only
+
+Phase 8C-6 adds a manual CLI-only direct CI-V Side-A/Main-band candidate write-plan builder.
+
+This phase remains plan-only.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+### Files inspected
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+- `/tmp/ic2730a_direct_civ_side_a_readiness_probe.after_8c5.json`, when present
+- local IC-2730A/IC-2730E EXMENU/CI-V reference, when present
+
+### Files changed
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+No UI files were changed.
+
+No projector files were changed.
+
+No systemd units were changed.
+
+No Redis request service action was added.
+
+### Operator authorization context
+
+The station control operator is an FCC Amateur Extra class licensee.
+
+- Callsign: `KI5VNB`
+- Physical access to IC-2730A: yes
+- Control operator present: yes
+
+Legal/control-operator authorization is not the limiting factor for this phase.
+
+The limiting factor remains technical caution and use of only documented IC-2730A/IC-2730E CI-V commands.
+
+### Prior successful baseline
+
+Phase 8C-3 successfully proved the direct CI-V read-only baseline probe.
+
+It read:
+
+- transceiver ID using `19 00`
+- operating frequency using `03`
+- operating mode using `04`
+- duplex using `0F`
+- offset using `0C`
+- RX/TX status using `1C 00`
+
+Phase 8C-3A successfully proved tone readback.
+
+It read:
+
+- tone setting using `1A 00`
+- repeater tone frequency using `1B 00`
+- tone squelch frequency using `1B 01`
+- DTCS code/polarity using `1B 02`
+
+Phase 8C-4 successfully proved the dry-run Side-A candidate request contract.
+
+It validated and echoed candidate payloads without opening serial or sending CI-V.
+
+Phase 8C-5 successfully proved the manual CLI-only Side-A readiness probe.
+
+It read:
+
+- RX/TX status using `1C 00`
+- operating frequency using `03`
+- operating mode using `04`
+- duplex using `0F`
+- offset using `0C`
+- tone setting using `1A 00`
+- repeater tone frequency using `1B 00`
+- tone squelch frequency using `1B 01`
+- DTCS code/polarity using `1B 02`
+
+### New CLI option
+
+```bash
+cd /opt/rollingthunder
+
+python3 nodes/rt-radio/services/ic2730a_adapter.py \
+  --direct-civ-side-a-write-plan \
+  --candidate-json '{"frequency_mhz":146.94,"mode":"FM","duplex":"minus","offset_mhz":0.6,"tone_hz":123.0,"tone_mode":"tone"}'
+
+  
