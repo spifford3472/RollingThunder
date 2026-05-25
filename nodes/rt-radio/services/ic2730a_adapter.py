@@ -86,6 +86,8 @@ DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED = False
 
+DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED = False
+
 DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS = (
     "tone_setting",
     "repeater_tone_frequency",
@@ -346,6 +348,7 @@ class IC2730AConfig:
     direct_civ_tone_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED
     direct_civ_side_a_readiness_probe_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED
     direct_civ_side_a_write_plan_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED
+    direct_civ_side_a_real_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
@@ -476,6 +479,10 @@ class IC2730AConfig:
                 ic.get("direct_civ_side_a_write_plan_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED,
             ),
+            direct_civ_side_a_real_tune_test_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_real_tune_test_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED,
+            ),            
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
                 _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
@@ -2316,6 +2323,574 @@ class IC2730AAdapter:
                 except Exception:
                     pass
 
+    def direct_civ_side_a_real_tune_test(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Phase 8C-7 first real direct CI-V Side-A/Main-band tune test.
+
+        Manual CLI-only.
+        No Redis writes.
+        No UI bus writes.
+        No system bus writes.
+        No Hamlib.
+        No rigctl.
+        No memory programming.
+        No scan control.
+        No Side B programming.
+        No PTT/transmit controls.
+        """
+
+        def safety_model() -> Dict[str, Any]:
+            return {
+                "read_only": False,
+                "manual_cli_only": True,
+                "ptt_or_transmit_control_added": False,
+                "memory_write_performed": False,
+                "bank_write_performed": False,
+                "scan_start_performed": False,
+                "side_b_programming_performed": False,
+                "redis_written": False,
+                "ui_bus_written": False,
+                "system_bus_written": False,
+                "rigctl_used": False,
+            }
+
+        def base_result(status: str = "aborted", ok: bool = False, reason: str = "") -> Dict[str, Any]:
+            return {
+                "action": "direct_civ_side_a_real_tune_test",
+                "phase": "8C-7",
+                "status": status,
+                "ok": bool(ok),
+                "reason": reason,
+                "candidate": candidate if isinstance(candidate, dict) else {},
+                "before": {},
+                "plan": [],
+                "commands_sent": [],
+                "after": {},
+                "summary": {
+                    "readback_before_ok": False,
+                    "rx_not_tx_before": False,
+                    "writes_attempted": False,
+                    "write_count": 0,
+                    "readback_after_ok": False,
+                    "frequency_matches": False,
+                    "mode_matches": False,
+                    "duplex_matches": False,
+                    "offset_matches": False,
+                    "tone_mode_matches": False,
+                    "ready_for_future_automation": False,
+                },
+                "safety": safety_model(),
+            }
+
+        def candidate_float(
+            raw: Dict[str, Any],
+            name: str,
+            *,
+            required: bool,
+            minimum: Optional[float] = None,
+            maximum: Optional[float] = None,
+        ) -> tuple[Optional[float], list[str]]:
+            errors: list[str] = []
+            value = raw.get(name)
+            if value is None:
+                if required:
+                    errors.append(f"{name} is required")
+                return None, errors
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be numeric")
+                return None, errors
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+            return parsed, errors
+
+        def candidate_str(raw: Dict[str, Any], name: str, default: str = "") -> str:
+            value = raw.get(name, default)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        def normalize_candidate(raw_candidate: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], list[str]]:
+            raw = raw_candidate if isinstance(raw_candidate, dict) else {}
+            errors: list[str] = []
+
+            if "__candidate_json_parse_error" in raw:
+                errors.append(f"candidate JSON could not be parsed: {raw.get('__candidate_json_parse_error')}")
+
+            frequency_mhz, frequency_errors = candidate_float(
+                raw, "frequency_mhz", required=True, minimum=118.0, maximum=550.0
+            )
+            errors.extend(frequency_errors)
+
+            mode = candidate_str(raw, "mode", "FM").upper()
+            if mode != "FM":
+                errors.append("mode must be FM")
+
+            duplex_raw = candidate_str(raw, "duplex", "simplex").lower()
+            duplex_aliases = {
+                "simplex": "simplex",
+                "none": "simplex",
+                "off": "simplex",
+                "plus": "plus",
+                "+": "plus",
+                "dup+": "plus",
+                "duplex+": "plus",
+                "minus": "minus",
+                "-": "minus",
+                "dup-": "minus",
+                "duplex-": "minus",
+            }
+            duplex = duplex_aliases.get(duplex_raw)
+            if duplex is None:
+                errors.append("duplex must be one of: simplex, plus, minus, dup+, dup-, none")
+                duplex = duplex_raw or "unknown"
+
+            offset_mhz, offset_errors = candidate_float(
+                raw, "offset_mhz", required=False, minimum=0.0
+            )
+            errors.extend(offset_errors)
+            if offset_mhz is None:
+                offset_mhz = 0.0
+
+            tone_hz, tone_errors = candidate_float(
+                raw, "tone_hz", required=False, minimum=50.0, maximum=300.0
+            )
+            errors.extend(tone_errors)
+
+            tone_mode_raw = candidate_str(raw, "tone_mode", "none").lower()
+            tone_mode_aliases = {
+                "none": "none",
+                "off": "none",
+                "no": "none",
+                "": "none",
+                "tone": "tone",
+                "encode": "tone",
+                "tsql": "tsql",
+                "tone_sql": "tsql",
+                "tonesql": "tsql",
+            }
+            tone_mode = tone_mode_aliases.get(tone_mode_raw)
+            if tone_mode is None:
+                errors.append("tone_mode must be one of: none, off, tone, tsql")
+                tone_mode = tone_mode_raw or "unknown"
+
+            if tone_mode in {"tone", "tsql"} and tone_hz is None:
+                errors.append("tone_hz is required when tone_mode is tone or tsql")
+            if tone_mode == "none" and tone_hz is not None:
+                errors.append("tone_hz must be null when tone_mode is none")
+
+            normalized = {
+                "frequency_mhz": round(float(frequency_mhz or 0.0), 6),
+                "mode": mode,
+                "duplex": duplex,
+                "offset_mhz": round(float(offset_mhz or 0.0), 6),
+                "tone_hz": None if tone_hz is None else round(float(tone_hz), 1),
+                "tone_mode": tone_mode,
+            }
+
+            # Phase 8C-7 is intentionally limited to the first preferred test only.
+            if abs(float(normalized["frequency_mhz"]) - 146.520) > 0.000005:
+                errors.append("Phase 8C-7 real tune test only allows frequency_mhz 146.520")
+            if normalized["mode"] != "FM":
+                errors.append("Phase 8C-7 real tune test only allows FM")
+            if normalized["duplex"] != "simplex":
+                errors.append("Phase 8C-7 real tune test only allows simplex")
+            if abs(float(normalized["offset_mhz"])) > 0.000005:
+                errors.append("Phase 8C-7 real tune test only allows offset_mhz 0.0")
+            if normalized["tone_mode"] != "none":
+                errors.append("Phase 8C-7 real tune test only allows tone_mode none")
+            if normalized["tone_hz"] is not None:
+                errors.append("Phase 8C-7 real tune test only allows tone_hz null")
+
+            return normalized, errors
+
+        def mhz_to_icom_frequency_bcd(frequency_mhz: float) -> bytes:
+            # Icom CI-V operating frequency payload is 5 BCD bytes, least-significant pair first.
+            hz = int(round(float(frequency_mhz) * 1_000_000.0))
+            digits = f"{hz:010d}"
+            out = bytearray()
+            for idx in range(8, -1, -2):
+                lo = int(digits[idx + 1])
+                hi = int(digits[idx])
+                out.append((hi << 4) | lo)
+            return bytes(out)
+
+        def zero_offset_bcd() -> bytes:
+            # Phase 8C-7 permits offset write only for 0.0 MHz.
+            # The zero value is represented as all-zero BCD data.
+            return b"\x00\x00\x00"
+
+        def hex_bytes(data: bytes) -> str:
+            return " ".join(f"{b:02X}" for b in data)
+
+        def frame_for(payload: bytes) -> bytes:
+            to_addr = int(str(cfg.direct_civ_transceiver_address_hex), 16)
+            from_addr = int(str(cfg.direct_civ_controller_address_hex), 16)
+            return bytes([0xFE, 0xFE, to_addr, from_addr]) + bytes(payload) + b"\xFD"
+
+        def parse_frames(raw: bytes) -> list[bytes]:
+            frames: list[bytes] = []
+            start = 0
+            while True:
+                try:
+                    fe = raw.index(b"\xFE\xFE", start)
+                    fd = raw.index(b"\xFD", fe)
+                except ValueError:
+                    break
+                frames.append(raw[fe:fd + 1])
+                start = fd + 1
+            return frames
+
+        def response_status(raw: bytes) -> tuple[str, str]:
+            frames = parse_frames(raw)
+            for frame in frames:
+                if b"\xFB" in frame:
+                    return "ok", "CI-V OK response received."
+                if b"\xFA" in frame:
+                    return "ng", "CI-V NG response received."
+            if frames:
+                return "unknown", "CI-V response frame received, but no OK/NG byte was found."
+            return "unknown", "No complete CI-V response frame was parsed."
+
+        def send_control_command(ser: Any, name: str, payload: bytes) -> Dict[str, Any]:
+            import time
+
+            frame = frame_for(payload)
+            command_result: Dict[str, Any] = {
+                "name": name,
+                "payload_hex": hex_bytes(payload),
+                "frame_hex": hex_bytes(frame),
+                "response_hex": "",
+                "status": "unknown",
+                "ok": False,
+                "reason": "",
+            }
+
+            try:
+                try:
+                    ser.reset_input_buffer()
+                except Exception:
+                    pass
+                try:
+                    ser.reset_output_buffer()
+                except Exception:
+                    pass
+
+                ser.write(frame)
+                ser.flush()
+
+                deadline = time.monotonic() + float(cfg.direct_civ_timeout_seconds)
+                raw = bytearray()
+                while time.monotonic() < deadline:
+                    chunk = ser.read(1)
+                    if chunk:
+                        raw.extend(chunk)
+                        if raw.endswith(b"\xFD") and len(raw) >= 6:
+                            # Continue briefly in case the adapter echoes then returns OK.
+                            if b"\xFB" in raw or b"\xFA" in raw:
+                                break
+                    else:
+                        time.sleep(0.02)
+
+                command_result["response_hex"] = hex_bytes(bytes(raw))
+                status, reason = response_status(bytes(raw))
+                command_result["status"] = status
+                command_result["ok"] = status == "ok"
+                command_result["reason"] = reason
+                return command_result
+            except Exception as exc:
+                command_result["status"] = "error"
+                command_result["ok"] = False
+                command_result["reason"] = f"CI-V control command failed: {exc}"
+                return command_result
+
+        def summary_value(summary: Dict[str, Any], *names: str) -> Any:
+            for name in names:
+                if name in summary:
+                    return summary.get(name)
+            return None
+
+        cfg = self.config
+        result = base_result()
+
+        normalized_candidate, validation_errors = normalize_candidate(candidate if isinstance(candidate, dict) else {})
+        result["candidate"] = normalized_candidate if normalized_candidate is not None else {}
+
+        if validation_errors:
+            result.update(
+                {
+                    "status": "rejected",
+                    "ok": False,
+                    "reason": "Phase 8C-7 real tune candidate rejected before serial open: "
+                    + "; ".join(validation_errors),
+                }
+            )
+            return result
+
+        gate_failures: list[str] = []
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_side_a_readiness_probe_enabled:
+            gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
+        if not cfg.direct_civ_side_a_write_plan_enabled:
+            gate_failures.append("direct_civ_side_a_write_plan_enabled=false")
+        if not cfg.direct_civ_side_a_real_tune_test_enabled:
+            gate_failures.append("direct_civ_side_a_real_tune_test_enabled=false")
+
+        if gate_failures:
+            result.update(
+                {
+                    "status": "disabled",
+                    "ok": False,
+                    "reason": "Direct CI-V Side-A real tune test disabled by config: "
+                    + ", ".join(gate_failures),
+                }
+            )
+            return result
+
+        plan_result = self.direct_civ_side_a_write_plan(normalized_candidate)
+        result["before"] = {
+            "write_plan_status": plan_result.get("status"),
+            "write_plan_ok": plan_result.get("ok"),
+            "readback_summary": plan_result.get("readback_summary", {}),
+        }
+        result["plan"] = plan_result.get("plan", []) if isinstance(plan_result.get("plan"), list) else []
+
+        before_summary = result["before"].get("readback_summary", {})
+        readback_before_ok = bool(plan_result.get("summary", {}).get("readback_ok"))
+        if not readback_before_ok:
+            readback_before_ok = bool(
+                before_summary.get("rx_tx_status_ok")
+                and before_summary.get("frequency_ok")
+                and before_summary.get("mode_ok")
+                and before_summary.get("duplex_ok")
+                and before_summary.get("offset_ok")
+                and before_summary.get("tone_setting_ok")
+            )
+
+        rx_not_tx_before = bool(before_summary.get("rx_not_tx") is True)
+
+        result["summary"]["readback_before_ok"] = bool(readback_before_ok)
+        result["summary"]["rx_not_tx_before"] = bool(rx_not_tx_before)
+
+        if not readback_before_ok:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": "Aborted before write: readiness/write-plan readback was not fully OK.",
+                }
+            )
+            return result
+
+        if not rx_not_tx_before:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": "Aborted before write: radio RX/TX status was not confirmed RX/not-TX.",
+                }
+            )
+            return result
+
+        plan_entries = result["plan"]
+
+        def entry_required_contains(*needles: str) -> bool:
+            for entry in plan_entries:
+                if not isinstance(entry, dict):
+                    continue
+                if not bool(entry.get("required")):
+                    continue
+                text = " ".join(
+                    str(entry.get(k, ""))
+                    for k in ("name", "command", "description", "reason")
+                ).lower()
+                if all(needle.lower() in text for needle in needles):
+                    return True
+            return False
+
+        frequency_required = entry_required_contains("frequency")
+        mode_required = entry_required_contains("mode") or entry_required_contains("fm")
+        simplex_required = entry_required_contains("simplex") or entry_required_contains("duplex")
+        offset_required = entry_required_contains("offset")
+
+        any_setting_write_required = bool(
+            frequency_required or mode_required or simplex_required or offset_required
+        )
+
+        commands_to_send: list[tuple[str, bytes]] = []
+
+        if any_setting_write_required:
+            commands_to_send.append(("select_a_band_as_main", bytes([0x07, 0xD0])))
+
+        if frequency_required:
+            commands_to_send.append(
+                (
+                    "write_operating_frequency_146_520",
+                    bytes([0x05]) + mhz_to_icom_frequency_bcd(146.520),
+                )
+            )
+
+        if mode_required:
+            commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05])))
+
+        if simplex_required:
+            commands_to_send.append(("set_simplex", bytes([0x10])))
+
+        if offset_required:
+            commands_to_send.append(("write_zero_offset", bytes([0x0D]) + zero_offset_bcd()))
+
+        # Deliberately do not write 1A 00 tone-off in Phase 8C-7.
+        # Existing tone-setting interpretation is conservative, and the preferred
+        # candidate should not need a tone-frequency write.
+
+        if not commands_to_send:
+            after_readback = self.direct_civ_side_a_readiness_probe(candidate=normalized_candidate)
+            after_summary = after_readback.get("summary", {}) if isinstance(after_readback.get("summary"), dict) else {}
+            result["after"] = after_readback
+            result["summary"]["readback_after_ok"] = bool(after_readback.get("ok"))
+            result["summary"]["frequency_matches"] = abs(
+                float(summary_value(after_summary, "frequency_mhz", "operating_frequency_mhz") or 0.0) - 146.520
+            ) <= 0.000005
+            result["summary"]["mode_matches"] = str(summary_value(after_summary, "mode", "operating_mode") or "").upper() == "FM"
+            result["summary"]["duplex_matches"] = str(summary_value(after_summary, "duplex", "duplex_text") or "").lower() in {"simplex", "none"}
+            result["summary"]["offset_matches"] = abs(
+                float(summary_value(after_summary, "offset_mhz", "frequency_offset_mhz") or 0.0)
+            ) <= 0.0005
+            result["summary"]["tone_mode_matches"] = str(summary_value(after_summary, "tone_mode", "tone_setting_text") or "none").lower() in {"none", "off", "disabled", ""}
+            result.update(
+                {
+                    "status": "ok",
+                    "ok": True,
+                    "reason": "Candidate already matched current readback. No write/control commands were sent.",
+                }
+            )
+            return result
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": f"Python pyserial module is not available; no CI-V write/control command was sent: {exc}",
+                }
+            )
+            return result
+
+        serial_opened = False
+        try:
+            with serial.Serial(
+                cfg.direct_civ_serial_port,
+                cfg.direct_civ_baud,
+                timeout=float(cfg.direct_civ_timeout_seconds),
+            ) as ser:
+                serial_opened = True
+                for name, payload in commands_to_send:
+                    command_result = send_control_command(ser, name, payload)
+                    result["commands_sent"].append(command_result)
+                    if not command_result.get("ok"):
+                        result["summary"]["writes_attempted"] = True
+                        result["summary"]["write_count"] = len(result["commands_sent"])
+                        result.update(
+                            {
+                                "status": "partial",
+                                "ok": False,
+                                "reason": f"Aborted after CI-V command failure: {name}",
+                            }
+                        )
+                        break
+        except Exception as exc:
+            result["summary"]["writes_attempted"] = bool(result["commands_sent"])
+            result["summary"]["write_count"] = len(result["commands_sent"])
+            result.update(
+                {
+                    "status": "partial" if serial_opened else "aborted",
+                    "ok": False,
+                    "reason": f"Direct CI-V real tune serial/control path failed: {exc}",
+                }
+            )
+
+        result["summary"]["writes_attempted"] = bool(result["commands_sent"])
+        result["summary"]["write_count"] = len(result["commands_sent"])
+
+        after_readback = self.direct_civ_side_a_readiness_probe(candidate=normalized_candidate)
+        after_summary = after_readback.get("summary", {}) if isinstance(after_readback.get("summary"), dict) else {}
+        after_commands = after_readback.get("commands") if isinstance(after_readback.get("commands"), list) else []
+        result["after"] = after_readback
+        result["summary"]["readback_after_ok"] = bool(after_readback.get("ok"))
+
+        def parsed_after(command_name: str) -> Dict[str, Any]:
+            for command in after_commands:
+                if not isinstance(command, dict):
+                    continue
+                if command.get("name") != command_name:
+                    continue
+                parsed = command.get("parsed")
+                return parsed if isinstance(parsed, dict) else {}
+            return {}
+
+        after_frequency_parsed = parsed_after("operating_frequency")
+        try:
+            after_frequency = float(after_frequency_parsed.get("frequency_mhz"))
+        except (TypeError, ValueError):
+            after_frequency = 0.0
+        result["summary"]["frequency_matches"] = abs(after_frequency - 146.520) <= 0.000005
+
+        after_mode_parsed = parsed_after("operating_mode")
+        after_mode = str(after_mode_parsed.get("mode") or "").upper()
+        result["summary"]["mode_matches"] = after_mode == "FM"
+
+        after_duplex_parsed = parsed_after("duplex")
+        after_duplex = str(after_duplex_parsed.get("duplex") or "").lower()
+        result["summary"]["duplex_matches"] = after_duplex in {"simplex", "none"}
+
+        after_offset_parsed = parsed_after("offset")
+        try:
+            after_offset_raw = int(after_offset_parsed.get("offset_raw_bcd_integer"))
+        except (TypeError, ValueError):
+            after_offset_raw = -1
+        result["summary"]["offset_matches"] = after_offset_raw == 0
+
+        # Tone-off write is intentionally not attempted in 8C-7.
+        # The readiness probe read back raw tone-setting code 00 for this run.
+        # Treat 00 as matching the candidate's no-tone requirement for this manual test,
+        # while still not adding a tone-setting write command.
+        after_tone_parsed = parsed_after("tone_setting")
+        after_tone_code = str(after_tone_parsed.get("tone_setting_code_hex") or "").upper()
+        result["summary"]["tone_mode_matches"] = after_tone_code in {"00", ""}
+
+        final_ok = bool(
+            result["summary"]["writes_attempted"]
+            and result["summary"]["write_count"] > 0
+            and result["summary"]["readback_after_ok"]
+            and result["summary"]["frequency_matches"]
+            and result["summary"]["mode_matches"]
+            and result["summary"]["duplex_matches"]
+            and result["summary"]["offset_matches"]
+        )
+
+        if result["status"] == "partial" and not final_ok:
+            return result
+
+        result.update(
+            {
+                "status": "ok" if final_ok else "partial",
+                "ok": bool(final_ok),
+                "reason": (
+                    "Direct CI-V Side-A real tune test completed and readback matched."
+                    if final_ok
+                    else "Direct CI-V Side-A real tune test completed, but final readback did not fully match."
+                ),
+            }
+        )
+        result["summary"]["ready_for_future_automation"] = False
+        return result
+
     def direct_civ_side_a_readiness_probe(self, candidate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Phase 8C-5 direct CI-V Side-A/Main-band readiness probe.
@@ -3321,6 +3896,27 @@ def main() -> int:
         print(json.dumps(adapter.direct_civ_side_a_write_plan(candidate), indent=2, sort_keys=True))
         return 0
 
+    if "--direct-civ-side-a-real-tune-test" in sys.argv:
+        candidate_json = None
+        if "--candidate-json" in sys.argv:
+            idx = sys.argv.index("--candidate-json")
+            if idx + 1 < len(sys.argv):
+                candidate_json = sys.argv[idx + 1]
+
+        if candidate_json is None:
+            candidate = {"__candidate_json_parse_error": "--candidate-json is required"}
+        else:
+            try:
+                parsed = json.loads(candidate_json)
+                candidate = parsed if isinstance(parsed, dict) else {
+                    "__candidate_json_parse_error": "candidate JSON must be an object"
+                }
+            except Exception as exc:
+                candidate = {"__candidate_json_parse_error": str(exc)}
+
+        print(json.dumps(adapter.direct_civ_side_a_real_tune_test(candidate), indent=2, sort_keys=True))
+        return 0
+    
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))
     return 0
 

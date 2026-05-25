@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 38
+    "build": 39
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -696,6 +696,7 @@
       ],
       "direct_civ_side_a_readiness_probe_enabled": false,
       "direct_civ_side_a_write_plan_enabled": false,
+      "direct_civ_side_a_real_tune_test_enabled": false,
       "direct_civ_side_a_readiness_probe_commands": [
         "rx_tx_status",
         "operating_frequency",

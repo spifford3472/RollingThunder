@@ -861,4 +861,35 @@ python3 nodes/rt-radio/services/ic2730a_adapter.py \
   --direct-civ-side-a-write-plan \
   --candidate-json '{"frequency_mhz":146.94,"mode":"FM","duplex":"minus","offset_mhz":0.6,"tone_hz":123.0,"tone_mode":"tone"}'
 
-  
+## Phase 8C-7 — First Real Direct CI-V Side-A Tune Test
+
+Phase 8C-7 adds the first manual CLI-only real direct CI-V Side-A/Main-band tune test.
+
+This phase is not automation.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+No memory programming was added.
+
+No scan control was added.
+
+No Side B programming was added.
+
+No PTT/transmit control was added.
+
+### Manual CLI command
+
+```bash
+cd /opt/rollingthunder
+
+python3 nodes/rt-radio/services/ic2730a_adapter.py \
+  --direct-civ-side-a-real-tune-test \
+  --candidate-json '{"frequency_mhz":146.52,"mode":"FM","duplex":"simplex","offset_mhz":0.0,"tone_hz":null,"tone_mode":"none"}'
