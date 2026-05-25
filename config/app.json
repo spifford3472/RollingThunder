@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 31
+    "build": 32
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -660,7 +660,7 @@
     "ic2730a": {
       "enabled": true,
       "control_mode": "dry_run",
-      "hamlib_model": 3085,
+      "hamlib_model": 3072,
       "serial_port": "/dev/ic2730a",
       "baud": 9600,
       "timeout_seconds": 2.0,

@@ -470,6 +470,273 @@ class IC2730AAdapter:
             },
         )
 
+    def query_hamlib_api_inventory(self, *, connected_readonly: bool = False) -> Dict[str, Any]:
+        """
+        Phase 8C-1 safe Python Hamlib API inventory.
+
+        This method is inspection/proof only.
+
+        It inventories:
+        - Hamlib constants
+        - Rig method names
+        - Channel object fields
+        - caps fields
+
+        Optional connected_readonly mode opens the IC-2730A and checks method
+        presence only. It uses the existing documented read-only VFOA/Main
+        mapping exception, but does not call memory-write, frequency-write,
+        mode-write, scan, group-clear, group-switch, Side B programming, PTT,
+        transmit, or rigctl paths.
+        """
+
+        cfg = self.config
+
+        def safe_repr(value: Any) -> str:
+            try:
+                return repr(value)
+            except Exception as exc:
+                return f"<repr error: {exc}>"
+
+        def safe_getattr(obj: Any, name: str) -> Any:
+            try:
+                return getattr(obj, name)
+            except Exception as exc:
+                return f"<error reading: {exc}>"
+
+        def names_containing(obj: Any, tokens: list[str], *, lower: bool = False) -> list[str]:
+            out: list[str] = []
+            for name in sorted(dir(obj)):
+                comparable = name.lower() if lower else name.upper()
+                for token in tokens:
+                    wanted = token.lower() if lower else token.upper()
+                    if wanted in comparable:
+                        out.append(name)
+                        break
+            return out
+
+        def inventory_constants(Hamlib: Any) -> Dict[str, Any]:
+            fixed_names = [
+                "__version__",
+                "RIG_MODEL_IC2730",
+                "RIG_MODEL_IC2730A",
+                "RIG_PORT_SERIAL",
+                "RIG_VFO_A",
+                "RIG_VFO_B",
+                "RIG_VFO_MAIN",
+                "RIG_VFO_SUB",
+                "RIG_VFO_MEM",
+                "RIG_MODE_FM",
+                "RIG_MODE_FMN",
+                "RIG_DUPLEX_NONE",
+                "RIG_DUPLEX_PLUS",
+                "RIG_DUPLEX_MINUS",
+            ]
+
+            fixed: Dict[str, str] = {}
+            for name in fixed_names:
+                fixed[name] = safe_repr(safe_getattr(Hamlib, name))
+
+            tokens = ["CHAN", "MEM", "SCAN", "TONE", "DUPLEX", "RPT", "VFO", "MODE", "SPLIT"]
+            filtered: Dict[str, str] = {}
+            for name in names_containing(Hamlib, tokens):
+                filtered[name] = safe_repr(safe_getattr(Hamlib, name))
+
+            return {
+                "fixed": fixed,
+                "filtered_names": filtered,
+                "has_Channel": hasattr(Hamlib, "Channel"),
+            }
+
+        def inventory_rig_methods(Hamlib: Any, model: int) -> Dict[str, Any]:
+            rig = Hamlib.Rig(model)
+
+            method_tokens = [
+                "chan",
+                "mem",
+                "scan",
+                "vfo",
+                "mode",
+                "tone",
+                "duplex",
+                "rptr",
+                "split",
+                "freq",
+            ]
+
+            exact_names = [
+                "get_freq",
+                "set_freq",
+                "get_mode",
+                "set_mode",
+                "get_mem",
+                "set_mem",
+                "get_channel",
+                "set_channel",
+                "get_vfo",
+                "set_vfo",
+                "scan",
+                "get_split_vfo",
+                "set_split_vfo",
+                "get_split_freq",
+                "set_split_freq",
+                "get_split_mode",
+                "set_split_mode",
+                "get_rptr_shift",
+                "set_rptr_shift",
+                "get_rptr_offs",
+                "set_rptr_offs",
+                "get_ctcss_tone",
+                "set_ctcss_tone",
+                "get_ctcss_sql",
+                "set_ctcss_sql",
+                "get_dcs_code",
+                "set_dcs_code",
+            ]
+
+            return {
+                "methods_containing_tokens": names_containing(rig, method_tokens, lower=True),
+                "exact_presence": {name: hasattr(rig, name) for name in exact_names},
+            }
+
+        def inventory_channel(Hamlib: Any) -> Dict[str, Any]:
+            Channel = getattr(Hamlib, "Channel", None)
+            if Channel is None:
+                return {
+                    "available": False,
+                    "fields": {},
+                }
+
+            ch = Channel()
+            fields: Dict[str, str] = {}
+            for name in sorted(dir(ch)):
+                if name.startswith("_"):
+                    continue
+                fields[name] = safe_repr(safe_getattr(ch, name))
+
+            return {
+                "available": True,
+                "fields": fields,
+            }
+
+        def inventory_caps(Hamlib: Any, model: int) -> Dict[str, Any]:
+            rig = Hamlib.Rig(model)
+            caps = getattr(rig, "caps", None)
+
+            if caps is None:
+                return {
+                    "available": False,
+                    "fields": {},
+                }
+
+            tokens = ["chan", "mem", "scan", "vfo", "mode", "tone", "duplex", "rptr", "split"]
+            fields: Dict[str, str] = {}
+            for name in names_containing(caps, tokens, lower=True):
+                fields[name] = safe_repr(safe_getattr(caps, name))
+
+            return {
+                "available": True,
+                "fields": fields,
+            }
+
+        def connected_inventory(Hamlib: Any, model: int) -> Dict[str, Any]:
+            rig = None
+            result: Dict[str, Any] = {
+                "attempted": True,
+                "opened": False,
+                "set_vfo_a_result": None,
+                "method_presence_after_open": {},
+                "error": None,
+            }
+
+            try:
+                rig = Hamlib.Rig(model)
+                rig.state.rigport.type.rig = Hamlib.RIG_PORT_SERIAL
+                rig.state.rigport.pathname = cfg.serial_port
+                rig.state.rigport.parm.serial.rate = cfg.baud
+
+                rig.open()
+                result["opened"] = True
+
+                try:
+                    rig.set_vfo(Hamlib.RIG_VFO_A)
+                    result["set_vfo_a_result"] = "ok"
+                except Exception as exc:
+                    result["set_vfo_a_result"] = f"failed: {exc}"
+
+                for method_name in [
+                    "get_freq",
+                    "get_mode",
+                    "get_mem",
+                    "get_channel",
+                    "set_mem",
+                    "set_channel",
+                    "scan",
+                ]:
+                    result["method_presence_after_open"][method_name] = hasattr(rig, method_name)
+
+            except Exception as exc:
+                result["error"] = str(exc)
+
+            finally:
+                if rig is not None:
+                    try:
+                        rig.close()
+                    except Exception:
+                        pass
+
+            return result
+
+        try:
+            import Hamlib  # type: ignore
+        except Exception as exc:
+            return self._result(
+                ok=False,
+                status="unavailable",
+                available=False,
+                reason="Python Hamlib module is not available for Phase 8C-1 inventory.",
+                detail=str(exc),
+                extra={
+                    "action": "query_hamlib_api_inventory",
+                    "operation_performed": False,
+                },
+            )
+
+        model = int(getattr(Hamlib, "RIG_MODEL_IC2730", cfg.hamlib_model))
+
+        inventory = {
+            "action": "query_hamlib_api_inventory",
+            "phase": "8C-1",
+            "operation_performed": False,
+            "writes_performed": False,
+            "memory_write_performed": False,
+            "scan_start_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "connected_readonly_requested": bool(connected_readonly),
+            "hamlib_model_used": model,
+            "constants": inventory_constants(Hamlib),
+            "rig_methods": inventory_rig_methods(Hamlib, model),
+            "channel": inventory_channel(Hamlib),
+            "caps": inventory_caps(Hamlib, model),
+            "connected_readonly": {
+                "attempted": False,
+            },
+        }
+
+        if connected_readonly:
+            inventory["connected_readonly"] = connected_inventory(Hamlib, model)
+
+        return self._result(
+            ok=True,
+            status="inventory",
+            available=True,
+            reason="Phase 8C-1 safe Python Hamlib API inventory completed; no write/control operation was performed.",
+            extra=inventory,
+        )
+
     def write_single_memory_test(self, group: str, channel: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Validate and optionally execute one explicitly configured sacrificial
@@ -832,11 +1099,23 @@ def main() -> int:
     """
     Small manual diagnostic entrypoint.
 
-    This prints one structured JSON status object and exits. It does not publish
-    Redis and does not perform risky radio operations.
+    Default behavior prints one structured JSON status object and exits.
+
+    Optional Phase 8C-1 inventory modes:
+      --hamlib-api-inventory
+      --hamlib-api-inventory --connected-readonly
+
+    These inventory modes do not publish Redis and do not perform memory writes,
+    scan start, Side B programming, PTT/transmit, or rigctl subprocess calls.
     """
 
     adapter = IC2730AAdapter()
+
+    if "--hamlib-api-inventory" in sys.argv:
+        connected = "--connected-readonly" in sys.argv
+        print(json.dumps(adapter.query_hamlib_api_inventory(connected_readonly=connected), indent=2, sort_keys=True))
+        return 0
+
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))
     return 0
 
