@@ -699,3 +699,63 @@ Phase 8C-3 successfully proved the direct CI-V read-only baseline probe:
 ```bash
 python3 nodes/rt-radio/services/ic2730a_adapter.py --direct-civ-readonly-probe
 
+## Phase 8C-5 Direct CI-V Side-A Readiness Probe Before Any Write
+
+Phase 8C-5 adds a manual CLI-only direct CI-V Side-A/Main-band readiness probe.
+
+This phase remains read-only.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+### Files inspected
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+- local IC-2730A/IC-2730E EXMENU/CI-V reference, when present
+
+### Files changed
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+No UI files were changed.
+
+No projector files were changed.
+
+No systemd units were changed.
+
+No controller-side scan-manager behavior was changed.
+
+No Redis request processing behavior was changed.
+
+### Operator authorization context
+
+The station control operator is an FCC Amateur Extra class licensee.
+
+- Callsign: `KI5VNB`
+- Physical access to IC-2730A: yes
+- Control operator present: yes
+
+Legal/control-operator authorization is not the limiting factor for this phase.
+
+The limiting factor is technical caution and use of only documented IC-2730A/IC-2730E CI-V commands.
+
+### Prior successful baseline
+
+Phase 8C-3 successfully proved the direct CI-V read-only baseline probe:
+
+```bash
+python3 nodes/rt-radio/services/ic2730a_adapter.py --direct-civ-readonly-probe
+

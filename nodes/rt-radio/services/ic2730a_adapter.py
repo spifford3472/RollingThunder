@@ -82,12 +82,27 @@ DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS = (
 
 DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED = False
 
+DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED = False
+
 DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS = (
     "tone_setting",
     "repeater_tone_frequency",
     "tone_squelch_frequency",
     "dtcs_code_polarity",
 )
+
+DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS = (
+    "rx_tx_status",
+    "operating_frequency",
+    "operating_mode",
+    "duplex",
+    "offset",
+    "tone_setting",
+    "repeater_tone_frequency",
+    "tone_squelch_frequency",
+    "dtcs_code_polarity",
+)
+
 
 DIRECT_CIV_READONLY_TONE_COMMANDS = {
     "tone_setting": {
@@ -147,6 +162,11 @@ DIRECT_CIV_READONLY_COMMANDS = {
         "command": bytes([0x1C, 0x00]),
         "response_prefix": bytes([0x1C, 0x00]),
     },
+}
+
+DIRECT_CIV_SIDE_A_READINESS_COMMANDS = {
+    **DIRECT_CIV_READONLY_COMMANDS,
+    **DIRECT_CIV_READONLY_TONE_COMMANDS,
 }
 
 DEFAULT_WRITE_TEST = {
@@ -322,6 +342,8 @@ class IC2730AConfig:
     direct_civ_enabled: bool = DEFAULT_DIRECT_CIV_ENABLED
     direct_civ_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED
     direct_civ_tone_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED
+    direct_civ_side_a_readiness_probe_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED
+    direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
     direct_civ_controller_address_hex: str = DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX
@@ -398,6 +420,21 @@ class IC2730AConfig:
         if not tone_commands:
             tone_commands = list(DEFAULT_DIRECT_CIV_READONLY_TONE_PROBE_COMMANDS)
 
+        side_a_readiness_raw_commands = ic.get(
+            "direct_civ_side_a_readiness_probe_commands",
+            DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS,
+        )
+        side_a_readiness_commands: list[str] = []
+
+        if isinstance(side_a_readiness_raw_commands, list):
+            for item in side_a_readiness_raw_commands:
+                name = str(item or "").strip()
+                if name in DIRECT_CIV_SIDE_A_READINESS_COMMANDS and name not in side_a_readiness_commands:
+                    side_a_readiness_commands.append(name)
+
+        if not side_a_readiness_commands:
+            side_a_readiness_commands = list(DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS)
+
         return cls(
             radio_name=_safe_str(vhf.get("radio_name"), DEFAULT_RADIO_NAME),
             enabled=_safe_bool(ic.get("enabled"), True),
@@ -428,6 +465,10 @@ class IC2730AConfig:
                 ic.get("direct_civ_tone_readonly_probe_enabled"),
                 DEFAULT_DIRECT_CIV_TONE_READONLY_PROBE_ENABLED,
             ),
+            direct_civ_side_a_readiness_probe_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_readiness_probe_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_ENABLED,
+            ),            
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
                 _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
@@ -450,6 +491,7 @@ class IC2730AConfig:
             ),
             direct_civ_readonly_probe_commands=tuple(direct_commands),
             direct_civ_readonly_tone_probe_commands=tuple(tone_commands),
+            direct_civ_side_a_readiness_probe_commands=tuple(side_a_readiness_commands),
 
             write_test_enabled=bool(write_test["enabled"]),
             write_test_allow_single_memory_write=bool(write_test["allow_single_memory_write"]),
@@ -1740,6 +1782,244 @@ class IC2730AAdapter:
                 except Exception:
                     pass
 
+    def direct_civ_side_a_readiness_probe(self, candidate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Phase 8C-5 direct CI-V Side-A/Main-band readiness probe.
+
+        This manual CLI-only probe reads the current Main-band state needed for
+        a future Side-A candidate tune/check write-plan phase.
+
+        It remains read-only:
+        - no frequency write
+        - no mode write
+        - no duplex write
+        - no offset write
+        - no tone write
+        - no memory write
+        - no bank/group write
+        - no scan start
+        - no Side B programming
+        - no PTT/transmit control
+        - no Redis write
+        - no rt:ui:bus write
+        - no rt:system:bus write
+        """
+
+        cfg = self.config
+
+        safety_flags = {
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "frequency_write_performed": False,
+            "mode_write_performed": False,
+            "duplex_write_performed": False,
+            "offset_write_performed": False,
+            "tone_write_performed": False,
+            "repeater_tone_write_performed": False,
+            "tone_squelch_write_performed": False,
+            "dtcs_write_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_a_main_select_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "system_bus_written": False,
+            "serial_opened": False,
+            "civ_command_sent": False,
+        }
+
+        disabled_result = {
+            "action": "direct_civ_side_a_readiness_probe",
+            "phase": "8C-5",
+            "status": "disabled",
+            "ok": False,
+            **safety_flags,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "commands": [],
+            "candidate": candidate if isinstance(candidate, dict) else None,
+            "summary": {
+                "rx_tx_status_ok": False,
+                "rx_not_tx": False,
+                "frequency_ok": False,
+                "mode_ok": False,
+                "duplex_ok": False,
+                "offset_ok": False,
+                "tone_setting_ok": False,
+                "repeater_tone_frequency_ok": False,
+                "tone_squelch_frequency_ok": False,
+                "dtcs_code_polarity_ok": False,
+                "ready_for_future_write_phase": False,
+            },
+            "reason": "Direct CI-V Side-A readiness probe disabled by config.",
+            "updated_utc": utc_now(),
+        }
+
+        if not cfg.direct_civ_enabled or not cfg.direct_civ_side_a_readiness_probe_enabled:
+            return disabled_result
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        result: Dict[str, Any] = {
+            "action": "direct_civ_side_a_readiness_probe",
+            "phase": "8C-5",
+            "status": "starting",
+            "ok": False,
+            **safety_flags,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "controller_address_hex": f"{controller_addr:02X}",
+            "transceiver_address_hex": f"{transceiver_addr:02X}",
+            "commands": [],
+            "candidate": candidate if isinstance(candidate, dict) else None,
+            "summary": {
+                "rx_tx_status_ok": False,
+                "rx_not_tx": False,
+                "frequency_ok": False,
+                "mode_ok": False,
+                "duplex_ok": False,
+                "offset_ok": False,
+                "tone_setting_ok": False,
+                "repeater_tone_frequency_ok": False,
+                "tone_squelch_frequency_ok": False,
+                "dtcs_code_polarity_ok": False,
+                "ready_for_future_write_phase": False,
+            },
+            "reason": "",
+            "updated_utc": utc_now(),
+        }
+
+        allowed_commands = set(DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS)
+        for command_name in cfg.direct_civ_side_a_readiness_probe_commands:
+            if command_name not in allowed_commands:
+                result.update(
+                    {
+                        "status": "rejected",
+                        "ok": False,
+                        "operation_performed": False,
+                        "reason": f"Command {command_name!r} is not in the Phase 8C-5 read-only allowlist.",
+                        "updated_utc": utc_now(),
+                    }
+                )
+                return result
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "unavailable",
+                    "ok": False,
+                    "operation_performed": False,
+                    "reason": "Python pyserial module is not available; no CI-V readiness command was sent.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        port = None
+
+        try:
+            port = serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            )
+
+            result["operation_performed"] = True
+            result["serial_opened"] = True
+
+            for command_name in cfg.direct_civ_side_a_readiness_probe_commands:
+                if command_name in DIRECT_CIV_READONLY_COMMANDS:
+                    command_result = self._direct_civ_send_readonly_command(
+                        port=port,
+                        name=command_name,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        timeout_seconds=cfg.direct_civ_timeout_seconds,
+                    )
+                elif command_name in DIRECT_CIV_READONLY_TONE_COMMANDS:
+                    command_result = self._direct_civ_send_readonly_tone_command(
+                        port=port,
+                        name=command_name,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        timeout_seconds=cfg.direct_civ_timeout_seconds,
+                    )
+                else:
+                    command_result = {
+                        "name": command_name,
+                        "documented": False,
+                        "read_only": False,
+                        "sent": False,
+                        "ok": False,
+                        "raw_response_hex": "",
+                        "parsed": {},
+                        "reason": "Command name is not in the Phase 8C-5 read-only allowlist.",
+                    }
+
+                result["commands"].append(command_result)
+
+            result["civ_command_sent"] = any(bool(cmd.get("sent")) for cmd in result["commands"])
+
+            summary = self._direct_civ_side_a_readiness_summary(result["commands"])
+            result["summary"] = summary
+
+            required_ok = all(
+                [
+                    summary.get("rx_tx_status_ok"),
+                    summary.get("frequency_ok"),
+                    summary.get("mode_ok"),
+                    summary.get("duplex_ok"),
+                    summary.get("offset_ok"),
+                    summary.get("tone_setting_ok"),
+                    summary.get("repeater_tone_frequency_ok"),
+                ]
+            )
+
+            result["status"] = "ok" if required_ok else "partial"
+            result["ok"] = bool(result["commands"]) and any(bool(cmd.get("ok")) for cmd in result["commands"])
+            result["reason"] = "Direct CI-V Side-A readiness probe completed. No write/control commands were included."
+            result["updated_utc"] = utc_now()
+            return result
+
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "error",
+                    "ok": False,
+                    "reason": "Direct CI-V Side-A readiness probe failed.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        finally:
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+
     def _direct_civ_send_readonly_command(
         self,
         *,
@@ -2312,6 +2592,27 @@ class IC2730AAdapter:
             "rx_not_tx": bool(rx_tx_parsed.get("rx_not_tx") is True),
         }
 
+    @staticmethod
+    def _direct_civ_side_a_readiness_summary(commands: list[Dict[str, Any]]) -> Dict[str, Any]:
+        by_name = {str(cmd.get("name")): cmd for cmd in commands}
+
+        rx_tx = by_name.get("rx_tx_status", {})
+        rx_tx_parsed = rx_tx.get("parsed") if isinstance(rx_tx.get("parsed"), dict) else {}
+
+        return {
+            "rx_tx_status_ok": bool(by_name.get("rx_tx_status", {}).get("ok")),
+            "rx_not_tx": bool(rx_tx_parsed.get("rx_not_tx") is True),
+            "frequency_ok": bool(by_name.get("operating_frequency", {}).get("ok")),
+            "mode_ok": bool(by_name.get("operating_mode", {}).get("ok")),
+            "duplex_ok": bool(by_name.get("duplex", {}).get("ok")),
+            "offset_ok": bool(by_name.get("offset", {}).get("ok")),
+            "tone_setting_ok": bool(by_name.get("tone_setting", {}).get("ok")),
+            "repeater_tone_frequency_ok": bool(by_name.get("repeater_tone_frequency", {}).get("ok")),
+            "tone_squelch_frequency_ok": bool(by_name.get("tone_squelch_frequency", {}).get("ok")),
+            "dtcs_code_polarity_ok": bool(by_name.get("dtcs_code_polarity", {}).get("ok")),
+            "ready_for_future_write_phase": False,
+        }
+    
     def _hamlib_readonly_detect(self) -> Dict[str, Any]:
         """
         Minimal read-only Python Hamlib detect/status path.
@@ -2459,6 +2760,10 @@ def main() -> int:
 
     if "--direct-civ-readonly-tone-probe" in sys.argv:
         print(json.dumps(adapter.direct_civ_readonly_tone_probe(), indent=2, sort_keys=True))
+        return 0
+
+    if "--direct-civ-side-a-readiness-probe" in sys.argv:
+        print(json.dumps(adapter.direct_civ_side_a_readiness_probe(), indent=2, sort_keys=True))
         return 0
 
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))
