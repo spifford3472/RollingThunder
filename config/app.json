@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 23
+    "build": 25
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -628,14 +628,22 @@
     "10m": 28.4
   },
   "vhf": {
-    "repeater_radius_miles": 25,
-    "repeater_db_path": "/opt/rollingthunder/data/vhf/repeaters.sqlite3",
-    "repeater_bucket_degrees": 0.25,
-    "repeater_lookup_interval_sec": 30,
-    "radio_name": "Icom IC-2730A",
-    "radio_monitor_enabled": true,
     "radio_control_mode": "stub",
+    "radio_force_publish_sec": 300,
+    "radio_monitor_enabled": true,
     "radio_monitor_interval_sec": 30,
-    "radio_force_publish_sec": 300
+    "radio_name": "Icom IC-2730A",
+    "repeater_bucket_degrees": 0.25,
+    "repeater_db_path": "/opt/rollingthunder/data/vhf/repeaters.sqlite3",
+    "repeater_lookup_interval_sec": 30,
+    "repeater_radius_miles": 25,
+    "side_b": {
+      "enabled": true,
+      "default_frequency_mhz": 146.52,
+      "default_mode": "FM",
+      "label": "2m Calling",
+      "receive_only": false,
+      "publish_interval_seconds": 30
+    }
   }
 }
