@@ -16,6 +16,8 @@ import { renderRfSolarSummary } from "./renderers/rf_solar_summary.js";
 import { renderRfBandRecommendations } from "./renderers/rf_band_recommendations.js";
 import { renderRfDxMapSummary } from "./renderers/rf_dx_map_summary.js";
 import { renderRfAdvisorSummary } from "./renderers/rf_advisor_summary.js";
+import { renderVhfRepeaterScanSummary } from "./renderers/vhf_repeater_scan_summary.js";
+import { renderVhfSideBSummary } from "./renderers/vhf_side_b_summary.js";
 
 /**
  * createRendererRegistry()
@@ -109,6 +111,15 @@ export function createRendererRegistry() {
 
   map.set("rf_advisor_summary", (container, panel, data) =>
     renderRfAdvisorSummary(container, panel, data)
+  );
+
+  // VHF/UHF Panels
+  map.set("vhf_repeater_scan_summary", (container, panel, data) =>
+    renderVhfRepeaterScanSummary(container, panel, data)
+  );
+
+  map.set("vhf_side_b_summary", (container, panel, data) =>
+    renderVhfSideBSummary(container, panel, data)
   );
 
   return map;

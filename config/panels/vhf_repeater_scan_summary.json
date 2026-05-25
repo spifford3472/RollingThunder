@@ -1,0 +1,34 @@
+{
+  "id": "vhf_repeater_scan_summary",
+  "type": "vhf_repeater_scan_summary",
+
+  "interaction": {
+    "browsable": false
+  },
+
+  "focusable": true,
+
+  "refresh": {
+    "mode": "push",
+    "topic": "state.changed",
+    "fallbackPollMs": 5000
+  },
+
+  "bindings": [
+    { "id": "radio", "source": "state", "key": "rt:vhf:radio" },
+    { "id": "nearby", "source": "state", "key": "rt:vhf:repeaters:nearby" },
+    { "id": "scan", "source": "state", "key": "rt:vhf:scan" },
+    { "id": "active_memory", "source": "state", "key": "rt:vhf:repeaters:active_memory" }
+  ],
+
+  "actions": [],
+
+  "meta": {
+    "purpose": "Passive display of VHF repeater/search-memory status. No radio programming, no scan control, no SQLite reads, no distance calculation.",
+    "title": "Repeater Scan / Search Memory",
+    "contract": {
+      "requiredBindings": [],
+      "allowNull": ["radio", "nearby", "scan", "active_memory"]
+    }
+  }
+}

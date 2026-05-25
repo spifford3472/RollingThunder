@@ -1,0 +1,44 @@
+{
+  "id": "vhf",
+  "order": 40,
+  "title": "VHF/UHF",
+
+  "layout": {
+    "top": ["topbar_core"],
+    "middle": [
+      ["vhf_repeater_scan_summary"],
+      ["vhf_side_b_summary"]
+    ],
+    "bottom": ["alerts_overlay"]
+  },
+
+  "requires": ["redis_state", "mqtt_bus"],
+  "optional": ["logging", "node_health", "gps_ingest"],
+
+  "controls": {
+    "allowedIntents": [
+      "ui.page.next",
+      "ui.page.prev",
+      "ui.focus.next",
+      "ui.focus.prev",
+      "ui.ok",
+      "ui.cancel",
+      "ui.back",
+      "ui.browse.delta",
+      "alert.ack",
+      "alert.silence"
+    ]
+  },
+
+  "focusPolicy": {
+    "defaultPanel": "vhf_repeater_scan_summary",
+    "rotation": [
+      "vhf_repeater_scan_summary",
+      "alerts_overlay"
+    ]
+  },
+
+  "meta": {
+    "purpose": "Passive VHF/UHF page skeleton. Displays projected VHF radio, nearby repeater, scan placeholder, active memory placeholder, and Side B placeholder models only."
+  }
+}

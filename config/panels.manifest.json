@@ -13,5 +13,7 @@
 "rf_solar_summary.json",
 "rf_band_recommendations.json",
 "rf_dx_map_summary.json",
-"rf_advisor_summary.json"
+"rf_advisor_summary.json",
+"vhf_repeater_scan_summary.json",
+"vhf_side_b_summary.json"
 ] }
