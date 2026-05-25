@@ -406,13 +406,7 @@ def process_request_if_needed(
     config = IC2730AConfig.from_app_config(app)
     adapter = IC2730AAdapter(config)
 
-    if action != "write_single_memory_test":
-        result = rejected_request_result(
-            request_id,
-            action or "unknown",
-            f"Unknown or unsupported adapter request action: {action or 'missing'}",
-        )
-    else:
+    if action == "write_single_memory_test":
         result = adapter.write_single_memory_test(
             str(request.get("target_group") or ""),
             intish(request.get("target_channel"), -1, -1),
@@ -422,6 +416,23 @@ def process_request_if_needed(
         result["action"] = action
         result["source"] = SOURCE
         result["updated_utc"] = utc_now_iso()
+
+    elif action == "side_a_tune_candidate_test":
+        result = adapter.side_a_tune_candidate_test(
+            request.get("candidate") if isinstance(request.get("candidate"), dict) else {},
+            dry_run=boolish(request.get("dry_run"), True),
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    else:
+        result = rejected_request_result(
+            request_id,
+            action or "unknown",
+            f"Unknown or unsupported adapter request action: {action or 'missing'}",
+        )
 
     adapter_model = normalize_adapter_status(adapter.get_status())
     publish_request_result(client, adapter_model, result, "adapter_request_processed")

@@ -662,4 +662,40 @@ cd /opt/rollingthunder
 python3 nodes/rt-radio/services/ic2730a_adapter.py \
   --direct-civ-readonly-tone-probe
 
-  
+## Phase 8C-4 Direct CI-V Side-A Dry-Run Request Contract
+
+Phase 8C-4 adds a Redis request/result contract for a future IC-2730A Side-A/Main-band candidate tune/check action.
+
+This phase is dry-run only. It does not send any command to the radio.
+
+### Files inspected
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+### Files changed
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+### Operator authorization context
+
+The station control operator is an FCC Amateur Extra class licensee.
+
+- Callsign: KI5VNB
+- Physical access to IC-2730A: yes
+- Control operator present: yes
+
+Legal/control-operator authorization is not the limiting factor for this phase. The limiting factor is technical caution and use of only documented IC-2730A/IC-2730E CI-V behavior.
+
+### Prior successful baseline
+
+Phase 8C-3 successfully proved the direct CI-V read-only baseline probe:
+
+```bash
+python3 nodes/rt-radio/services/ic2730a_adapter.py --direct-civ-readonly-probe
+

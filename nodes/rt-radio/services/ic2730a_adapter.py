@@ -1056,6 +1056,239 @@ class IC2730AAdapter:
                 "hamlib_write_api_verified": False,
             },
         )
+    
+    def side_a_tune_candidate_test(self, candidate: Dict[str, Any], dry_run: bool = True) -> Dict[str, Any]:
+        """
+        Phase 8C-4 Side-A/Main-band candidate tune/check request contract.
+
+        This is a dry-run contract only.
+
+        It validates and echoes a candidate payload for a future direct CI-V
+        Side-A/Main-band tune/check action, but it intentionally does not:
+
+        - open serial
+        - import Hamlib
+        - call rigctl
+        - send any CI-V command
+        - select A band as Main
+        - write frequency
+        - write mode
+        - write duplex
+        - write offset
+        - write tone
+        - write memory
+        - write bank/group
+        - start scan
+        - program Side B
+        - add PTT/transmit control
+        - publish Redis
+        - write rt:ui:bus
+        - write rt:system:bus
+        """
+
+        raw = candidate if isinstance(candidate, dict) else {}
+        errors: list[str] = []
+
+        def candidate_float(name: str, *, required: bool, minimum: Optional[float] = None, maximum: Optional[float] = None) -> Optional[float]:
+            value = raw.get(name)
+
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if required:
+                    errors.append(f"{name} is required")
+                return None
+
+            try:
+                parsed = float(value)
+            except Exception:
+                errors.append(f"{name} must be numeric")
+                return None
+
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+
+            return parsed
+
+        def candidate_str(name: str, default: str = "") -> str:
+            value = raw.get(name)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        frequency_mhz = candidate_float("frequency_mhz", required=True, minimum=118.0, maximum=550.0)
+
+        mode = candidate_str("mode", "FM").upper()
+        if mode != "FM":
+            errors.append("mode must be FM")
+
+        duplex_raw = candidate_str("duplex", "simplex").lower()
+        duplex_aliases = {
+            "simplex": "simplex",
+            "none": "none",
+            "plus": "plus",
+            "+": "plus",
+            "dup+": "dup+",
+            "minus": "minus",
+            "-": "minus",
+            "dup-": "dup-",
+        }
+
+        duplex = duplex_aliases.get(duplex_raw)
+        if duplex is None:
+            errors.append("duplex must be one of: simplex, plus, minus, dup+, dup-, none")
+            duplex = duplex_raw or "unknown"
+
+        offset_mhz = candidate_float("offset_mhz", required=False, minimum=0.0)
+        if offset_mhz is None:
+            offset_mhz = 0.0
+
+        tone_hz = candidate_float("tone_hz", required=False, minimum=50.0, maximum=300.0)
+
+        tone_mode_raw = candidate_str("tone_mode", "none").lower()
+        tone_mode_aliases = {
+            "": "none",
+            "none": "none",
+            "off": "none",
+            "tone": "tone",
+            "ctcss": "tone",
+            "tsql": "tsql",
+            "tone_sql": "tsql",
+            "tone_squelch": "tsql",
+            "dtcs": "dtcs",
+            "dcs": "dtcs",
+        }
+        tone_mode = tone_mode_aliases.get(tone_mode_raw, tone_mode_raw)
+
+        normalized_candidate = {
+            "frequency_mhz": round(float(frequency_mhz), 6) if frequency_mhz is not None else None,
+            "mode": mode,
+            "duplex": duplex,
+            "offset_mhz": round(float(offset_mhz), 6),
+            "tone_hz": round(float(tone_hz), 1) if tone_hz is not None else None,
+            "tone_mode": tone_mode,
+        }
+
+        planned_direct_civ_sequence = [
+            {
+                "name": "read_rx_tx_status",
+                "documented_command_code": "1C 00",
+                "approved_for_future_write_phase": True,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "read_operating_frequency",
+                "documented_command_code": "03",
+                "approved_for_future_write_phase": True,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_select_a_band_as_main",
+                "documented_command_code": "07 D0",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_write_frequency",
+                "documented_command_code": "05",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_select_fm_mode",
+                "documented_command_code": "06 05",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_write_duplex",
+                "documented_command_code": "10/11/12",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_write_offset",
+                "documented_command_code": "0D",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_write_repeater_tone_frequency",
+                "documented_command_code": "1B 00",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+            {
+                "name": "future_write_tone_setting",
+                "documented_command_code": "1A 00",
+                "approved_for_future_write_phase": False,
+                "phase_8c4_sent": False,
+            },
+        ]
+
+        safety_flags = {
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "frequency_write_performed": False,
+            "mode_write_performed": False,
+            "duplex_write_performed": False,
+            "offset_write_performed": False,
+            "tone_write_performed": False,
+            "repeater_tone_write_performed": False,
+            "tone_squelch_write_performed": False,
+            "dtcs_write_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_a_main_select_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "serial_opened": False,
+            "civ_command_sent": False,
+            "redis_written_by_adapter": False,
+            "ui_bus_written": False,
+            "system_bus_written_by_adapter": False,
+        }
+
+        common = {
+            "action": "side_a_tune_candidate_test",
+            "phase": "8C-4",
+            **safety_flags,
+            "candidate": normalized_candidate,
+            "planned_direct_civ_sequence": planned_direct_civ_sequence,
+            "dry_run_requested": bool(dry_run),
+        }
+
+        if errors:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason="Phase 8C-4 dry-run request contract rejected: " + "; ".join(errors),
+                extra={
+                    **common,
+                    "validation_errors": errors,
+                },
+            )
+
+        if not dry_run:
+            return self._result(
+                ok=False,
+                status="not_implemented",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason="Phase 8C-4 does not allow real Side-A tune/check writes; no radio command was sent.",
+                extra=common,
+            )
+
+        return self._result(
+            ok=True,
+            status="dry_run",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason="Phase 8C-4 dry-run request contract accepted; no radio command was sent.",
+            extra=common,
+        )    
 
     def set_side_b_146520_fm(self) -> Dict[str, Any]:
         return self._stubbed_risky_operation(
