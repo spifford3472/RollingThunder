@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 32
+    "build": 34
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -671,7 +671,22 @@
       "detect_enabled": true,
       "publish_adapter_status": true,
       "publish_interval_seconds": 30,
-      "force_publish_seconds": 300
+      "force_publish_seconds": 300,
+      "direct_civ_enabled": true,
+      "direct_civ_readonly_probe_enabled": true,
+      "direct_civ_serial_port": "/dev/ic2730a",
+      "direct_civ_baud": 9600,
+      "direct_civ_controller_address_hex": "E0",
+      "direct_civ_transceiver_address_hex": "90",
+      "direct_civ_timeout_seconds": 2.0,
+      "direct_civ_readonly_probe_commands": [
+        "transceiver_id",
+        "operating_frequency",
+        "operating_mode",
+        "duplex",
+        "offset",
+        "rx_tx_status"
+      ]
     },
     "request_poll_seconds": 1,
     "write_test": {

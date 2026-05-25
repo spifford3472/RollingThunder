@@ -536,3 +536,78 @@ The old near-term request action:
 
 ```text
 write_single_memory_test
+
+## Phase 8C-3 — Direct CI-V Read-Only Probe
+
+Phase 8C-3 adds a cautious manual direct CI-V read-only probe for the IC-2730A/IC-2730E.
+
+This phase is proof-only. It proves:
+
+- direct CI-V framing
+- serial open/close behavior
+- command response parsing
+- safety readbacks before any future tuning/write/control command is considered
+
+### Files inspected
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `nodes/rt-radio/services/vhf_ic2730a_adapter_status.py`
+- `nodes/rt-controller/services/vhf_repeater_scan_manager.py`
+- `config/app.json`
+- `docs/VHF_IC2730A_ADAPTER.md`
+- local IC-2730A/IC-2730E EXMENU/CI-V reference, when present
+
+### Files changed
+
+- `nodes/rt-radio/services/ic2730a_adapter.py`
+- `docs/VHF_IC2730A_ADAPTER.md`
+
+No UI files were changed.
+
+No projector files were changed.
+
+No systemd units were changed.
+
+No controller-side planner or scan-manager behavior was changed.
+
+No Redis request processing behavior was changed.
+
+### Operator authorization context
+
+The control operator has stated:
+
+- FCC Amateur Extra license
+- callsign `KI5VNB`
+- physical access to the IC-2730A radio
+- control operator present for station operation
+
+Legal/control-operator authorization is not the limiting issue.
+
+The limiting issue is technical caution and use of only documented IC-2730A/IC-2730E CI-V commands.
+
+### Config gates
+
+The direct CI-V probe is disabled unless both gates are true:
+
+```json
+{
+  "vhf": {
+    "ic2730a": {
+      "direct_civ_enabled": false,
+      "direct_civ_readonly_probe_enabled": false,
+      "direct_civ_serial_port": "/dev/ic2730a",
+      "direct_civ_baud": 9600,
+      "direct_civ_controller_address_hex": "E0",
+      "direct_civ_transceiver_address_hex": "90",
+      "direct_civ_timeout_seconds": 2.0,
+      "direct_civ_readonly_probe_commands": [
+        "transceiver_id",
+        "operating_frequency",
+        "operating_mode",
+        "duplex",
+        "offset",
+        "rx_tx_status"
+      ]
+    }
+  }
+}

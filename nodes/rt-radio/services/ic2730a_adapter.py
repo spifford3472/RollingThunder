@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,55 @@ DEFAULT_TIMEOUT_SECONDS = 2.0
 
 SUPPORTED_CONTROL_MODES = {"disabled", "dry_run", "hamlib_readonly", "hamlib_write_test"}
 
+DEFAULT_DIRECT_CIV_ENABLED = False
+DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED = False
+DEFAULT_DIRECT_CIV_SERIAL_PORT = DEFAULT_SERIAL_PORT
+DEFAULT_DIRECT_CIV_BAUD = DEFAULT_BAUD
+DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX = "E0"
+DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX = "90"
+DEFAULT_DIRECT_CIV_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_SECONDS
+
+DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS = (
+    "transceiver_id",
+    "operating_frequency",
+    "operating_mode",
+    "duplex",
+    "offset",
+    "rx_tx_status",
+)
+
+DIRECT_CIV_READONLY_COMMANDS = {
+    "transceiver_id": {
+        "documented_command_code": "19 00",
+        "command": bytes([0x19, 0x00]),
+        "response_prefix": bytes([0x19, 0x00]),
+    },
+    "operating_frequency": {
+        "documented_command_code": "03",
+        "command": bytes([0x03]),
+        "response_prefix": bytes([0x03]),
+    },
+    "operating_mode": {
+        "documented_command_code": "04",
+        "command": bytes([0x04]),
+        "response_prefix": bytes([0x04]),
+    },
+    "duplex": {
+        "documented_command_code": "0F",
+        "command": bytes([0x0F]),
+        "response_prefix": bytes([0x0F]),
+    },
+    "offset": {
+        "documented_command_code": "0C",
+        "command": bytes([0x0C]),
+        "response_prefix": bytes([0x0C]),
+    },
+    "rx_tx_status": {
+        "documented_command_code": "1C 00",
+        "command": bytes([0x1C, 0x00]),
+        "response_prefix": bytes([0x1C, 0x00]),
+    },
+}
 
 DEFAULT_WRITE_TEST = {
     "enabled": False,
@@ -80,6 +130,21 @@ DEFAULT_WRITE_TEST = {
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+def _safe_hex_byte(value: Any, default: str) -> int:
+    text = str(value if value is not None else default).strip()
+    if text.lower().startswith("0x"):
+        text = text[2:]
+    if text.lower().endswith("h"):
+        text = text[:-1]
+
+    try:
+        parsed = int(text, 16)
+        if 0 <= parsed <= 255:
+            return parsed
+    except Exception:
+        pass
+
+    return int(str(default).replace("0x", "").replace("h", ""), 16)
 
 def _safe_str(value: Any, default: str) -> str:
     if value is None:
@@ -218,6 +283,14 @@ class IC2730AConfig:
     memory_programming_enabled: bool = False
     detect_enabled: bool = True
 
+    direct_civ_enabled: bool = DEFAULT_DIRECT_CIV_ENABLED
+    direct_civ_readonly_probe_enabled: bool = DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED
+    direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
+    direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
+    direct_civ_controller_address_hex: str = DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX
+    direct_civ_transceiver_address_hex: str = DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX
+    direct_civ_timeout_seconds: float = DEFAULT_DIRECT_CIV_TIMEOUT_SECONDS
+    direct_civ_readonly_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS
     write_test_enabled: bool = False
     write_test_allow_single_memory_write: bool = False
     write_test_sacrificial_group: str = "D"
@@ -256,6 +329,21 @@ class IC2730AConfig:
             }
         )
 
+        direct_raw_commands = ic.get(
+            "direct_civ_readonly_probe_commands",
+            DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS,
+        )
+        direct_commands: list[str] = []
+
+        if isinstance(direct_raw_commands, list):
+            for item in direct_raw_commands:
+                name = str(item or "").strip()
+                if name in DIRECT_CIV_READONLY_COMMANDS and name not in direct_commands:
+                    direct_commands.append(name)
+
+        if not direct_commands:
+            direct_commands = list(DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS)
+
         return cls(
             radio_name=_safe_str(vhf.get("radio_name"), DEFAULT_RADIO_NAME),
             enabled=_safe_bool(ic.get("enabled"), True),
@@ -273,6 +361,34 @@ class IC2730AConfig:
             side_b_programming_enabled=_safe_bool(ic.get("side_b_programming_enabled"), False),
             memory_programming_enabled=_safe_bool(ic.get("memory_programming_enabled"), False),
             detect_enabled=_safe_bool(ic.get("detect_enabled"), True),
+
+            direct_civ_enabled=_safe_bool(ic.get("direct_civ_enabled"), DEFAULT_DIRECT_CIV_ENABLED),
+            direct_civ_readonly_probe_enabled=_safe_bool(
+                ic.get("direct_civ_readonly_probe_enabled"),
+                DEFAULT_DIRECT_CIV_READONLY_PROBE_ENABLED,
+            ),
+            direct_civ_serial_port=_safe_str(
+                ic.get("direct_civ_serial_port"),
+                _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
+            ),
+            direct_civ_baud=_safe_int(
+                ic.get("direct_civ_baud"),
+                _safe_int(ic.get("baud"), DEFAULT_DIRECT_CIV_BAUD, minimum=1),
+                minimum=1,
+            ),
+            direct_civ_controller_address_hex=str(
+                ic.get("direct_civ_controller_address_hex", DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX)
+            ).strip(),
+            direct_civ_transceiver_address_hex=str(
+                ic.get("direct_civ_transceiver_address_hex", DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX)
+            ).strip(),
+            direct_civ_timeout_seconds=_safe_float(
+                ic.get("direct_civ_timeout_seconds"),
+                _safe_float(ic.get("timeout_seconds"), DEFAULT_DIRECT_CIV_TIMEOUT_SECONDS, minimum=0.1),
+                minimum=0.1,
+            ),
+            direct_civ_readonly_probe_commands=tuple(direct_commands),
+
             write_test_enabled=bool(write_test["enabled"]),
             write_test_allow_single_memory_write=bool(write_test["allow_single_memory_write"]),
             write_test_sacrificial_group=str(write_test["sacrificial_group"]),
@@ -975,6 +1091,461 @@ class IC2730AAdapter:
             },
         )
 
+    def direct_civ_readonly_probe(self) -> Dict[str, Any]:
+        """
+        Phase 8C-3 direct CI-V read-only probe.
+
+        This manual CLI-only probe:
+        - requires explicit config gates
+        - opens the configured serial port only after gates pass
+        - sends only documented IC-2730A/IC-2730E read-only commands
+        - does not publish Redis
+        - does not write rt:ui:bus
+        - does not write rt:system:bus
+        - does not use Hamlib or rigctl
+        - does not write frequency, mode, duplex, offset, tone, memory, bank/group, scan, Side B, PTT, or transmit
+        """
+
+        cfg = self.config
+
+        disabled_result = {
+            "action": "direct_civ_readonly_probe",
+            "phase": "8C-3",
+            "status": "disabled",
+            "ok": False,
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "commands": [],
+            "summary": {
+                "transceiver_id_ok": False,
+                "frequency_ok": False,
+                "mode_ok": False,
+                "duplex_ok": False,
+                "offset_ok": False,
+                "rx_tx_status_ok": False,
+                "rx_not_tx": False,
+            },
+            "reason": "Direct CI-V read-only probe disabled by config.",
+            "updated_utc": utc_now(),
+        }
+
+        if not cfg.direct_civ_enabled or not cfg.direct_civ_readonly_probe_enabled:
+            return disabled_result
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        result: Dict[str, Any] = {
+            "action": "direct_civ_readonly_probe",
+            "phase": "8C-3",
+            "status": "starting",
+            "ok": False,
+            "operation_performed": False,
+            "read_only": True,
+            "writes_performed": False,
+            "memory_write_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "redis_written": False,
+            "ui_bus_written": False,
+            "radio": cfg.radio_name,
+            "control_path": "direct_civ",
+            "serial_port": cfg.direct_civ_serial_port,
+            "baud": cfg.direct_civ_baud,
+            "controller_address_hex": f"{controller_addr:02X}",
+            "transceiver_address_hex": f"{transceiver_addr:02X}",
+            "commands": [],
+            "summary": {
+                "transceiver_id_ok": False,
+                "frequency_ok": False,
+                "mode_ok": False,
+                "duplex_ok": False,
+                "offset_ok": False,
+                "rx_tx_status_ok": False,
+                "rx_not_tx": False,
+            },
+            "reason": "",
+            "updated_utc": utc_now(),
+        }
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "unavailable",
+                    "ok": False,
+                    "operation_performed": False,
+                    "reason": "Python pyserial module is not available; no CI-V command was sent.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        port = None
+
+        try:
+            port = serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            )
+
+            result["operation_performed"] = True
+
+            for command_name in cfg.direct_civ_readonly_probe_commands:
+                command_result = self._direct_civ_send_readonly_command(
+                    port=port,
+                    name=command_name,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+                result["commands"].append(command_result)
+
+            summary = self._direct_civ_probe_summary(result["commands"])
+            result["summary"] = summary
+            result["status"] = "ok" if all(
+                [
+                    summary.get("transceiver_id_ok"),
+                    summary.get("frequency_ok"),
+                    summary.get("mode_ok"),
+                    summary.get("duplex_ok"),
+                    summary.get("offset_ok"),
+                    summary.get("rx_tx_status_ok"),
+                ]
+            ) else "partial"
+
+            result["ok"] = bool(result["commands"]) and any(bool(cmd.get("ok")) for cmd in result["commands"])
+            result["reason"] = (
+                "Direct CI-V read-only probe completed. No write/control commands were included."
+            )
+            result["updated_utc"] = utc_now()
+            return result
+
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "error",
+                    "ok": False,
+                    "reason": "Direct CI-V read-only probe failed.",
+                    "detail": str(exc),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        finally:
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+
+    def _direct_civ_send_readonly_command(
+        self,
+        *,
+        port: Any,
+        name: str,
+        controller_addr: int,
+        transceiver_addr: int,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        spec = DIRECT_CIV_READONLY_COMMANDS.get(name)
+
+        if not spec:
+            return {
+                "name": name,
+                "documented": False,
+                "read_only": False,
+                "sent": False,
+                "ok": False,
+                "raw_response_hex": "",
+                "parsed": {},
+                "reason": "Command name is not in the Phase 8C-3 read-only command table.",
+            }
+
+        command = spec["command"]
+        frame = bytes([0xFE, 0xFE, transceiver_addr, controller_addr]) + command + bytes([0xFD])
+
+        command_result: Dict[str, Any] = {
+            "name": name,
+            "documented": True,
+            "read_only": True,
+            "documented_command_code": str(spec["documented_command_code"]),
+            "sent": False,
+            "ok": False,
+            "raw_response_hex": "",
+            "parsed": {},
+            "reason": "",
+        }
+
+        try:
+            try:
+                port.reset_input_buffer()
+            except Exception:
+                pass
+
+            port.write(frame)
+            port.flush()
+            command_result["sent"] = True
+
+            raw = self._direct_civ_read_raw(port=port, timeout_seconds=timeout_seconds)
+            command_result["raw_response_hex"] = raw.hex(" ").upper()
+
+            frames = self._direct_civ_split_frames(raw)
+            response_payload = self._direct_civ_find_response_payload(
+                frames=frames,
+                controller_addr=controller_addr,
+                transceiver_addr=transceiver_addr,
+                expected_prefix=spec["response_prefix"],
+            )
+
+            if response_payload is None:
+                command_result["reason"] = "No matching CI-V response frame was parsed."
+                return command_result
+
+            parsed = self._direct_civ_parse_payload(name, response_payload)
+            command_result["parsed"] = parsed
+            command_result["ok"] = bool(parsed.get("ok"))
+            command_result["reason"] = parsed.get("reason", "CI-V read-only response parsed.")
+            return command_result
+
+        except Exception as exc:
+            command_result["reason"] = f"CI-V read-only command failed: {exc}"
+            return command_result
+
+    @staticmethod
+    def _direct_civ_read_raw(*, port: Any, timeout_seconds: float) -> bytes:
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        chunks: list[bytes] = []
+
+        while time.monotonic() < deadline:
+            chunk = port.read(256)
+            if chunk:
+                chunks.append(chunk)
+                if b"\xFD" in chunk:
+                    # A read command normally returns one frame. Keep this short and conservative.
+                    break
+
+        return b"".join(chunks)
+
+    @staticmethod
+    def _direct_civ_split_frames(raw: bytes) -> list[bytes]:
+        frames: list[bytes] = []
+        idx = 0
+
+        while idx < len(raw):
+            start = raw.find(b"\xFE\xFE", idx)
+            if start < 0:
+                break
+
+            end = raw.find(b"\xFD", start + 2)
+            if end < 0:
+                break
+
+            frames.append(raw[start : end + 1])
+            idx = end + 1
+
+        return frames
+
+    @staticmethod
+    def _direct_civ_find_response_payload(
+        *,
+        frames: list[bytes],
+        controller_addr: int,
+        transceiver_addr: int,
+        expected_prefix: bytes,
+    ) -> Optional[bytes]:
+        for frame in frames:
+            if len(frame) < 6:
+                continue
+
+            if frame[0] != 0xFE or frame[1] != 0xFE or frame[-1] != 0xFD:
+                continue
+
+            dest = frame[2]
+            src = frame[3]
+            payload = frame[4:-1]
+
+            # Ignore echoed request frames.
+            if dest == transceiver_addr and src == controller_addr:
+                continue
+
+            if dest != controller_addr or src != transceiver_addr:
+                continue
+
+            if payload.startswith(expected_prefix):
+                return payload
+
+        return None
+
+    @staticmethod
+    def _direct_civ_parse_payload(name: str, payload: bytes) -> Dict[str, Any]:
+        if name == "transceiver_id":
+            data = payload[2:]
+            return {
+                "ok": bool(data),
+                "transceiver_id_hex": data.hex(" ").upper(),
+                "reason": "Transceiver ID read response parsed." if data else "Transceiver ID response had no data.",
+            }
+
+        if name == "operating_frequency":
+            data = payload[1:]
+            parsed_hz = IC2730AAdapter._direct_civ_parse_bcd_little_endian(data)
+            parsed_mhz = round(parsed_hz / 1_000_000.0, 6) if parsed_hz is not None else None
+            return {
+                "ok": parsed_hz is not None,
+                "frequency_hz": parsed_hz,
+                "frequency_mhz": parsed_mhz,
+                "raw_bcd_hex": data.hex(" ").upper(),
+                "reason": "Operating frequency read response parsed." if parsed_hz is not None else "Operating frequency could not be parsed.",
+            }
+
+        if name == "operating_mode":
+            data = payload[1:]
+            mode_code = data[0] if data else None
+            mode_map = {
+                0x00: "LSB",
+                0x01: "USB",
+                0x02: "AM",
+                0x03: "CW",
+                0x04: "RTTY",
+                0x05: "FM",
+                0x07: "CW-R",
+                0x08: "RTTY-R",
+                0x17: "DV",
+            }
+            return {
+                "ok": mode_code is not None,
+                "mode_code_hex": f"{mode_code:02X}" if mode_code is not None else None,
+                "mode": mode_map.get(mode_code, "unknown") if mode_code is not None else None,
+                "raw_mode_data_hex": data.hex(" ").upper(),
+                "reason": "Operating mode read response parsed." if mode_code is not None else "Operating mode response had no data.",
+            }
+
+        if name == "duplex":
+            data = payload[1:]
+            code = data[0] if data else None
+            duplex_map = {
+                0x10: "simplex",
+                0x11: "dup-",
+                0x12: "dup+",
+            }
+            return {
+                "ok": code is not None,
+                "duplex_code_hex": f"{code:02X}" if code is not None else None,
+                "duplex": duplex_map.get(code, "unknown") if code is not None else None,
+                "raw_duplex_data_hex": data.hex(" ").upper(),
+                "reason": "Duplex setting read response parsed." if code is not None else "Duplex response had no data.",
+            }
+
+        if name == "offset":
+            data = payload[1:]
+            parsed = IC2730AAdapter._direct_civ_parse_bcd_little_endian(data)
+            return {
+                "ok": parsed is not None,
+                "offset_raw_bcd_integer": parsed,
+                "raw_offset_data_hex": data.hex(" ").upper(),
+                "reason": (
+                    "Frequency offset read response parsed as raw BCD integer; unit interpretation remains conservative."
+                    if parsed is not None
+                    else "Frequency offset could not be parsed."
+                ),
+            }
+
+        if name == "rx_tx_status":
+            data = payload[2:]
+            code = data[0] if data else None
+
+            # Conservative interpretation for Icom RX/TX status readback.
+            # If this cannot be parsed as RX/not-TX, future write/control phases must not proceed.
+            rx_not_tx = True if code == 0x00 else False if code == 0x01 else None
+            status = "rx" if code == 0x00 else "tx" if code == 0x01 else "unknown"
+
+            return {
+                "ok": code is not None,
+                "rx_tx_status_code_hex": f"{code:02X}" if code is not None else None,
+                "rx_tx_status": status,
+                "rx_not_tx": rx_not_tx,
+                "raw_rx_tx_status_data_hex": data.hex(" ").upper(),
+                "reason": (
+                    "RX/TX status parsed as RX/not-TX."
+                    if rx_not_tx is True
+                    else "RX/TX status parsed as TX; do not proceed to future write/control commands."
+                    if rx_not_tx is False
+                    else "RX/TX status could not be safely interpreted."
+                ),
+            }
+
+        return {
+            "ok": False,
+            "reason": f"No parser implemented for read-only command {name}.",
+        }
+
+    @staticmethod
+    def _direct_civ_parse_bcd_little_endian(data: bytes) -> Optional[int]:
+        if not data:
+            return None
+
+        value = 0
+        multiplier = 1
+
+        for byte in data:
+            low = byte & 0x0F
+            high = (byte >> 4) & 0x0F
+
+            if low > 9 or high > 9:
+                return None
+
+            value += low * multiplier
+            multiplier *= 10
+            value += high * multiplier
+            multiplier *= 10
+
+        return value
+
+    @staticmethod
+    def _direct_civ_probe_summary(commands: list[Dict[str, Any]]) -> Dict[str, Any]:
+        by_name = {str(cmd.get("name")): cmd for cmd in commands}
+
+        rx_tx = by_name.get("rx_tx_status", {})
+        rx_tx_parsed = rx_tx.get("parsed") if isinstance(rx_tx.get("parsed"), dict) else {}
+
+        return {
+            "transceiver_id_ok": bool(by_name.get("transceiver_id", {}).get("ok")),
+            "frequency_ok": bool(by_name.get("operating_frequency", {}).get("ok")),
+            "mode_ok": bool(by_name.get("operating_mode", {}).get("ok")),
+            "duplex_ok": bool(by_name.get("duplex", {}).get("ok")),
+            "offset_ok": bool(by_name.get("offset", {}).get("ok")),
+            "rx_tx_status_ok": bool(by_name.get("rx_tx_status", {}).get("ok")),
+            "rx_not_tx": bool(rx_tx_parsed.get("rx_not_tx") is True),
+        }
+
     def _hamlib_readonly_detect(self) -> Dict[str, Any]:
         """
         Minimal read-only Python Hamlib detect/status path.
@@ -1114,6 +1685,10 @@ def main() -> int:
     if "--hamlib-api-inventory" in sys.argv:
         connected = "--connected-readonly" in sys.argv
         print(json.dumps(adapter.query_hamlib_api_inventory(connected_readonly=connected), indent=2, sort_keys=True))
+        return 0
+
+    if "--direct-civ-readonly-probe" in sys.argv:
+        print(json.dumps(adapter.direct_civ_readonly_probe(), indent=2, sort_keys=True))
         return 0
 
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))
