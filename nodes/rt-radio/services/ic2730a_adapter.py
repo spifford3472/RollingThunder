@@ -2919,7 +2919,13 @@ class IC2730AAdapter:
 
     def direct_civ_side_a_repeater_tune_test(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Phase 8C-9 first real direct CI-V Side-A/Main-band repeater-style tune test.
+        Phase 8C-11 manual direct CI-V Side-A/Main-band repeater-style tune test.
+
+        Phase 8C-11 integrates the Phase 8C-10-proven IC-2730A duplex
+        write forms into this existing manual CLI-only repeater tune test:
+        - simplex: 0F 10
+        - DUP-:    0F 11
+        - DUP+:    0F 12
 
         Manual CLI-only.
         No Redis writes.
@@ -2953,7 +2959,7 @@ class IC2730AAdapter:
         def base_result(status: str = "aborted", ok: bool = False, reason: str = "") -> Dict[str, Any]:
             return {
                 "action": "direct_civ_side_a_repeater_tune_test",
-                "phase": "8C-9",
+                "phase": "8C-11",
                 "status": status,
                 "ok": bool(ok),
                 "reason": reason,
@@ -2974,8 +2980,9 @@ class IC2730AAdapter:
                     "offset_matches": False,
                     "tone_frequency_matches": False,
                     "tone_mode_matches": False,
-                    "duplex_write_deferred": False,
-                    "duplex_write_required_but_deferred": False,
+                    "duplex_write_supported": True,
+                    "duplex_write_attempted": False,
+                    "duplex_write_succeeded": False,
                     "tone_setting_write_deferred": False,
                     "ready_for_future_automation": False,
                 },
@@ -3251,6 +3258,16 @@ class IC2730AAdapter:
                 "plus": "plus",
                 "12": "plus",
             }.get(str(value or "").strip().lower(), str(value or "").strip().lower())
+        
+        def duplex_write_spec_for(target_duplex: str) -> Optional[tuple[str, bytes]]:
+            target = str(target_duplex or "").strip().lower()
+            if target == "simplex":
+                return ("set_duplex_simplex", bytes([0x0F, 0x10]))
+            if target == "minus":
+                return ("set_duplex_minus", bytes([0x0F, 0x11]))
+            if target == "plus":
+                return ("set_duplex_plus", bytes([0x0F, 0x12]))
+            return None        
 
         def parsed_after(after_readback: Dict[str, Any], command_name: str) -> Dict[str, Any]:
             commands = after_readback.get("commands") if isinstance(after_readback.get("commands"), list) else []
@@ -3365,46 +3382,42 @@ class IC2730AAdapter:
         current_duplex_normalized = normalize_duplex_readback(current.get("duplex"))
         duplex_required = current_duplex_normalized != candidate_duplex
 
-        # Phase 8C-9 safety rule:
-        # Duplex mode writes 10/11/12 are documented but not yet proven reliable
-        # in this direct CI-V path. One live DUP- attempt returned CI-V NG.
-        # Therefore this manual repeater tune test may proceed only when duplex
-        # already matches by readback. Offset is not a substitute for duplex mode.
-        result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
-        result["summary"]["duplex_write_required_but_deferred"] = bool(duplex_required)
-
-        if duplex_required:
-            for entry in result["plan"]:
-                if not isinstance(entry, dict):
-                    continue
-                entry_name = str(entry.get("name", "")).lower()
-                entry_code = str(entry.get("documented_command_code", "")).strip()
-                if "dup" in entry_name or "simplex" in entry_name or entry_code in {"10", "11", "12", "10/11/12"}:
-                    entry["would_send"] = False
-                    entry["deferred"] = True
-                    entry["reason"] = (
-                        "Candidate duplex differs from current readback, but duplex writes "
-                        "10/11/12 are deferred in Phase 8C-9 because they are not yet proven "
-                        "reliable in this direct CI-V path."
-                    )
-
+        duplex_spec = duplex_write_spec_for(candidate_duplex)
+        if duplex_spec is None:
             result.update(
                 {
-                    "status": "blocked",
+                    "status": "rejected",
                     "ok": False,
-                    "reason": (
-                        "Blocked before write: candidate duplex "
-                        f"{candidate_duplex!r} does not match current readback "
-                        f"{current_duplex_normalized!r}. Duplex writes 10/11/12 are "
-                        "deferred in Phase 8C-9 until separately proven."
-                    ),
+                    "reason": f"Candidate duplex {candidate_duplex!r} is not allowed for Phase 8C-11 command send.",
                     "updated_utc": utc_now(),
                 }
             )
-            result["summary"]["writes_attempted"] = False
-            result["summary"]["write_count"] = 0
             result["summary"]["ready_for_future_automation"] = False
             return result
+
+        result["summary"]["duplex_write_supported"] = True
+        result["summary"]["duplex_write_attempted"] = False
+        result["summary"]["duplex_write_succeeded"] = False
+        result["summary"]["duplex_matches"] = not bool(duplex_required)
+
+        for entry in result["plan"]:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = str(entry.get("name", "")).lower()
+            entry_code = str(entry.get("documented_command_code", "")).strip().upper()
+            if (
+                "dup" in entry_name
+                or "simplex" in entry_name
+                or entry_code in {"0F 10", "0F 11", "0F 12", "0F 10/11/12", "10", "11", "12", "10/11/12"}
+            ):
+                entry["would_send"] = bool(duplex_required)
+                entry["deferred"] = False
+                entry["supported"] = True
+                entry["reason"] = (
+                    "Candidate duplex differs from current readback; Phase 8C-11 will send the proven IC-2730A duplex write command."
+                    if duplex_required
+                    else "Candidate duplex setting already matches current readback."
+                )
 
         offset_required = numeric_changed(current.get("offset_mhz_tentative"), candidate_offset, 0.0005)
 
@@ -3418,6 +3431,7 @@ class IC2730AAdapter:
         any_setting_write_required = bool(
             frequency_required
             or mode_required
+            or duplex_required
             or offset_required
             or tone_frequency_required
             or tone_mode_required
@@ -3436,6 +3450,10 @@ class IC2730AAdapter:
 
         if mode_required:
             commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05])))
+
+        if duplex_required:
+            duplex_name, duplex_payload = duplex_spec
+            commands_to_send.append((duplex_name, duplex_payload))
 
         if offset_required:
             commands_to_send.append(("write_offset", bytes([0x0D]) + offset_mhz_to_bcd(candidate_offset)))
@@ -3476,8 +3494,10 @@ class IC2730AAdapter:
             result["summary"]["offset_matches"] = True
             result["summary"]["tone_frequency_matches"] = True
             result["summary"]["tone_mode_matches"] = True
-            result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
-            result["summary"]["duplex_write_required_but_deferred"] = False            
+            result["summary"]["duplex_write_supported"] = True
+            result["summary"]["duplex_write_attempted"] = False
+            result["summary"]["duplex_write_succeeded"] = False
+            result["summary"]["duplex_matches"] = True           
             result.update(
                 {
                     "status": "ok",
@@ -3527,6 +3547,21 @@ class IC2730AAdapter:
         except Exception as exc:
             result["summary"]["writes_attempted"] = bool(result["commands_sent"])
             result["summary"]["write_count"] = len(result["commands_sent"])
+            duplex_command_results = [
+                command
+                for command in result["commands_sent"]
+                if (
+                    isinstance(command, dict)
+                    and (
+                        str(command.get("name", "")).startswith("set_duplex_")
+                        or str(command.get("payload_hex", "")).strip().upper() in {"0F 10", "0F 11", "0F 12"}
+                    )
+                )
+            ]
+            result["summary"]["duplex_write_attempted"] = bool(duplex_command_results)
+            result["summary"]["duplex_write_succeeded"] = bool(duplex_command_results) and all(
+                bool(command.get("ok")) for command in duplex_command_results
+            )
             result.update(
                 {
                     "status": "partial" if serial_opened else "aborted",
@@ -3581,9 +3616,14 @@ class IC2730AAdapter:
         after_tone_mode = str(after_tone_setting_parsed.get("tone_mode") or "").lower()
         result["summary"]["tone_mode_matches"] = after_tone_mode == candidate_tone_mode
 
+        commands_ok = bool(result["commands_sent"]) and all(
+            bool(command.get("ok")) for command in result["commands_sent"] if isinstance(command, dict)
+        )
+
         final_ok = bool(
             result["summary"]["writes_attempted"]
             and result["summary"]["write_count"] > 0
+            and commands_ok
             and result["summary"]["readback_after_ok"]
             and result["summary"]["frequency_matches"]
             and result["summary"]["mode_matches"]
@@ -3609,8 +3649,23 @@ class IC2730AAdapter:
                 "updated_utc": utc_now(),
             }
         )
-        result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
-        result["summary"]["duplex_write_required_but_deferred"] = False
+        duplex_command_results = [
+            command
+            for command in result["commands_sent"]
+            if (
+                isinstance(command, dict)
+                and (
+                    str(command.get("name", "")).startswith("set_duplex_")
+                    or str(command.get("payload_hex", "")).strip().upper() in {"0F 10", "0F 11", "0F 12"}
+                )
+            )
+        ]
+
+        result["summary"]["duplex_write_supported"] = True
+        result["summary"]["duplex_write_attempted"] = bool(duplex_command_results)
+        result["summary"]["duplex_write_succeeded"] = bool(duplex_command_results) and all(
+            bool(command.get("ok")) for command in duplex_command_results
+        )
         result["summary"]["tone_setting_write_deferred"] = False
         result["summary"]["ready_for_future_automation"] = False
         return result

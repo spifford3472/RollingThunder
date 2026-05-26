@@ -1057,3 +1057,57 @@ The duplex proof has its own default-false gate:
 ```json
 "direct_civ_side_a_duplex_proof_enabled": false
 
+## Phase 8C-11 — Integrate Proven Duplex Writes into Manual Repeater Tune Test
+
+Phase 8C-11 integrates the Phase 8C-10-proven IC-2730A duplex write forms into the existing manual CLI-only direct CI-V Side-A repeater tune test.
+
+This phase is not automation.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+No memory programming was added.
+
+No scan control was added.
+
+No Side B programming was added.
+
+No PTT/transmit control was added.
+
+The separate Phase 8C-10 duplex proof CLI remains available and remains gated by:
+
+```json
+"direct_civ_side_a_duplex_proof_enabled": false
+
+The manual repeater tune test remains gated by the existing repeater tune path gates:
+
+{
+  "direct_civ_enabled": true,
+  "direct_civ_side_a_readiness_probe_enabled": true,
+  "direct_civ_side_a_write_plan_enabled": true,
+  "direct_civ_side_a_repeater_tune_test_enabled": true
+}
+
+It does not require:
+
+"direct_civ_side_a_duplex_proof_enabled": true
+Proven IC-2730A duplex write forms
+
+Phase 8C-10 proved that the IC-2730A accepts these direct CI-V payloads:
+
+simplex: 0F 10
+DUP-:    0F 11
+DUP+:    0F 12
+
+Earlier rejected forms remain rejected/wrong for this adapter path:
+
+bare 10
+0F 01 00
+
