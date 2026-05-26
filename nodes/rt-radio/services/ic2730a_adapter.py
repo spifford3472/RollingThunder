@@ -1813,7 +1813,7 @@ class IC2730AAdapter:
             current_value=current_tone_mode,
             candidate_value=candidate_tone_mode,
             reason=(
-                "Candidate tone mode differs from current readback; Phase 8C-8 uses supplied IC-2730A sample-program command 16 42 for tone-mode activation, not 1A 00."
+                "Candidate tone mode differs from current readback; Phase 8C-9 uses supplied IC-2730A sample-program command 16 42 for tone-mode activation, not 1A 00."
                 if tone_setting_required
                 else "Candidate tone mode already matches current readback."
             ),
@@ -2912,7 +2912,7 @@ class IC2730AAdapter:
 
     def direct_civ_side_a_repeater_tune_test(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Phase 8C-8 first real direct CI-V Side-A/Main-band repeater-style tune test.
+        Phase 8C-9 first real direct CI-V Side-A/Main-band repeater-style tune test.
 
         Manual CLI-only.
         No Redis writes.
@@ -2946,7 +2946,7 @@ class IC2730AAdapter:
         def base_result(status: str = "aborted", ok: bool = False, reason: str = "") -> Dict[str, Any]:
             return {
                 "action": "direct_civ_side_a_repeater_tune_test",
-                "phase": "8C-8",
+                "phase": "8C-9",
                 "status": status,
                 "ok": bool(ok),
                 "reason": reason,
@@ -2967,6 +2967,8 @@ class IC2730AAdapter:
                     "offset_matches": False,
                     "tone_frequency_matches": False,
                     "tone_mode_matches": False,
+                    "duplex_write_deferred": False,
+                    "duplex_write_required_but_deferred": False,
                     "tone_setting_write_deferred": False,
                     "ready_for_future_automation": False,
                 },
@@ -3264,7 +3266,7 @@ class IC2730AAdapter:
                 {
                     "status": "rejected",
                     "ok": False,
-                    "reason": "Phase 8C-8 repeater tune candidate rejected before serial open: "
+                    "reason": "Phase 8C-9 repeater tune candidate rejected before serial open: "
                     + "; ".join(validation_errors),
                     "updated_utc": utc_now(),
                 }
@@ -3352,7 +3354,51 @@ class IC2730AAdapter:
 
         frequency_required = numeric_changed(current.get("frequency_mhz"), candidate_frequency, 0.000005)
         mode_required = str(current.get("mode") or "").upper() != candidate_mode
-        duplex_required = normalize_duplex_readback(current.get("duplex")) != candidate_duplex
+
+        current_duplex_normalized = normalize_duplex_readback(current.get("duplex"))
+        duplex_required = current_duplex_normalized != candidate_duplex
+
+        # Phase 8C-9 safety rule:
+        # Duplex mode writes 10/11/12 are documented but not yet proven reliable
+        # in this direct CI-V path. One live DUP- attempt returned CI-V NG.
+        # Therefore this manual repeater tune test may proceed only when duplex
+        # already matches by readback. Offset is not a substitute for duplex mode.
+        result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
+        result["summary"]["duplex_write_required_but_deferred"] = bool(duplex_required)
+
+        if duplex_required:
+            for entry in result["plan"]:
+                if not isinstance(entry, dict):
+                    continue
+                entry_name = str(entry.get("name", "")).lower()
+                entry_code = str(entry.get("documented_command_code", "")).strip()
+                if "dup" in entry_name or "simplex" in entry_name or entry_code in {"10", "11", "12", "10/11/12"}:
+                    entry["would_send"] = False
+                    entry["deferred"] = True
+                    entry["reason"] = (
+                        "Candidate duplex differs from current readback, but duplex writes "
+                        "10/11/12 are deferred in Phase 8C-9 because they are not yet proven "
+                        "reliable in this direct CI-V path."
+                    )
+
+            result.update(
+                {
+                    "status": "blocked",
+                    "ok": False,
+                    "reason": (
+                        "Blocked before write: candidate duplex "
+                        f"{candidate_duplex!r} does not match current readback "
+                        f"{current_duplex_normalized!r}. Duplex writes 10/11/12 are "
+                        "deferred in Phase 8C-9 until separately proven."
+                    ),
+                    "updated_utc": utc_now(),
+                }
+            )
+            result["summary"]["writes_attempted"] = False
+            result["summary"]["write_count"] = 0
+            result["summary"]["ready_for_future_automation"] = False
+            return result
+
         offset_required = numeric_changed(current.get("offset_mhz_tentative"), candidate_offset, 0.0005)
 
         tone_frequency_required = False
@@ -3365,7 +3411,6 @@ class IC2730AAdapter:
         any_setting_write_required = bool(
             frequency_required
             or mode_required
-            or duplex_required
             or offset_required
             or tone_frequency_required
             or tone_mode_required
@@ -3384,24 +3429,6 @@ class IC2730AAdapter:
 
         if mode_required:
             commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05])))
-
-        if duplex_required:
-            if candidate_duplex == "minus":
-                commands_to_send.append(("set_dup_minus", bytes([0x11])))
-            elif candidate_duplex == "plus":
-                commands_to_send.append(("set_dup_plus", bytes([0x12])))
-            elif candidate_duplex == "simplex":
-                commands_to_send.append(("set_simplex", bytes([0x10])))
-            else:
-                result.update(
-                    {
-                        "status": "rejected",
-                        "ok": False,
-                        "reason": f"Candidate duplex {candidate_duplex!r} is not allowed for Phase 8C-8 command send.",
-                        "updated_utc": utc_now(),
-                    }
-                )
-                return result
 
         if offset_required:
             commands_to_send.append(("write_offset", bytes([0x0D]) + offset_mhz_to_bcd(candidate_offset)))
@@ -3442,6 +3469,8 @@ class IC2730AAdapter:
             result["summary"]["offset_matches"] = True
             result["summary"]["tone_frequency_matches"] = True
             result["summary"]["tone_mode_matches"] = True
+            result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
+            result["summary"]["duplex_write_required_but_deferred"] = False            
             result.update(
                 {
                     "status": "ok",
@@ -3573,6 +3602,8 @@ class IC2730AAdapter:
                 "updated_utc": utc_now(),
             }
         )
+        result["summary"]["duplex_write_deferred"] = candidate_duplex in {"simplex", "minus", "plus"}
+        result["summary"]["duplex_write_required_but_deferred"] = False
         result["summary"]["tone_setting_write_deferred"] = False
         result["summary"]["ready_for_future_automation"] = False
         return result

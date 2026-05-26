@@ -925,3 +925,88 @@ The repeater tune test has its own gate:
 ```json
 "direct_civ_side_a_repeater_tune_test_enabled": false
 
+## Phase 8C-9 — Hardened Repeater Tune Duplex Handling
+
+Phase 8C-9 hardens the manual CLI-only direct CI-V Side-A/Main-band repeater-style tune test before any automation is considered.
+
+This phase is not automation.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+No memory programming was added.
+
+No scan control was added.
+
+No Side B programming was added.
+
+No PTT/transmit control was added.
+
+### Phase 8C-8 live success summary
+
+Phase 8C-8 proved a real manual CLI-only direct CI-V repeater-style tune path when the current duplex readback already matched the desired repeater duplex.
+
+Validated live command behavior:
+
+- `07 D0` selected A band as Main.
+- `05` wrote operating frequency.
+- `0D` wrote 0.600 MHz offset as `00 60 00`.
+- `1B 00` wrote repeater CTCSS tone 123.0 Hz as `12 30`.
+- `16 42 01` enabled tone encode mode.
+
+Validated live readback and RF behavior:
+
+- Receive frequency: 145.490 MHz
+- Mode: FM
+- Duplex: DUP-
+- Offset: 0.600 MHz
+- Repeater CTCSS tone: 123.0 Hz
+- Tone mode: tone encode
+- Real repeater response confirmed the tone encode path worked.
+
+### Duplex write caution
+
+A separate 146.940 MHz test showed that standalone `11` / DUP- returned CI-V NG.
+
+In that test:
+
+- frequency write succeeded
+- standalone `11` / DUP- returned NG
+- final readback still showed DUP-
+- offset remained 0.000
+- tone remained unchanged
+- the adapter correctly aborted on NG
+
+Therefore Phase 8C-9 treats duplex as a readback-verified prerequisite, not as a confidently writable setting.
+
+### Phase 8C-9 behavior
+
+The repeater tune test now defers duplex writes.
+
+The test may proceed only when the current duplex readback already matches the candidate duplex.
+
+Examples:
+
+- candidate DUP- and current readback DUP-: proceed with allowed writes if needed
+- candidate DUP- and current readback simplex: block before writes
+- candidate DUP+ and current readback DUP-: block before writes
+- candidate simplex and current readback DUP-: block before writes
+
+When duplex does not already match, the result returns `status=blocked` before write/control commands are sent.
+
+The result summary records:
+
+```json
+{
+  "duplex_write_deferred": true,
+  "duplex_write_required_but_deferred": true,
+  "ready_for_future_automation": false
+}
+
