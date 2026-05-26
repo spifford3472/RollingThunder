@@ -90,6 +90,8 @@ DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED = False
 
+DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED = False
+
 STANDARD_CTCSS_TONES_HZ = (
     67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4,
     88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9,
@@ -362,6 +364,7 @@ class IC2730AConfig:
     direct_civ_side_a_write_plan_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED
     direct_civ_side_a_real_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED
     direct_civ_side_a_repeater_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED
+    direct_civ_side_a_duplex_proof_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
@@ -499,6 +502,10 @@ class IC2730AConfig:
             direct_civ_side_a_repeater_tune_test_enabled=_safe_bool(
                 ic.get("direct_civ_side_a_repeater_tune_test_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED,
+            ),
+            direct_civ_side_a_duplex_proof_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_duplex_proof_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED,
             ),
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
@@ -1745,16 +1752,16 @@ class IC2730AAdapter:
 
         if candidate_duplex in {"simplex", "none"}:
             duplex_name = "future_set_simplex"
-            duplex_code = "10"
+            duplex_code = "0F 10"
         elif candidate_duplex == "minus":
             duplex_name = "future_set_dup_minus"
-            duplex_code = "11"
+            duplex_code = "0F 11"
         elif candidate_duplex == "plus":
             duplex_name = "future_set_dup_plus"
-            duplex_code = "12"
+            duplex_code = "0F 12"
         else:
             duplex_name = "future_set_duplex_unknown"
-            duplex_code = "10/11/12"
+            duplex_code = "0F 10/11/12"
 
         add_plan(
             name=duplex_name,
@@ -2757,7 +2764,7 @@ class IC2730AAdapter:
             commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05])))
 
         if simplex_required:
-            commands_to_send.append(("set_simplex", bytes([0x10])))
+            commands_to_send.append(("set_simplex", bytes([0x0F, 0x10])))
 
         if offset_required:
             commands_to_send.append(("write_zero_offset", bytes([0x0D]) + zero_offset_bcd()))
@@ -3607,6 +3614,600 @@ class IC2730AAdapter:
         result["summary"]["tone_setting_write_deferred"] = False
         result["summary"]["ready_for_future_automation"] = False
         return result
+
+    def direct_civ_side_a_duplex_proof(self, requested: Any) -> Dict[str, Any]:
+        """
+        Phase 8C-10 manual CLI-only direct CI-V Side-A duplex command proof.
+
+        This proves or rejects only these documented duplex commands:
+
+        - 10 set simplex
+        - 11 set DUP-
+        - 12 set DUP+
+
+        It does not:
+        - write frequency
+        - write mode
+        - write offset
+        - write tone
+        - write memory
+        - write bank/group
+        - start scan
+        - program Side B
+        - expose PTT/transmit control
+        - publish Redis
+        - write rt:ui:bus
+        - write rt:system:bus
+        - use Hamlib
+        - use rigctl
+        - modify the Phase 8C-9 repeater tune path
+        """
+
+        cfg = self.config
+
+        duplex_aliases = {
+            "simplex": "simplex",
+            "none": "simplex",
+            "off": "simplex",
+            "minus": "minus",
+            "-": "minus",
+            "dup-": "minus",
+            "duplex-": "minus",
+            "plus": "plus",
+            "+": "plus",
+            "dup+": "plus",
+            "duplex+": "plus",
+        }
+
+        command_specs = {
+            "simplex": {
+                "name": "set_simplex",
+                "documented_command_code": "0F 10",
+                "payload": bytes([0x0F, 0x10]),
+            },
+            "minus": {
+                "name": "set_dup_minus",
+                "documented_command_code": "0F 11",
+                "payload": bytes([0x0F, 0x11]),
+            },
+            "plus": {
+                "name": "set_dup_plus",
+                "documented_command_code": "0F 12",
+                "payload": bytes([0x0F, 0x12]),
+            },
+        }
+
+        def safety_model() -> Dict[str, Any]:
+            return {
+                "read_only": False,
+                "manual_cli_only": True,
+                "frequency_write_performed": False,
+                "mode_write_performed": False,
+                "offset_write_performed": False,
+                "tone_write_performed": False,
+                "ptt_or_transmit_control_added": False,
+                "memory_write_performed": False,
+                "bank_write_performed": False,
+                "scan_start_performed": False,
+                "side_b_programming_performed": False,
+                "redis_written": False,
+                "ui_bus_written": False,
+                "system_bus_written": False,
+                "rigctl_used": False,
+                "hamlib_used": False,
+            }
+
+        def empty_summary() -> Dict[str, Any]:
+            return {
+                "readback_before_ok": False,
+                "rx_not_tx_before": False,
+                "writes_attempted": False,
+                "write_count": 0,
+                "readback_after_ok": False,
+                "all_requested_steps_matched": False,
+                "simplex_proved": False,
+                "minus_proved": False,
+                "plus_proved": False,
+                "failed_step": None,
+                "ready_for_future_repeater_tune_use": False,
+                "ready_for_future_automation": False,
+            }
+
+        def base_result(status: str = "aborted", ok: bool = False, reason: str = "") -> Dict[str, Any]:
+            return {
+                "action": "direct_civ_side_a_duplex_proof",
+                "phase": "8C-10",
+                "status": status,
+                "ok": bool(ok),
+                "reason": reason,
+                "requested_sequence": [],
+                "before": {},
+                "steps": [],
+                "after": {},
+                "summary": empty_summary(),
+                "safety": safety_model(),
+                "radio": cfg.radio_name,
+                "control_path": "direct_civ",
+                "serial_port": cfg.direct_civ_serial_port,
+                "baud": cfg.direct_civ_baud,
+                "updated_utc": utc_now(),
+            }
+
+        def normalize_sequence(raw_requested: Any) -> tuple[list[str], list[str]]:
+            errors: list[str] = []
+            values: list[Any] = []
+
+            if isinstance(raw_requested, list):
+                values = raw_requested
+            elif isinstance(raw_requested, tuple):
+                values = list(raw_requested)
+            elif isinstance(raw_requested, str):
+                values = [part.strip() for part in raw_requested.split(",")]
+            elif raw_requested is None:
+                values = []
+            else:
+                values = [raw_requested]
+
+            normalized: list[str] = []
+            for item in values:
+                text = str(item or "").strip().lower()
+                if not text:
+                    continue
+
+                value = duplex_aliases.get(text)
+                if value is None:
+                    errors.append(
+                        f"invalid duplex target {text!r}; allowed values are simplex, none, off, minus, dup-, duplex-, plus, dup+, duplex+"
+                    )
+                    continue
+
+                normalized.append(value)
+
+            if not normalized:
+                errors.append("duplex proof sequence must contain at least one target")
+
+            if len(normalized) > 6:
+                errors.append("duplex proof sequence may contain no more than 6 targets")
+
+            return normalized, errors
+
+        def hex_bytes(data: bytes) -> str:
+            return " ".join(f"{b:02X}" for b in data)
+
+        def normalize_duplex_readback(value: Any) -> Optional[str]:
+            text = str(value or "").strip().lower()
+            return {
+                "simplex": "simplex",
+                "none": "simplex",
+                "10": "simplex",
+                "dup-": "minus",
+                "minus": "minus",
+                "11": "minus",
+                "dup+": "plus",
+                "plus": "plus",
+                "12": "plus",
+            }.get(text)
+
+        def frame_for(payload: bytes) -> bytes:
+            to_addr = _safe_hex_byte(
+                cfg.direct_civ_transceiver_address_hex,
+                DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+            )
+            from_addr = _safe_hex_byte(
+                cfg.direct_civ_controller_address_hex,
+                DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+            )
+            return bytes([0xFE, 0xFE, to_addr, from_addr]) + bytes(payload) + b"\xFD"
+
+        def parse_frames(raw: bytes) -> list[bytes]:
+            frames: list[bytes] = []
+            start = 0
+            while True:
+                try:
+                    fe = raw.index(b"\xFE\xFE", start)
+                    fd = raw.index(b"\xFD", fe)
+                except ValueError:
+                    break
+                frames.append(raw[fe:fd + 1])
+                start = fd + 1
+            return frames
+
+        def response_status(raw: bytes) -> tuple[str, str]:
+            if not raw:
+                return "timeout", "No CI-V response bytes were received before timeout."
+
+            frames = parse_frames(raw)
+            for frame in frames:
+                if b"\xFB" in frame:
+                    return "ok", "CI-V OK response received."
+                if b"\xFA" in frame:
+                    return "ng", "CI-V NG response received."
+
+            if frames:
+                return "error", "CI-V response frame received, but no OK/NG byte was found."
+
+            return "error", "No complete CI-V response frame was parsed."
+
+        def send_control_command(ser: Any, name: str, payload: bytes) -> Dict[str, Any]:
+            frame = frame_for(payload)
+            command_result: Dict[str, Any] = {
+                "name": name,
+                "documented_command_code": hex_bytes(payload),
+                "payload_hex": hex_bytes(payload),
+                "frame_hex": hex_bytes(frame),
+                "sent": False,
+                "response_hex": "",
+                "status": "unknown",
+                "ok": False,
+                "reason": "",
+            }
+
+            try:
+                try:
+                    ser.reset_input_buffer()
+                except Exception:
+                    pass
+                try:
+                    ser.reset_output_buffer()
+                except Exception:
+                    pass
+
+                ser.write(frame)
+                ser.flush()
+                command_result["sent"] = True
+
+                deadline = time.monotonic() + float(cfg.direct_civ_timeout_seconds)
+                raw = bytearray()
+
+                while time.monotonic() < deadline:
+                    chunk = ser.read(1)
+                    if chunk:
+                        raw.extend(chunk)
+                        if raw.endswith(b"\xFD") and len(raw) >= 6:
+                            if b"\xFB" in raw or b"\xFA" in raw:
+                                break
+                    else:
+                        time.sleep(0.02)
+
+                command_result["response_hex"] = hex_bytes(bytes(raw))
+                status, reason = response_status(bytes(raw))
+                command_result["status"] = status
+                command_result["ok"] = status == "ok"
+                command_result["reason"] = reason
+                return command_result
+
+            except Exception as exc:
+                command_result["status"] = "error"
+                command_result["ok"] = False
+                command_result["reason"] = f"CI-V duplex control command failed: {exc}"
+                return command_result
+
+        def read_duplex_command(ser: Any) -> Dict[str, Any]:
+            controller_addr = _safe_hex_byte(
+                cfg.direct_civ_controller_address_hex,
+                DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+            )
+            transceiver_addr = _safe_hex_byte(
+                cfg.direct_civ_transceiver_address_hex,
+                DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+            )
+
+            return self._direct_civ_send_readonly_command(
+                port=ser,
+                name="duplex",
+                controller_addr=controller_addr,
+                transceiver_addr=transceiver_addr,
+                timeout_seconds=cfg.direct_civ_timeout_seconds,
+            )
+
+        def read_rx_tx_command(ser: Any) -> Dict[str, Any]:
+            controller_addr = _safe_hex_byte(
+                cfg.direct_civ_controller_address_hex,
+                DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+            )
+            transceiver_addr = _safe_hex_byte(
+                cfg.direct_civ_transceiver_address_hex,
+                DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+            )
+
+            return self._direct_civ_send_readonly_command(
+                port=ser,
+                name="rx_tx_status",
+                controller_addr=controller_addr,
+                transceiver_addr=transceiver_addr,
+                timeout_seconds=cfg.direct_civ_timeout_seconds,
+            )
+
+        def duplex_from_command(command_result: Dict[str, Any]) -> Optional[str]:
+            parsed = command_result.get("parsed") if isinstance(command_result.get("parsed"), dict) else {}
+            return normalize_duplex_readback(parsed.get("duplex"))
+
+        def duplex_code_from_command(command_result: Dict[str, Any]) -> Optional[str]:
+            parsed = command_result.get("parsed") if isinstance(command_result.get("parsed"), dict) else {}
+            code = parsed.get("duplex_code_hex")
+            return str(code) if code is not None else None
+
+        result = base_result()
+
+        requested_sequence, validation_errors = normalize_sequence(requested)
+        result["requested_sequence"] = requested_sequence
+
+        if validation_errors:
+            result.update(
+                {
+                    "status": "rejected",
+                    "ok": False,
+                    "reason": "Direct CI-V duplex proof request rejected before serial open: "
+                    + "; ".join(validation_errors),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        gate_failures: list[str] = []
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_side_a_readiness_probe_enabled:
+            gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
+        if not cfg.direct_civ_side_a_duplex_proof_enabled:
+            gate_failures.append("direct_civ_side_a_duplex_proof_enabled=false")
+
+        if gate_failures:
+            result.update(
+                {
+                    "status": "disabled",
+                    "ok": False,
+                    "reason": "Direct CI-V Side-A duplex proof disabled by config: "
+                    + ", ".join(gate_failures),
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "aborted",
+                    "ok": False,
+                    "reason": f"Python pyserial module is not available; no CI-V command was sent: {exc}",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
+
+        serial_opened = False
+
+        try:
+            with serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            ) as ser:
+                serial_opened = True
+
+                rx_tx_result = read_rx_tx_command(ser)
+                before_duplex_result = read_duplex_command(ser)
+
+                before_duplex = duplex_from_command(before_duplex_result)
+                before_duplex_code = duplex_code_from_command(before_duplex_result)
+
+                rx_tx_parsed = rx_tx_result.get("parsed") if isinstance(rx_tx_result.get("parsed"), dict) else {}
+                rx_not_tx = bool(rx_tx_parsed.get("rx_not_tx") is True)
+
+                result["before"] = {
+                    "rx_tx_status": rx_tx_result,
+                    "duplex_readback": before_duplex_result,
+                    "duplex": before_duplex,
+                    "duplex_code_hex": before_duplex_code,
+                }
+
+                readback_before_ok = bool(rx_tx_result.get("ok")) and bool(before_duplex_result.get("ok"))
+                result["summary"]["readback_before_ok"] = bool(readback_before_ok)
+                result["summary"]["rx_not_tx_before"] = bool(rx_not_tx)
+
+                if not readback_before_ok:
+                    result.update(
+                        {
+                            "status": "aborted",
+                            "ok": False,
+                            "reason": "Aborted before duplex proof write: RX/TX or duplex readback was not OK.",
+                            "updated_utc": utc_now(),
+                        }
+                    )
+                    return result
+
+                if not rx_not_tx:
+                    result.update(
+                        {
+                            "status": "aborted",
+                            "ok": False,
+                            "reason": "Aborted before duplex proof write: radio RX/TX status was not confirmed RX/not-TX.",
+                            "updated_utc": utc_now(),
+                        }
+                    )
+                    return result
+
+                current_duplex = before_duplex
+                failed = False
+
+                for idx, target_duplex in enumerate(requested_sequence, start=1):
+                    step: Dict[str, Any] = {
+                        "step": idx,
+                        "target_duplex": target_duplex,
+                        "before_duplex": current_duplex,
+                        "command": {},
+                        "after_readback": {},
+                        "matched": False,
+                        "reason": "",
+                    }
+
+                    if current_duplex == target_duplex:
+                        after_duplex_result = read_duplex_command(ser)
+                        after_duplex = duplex_from_command(after_duplex_result)
+                        after_duplex_code = duplex_code_from_command(after_duplex_result)
+                        matched = after_duplex == target_duplex
+
+                        step["command"] = {
+                            "sent": False,
+                            "reason": "Current duplex already matched target.",
+                        }
+                        step["after_readback"] = {
+                            "duplex": after_duplex,
+                            "duplex_code_hex": after_duplex_code,
+                            "ok": bool(after_duplex_result.get("ok")),
+                            "raw": after_duplex_result,
+                        }
+                        step["matched"] = bool(matched)
+                        step["reason"] = (
+                            "No write needed; current duplex already matched target and readback confirmed."
+                            if matched
+                            else "No write was sent, but follow-up duplex readback did not match target."
+                        )
+
+                        result["steps"].append(step)
+
+                        if not matched:
+                            result["summary"]["failed_step"] = idx
+                            failed = True
+                            break
+
+                        current_duplex = after_duplex
+                        continue
+
+                    spec = command_specs[target_duplex]
+                    command_result = send_control_command(
+                        ser,
+                        str(spec["name"]),
+                        bytes(spec["payload"]),
+                    )
+                    command_result["documented_command_code"] = str(spec["documented_command_code"])
+                    step["command"] = command_result
+
+                    result["summary"]["writes_attempted"] = True
+                    result["summary"]["write_count"] = int(result["summary"]["write_count"]) + 1
+
+                    if not command_result.get("ok"):
+                        after_duplex_result = read_duplex_command(ser)
+                        after_duplex = duplex_from_command(after_duplex_result)
+                        after_duplex_code = duplex_code_from_command(after_duplex_result)
+
+                        step["after_readback"] = {
+                            "duplex": after_duplex,
+                            "duplex_code_hex": after_duplex_code,
+                            "ok": bool(after_duplex_result.get("ok")),
+                            "raw": after_duplex_result,
+                        }
+                        step["matched"] = False
+                        step["reason"] = (
+                            f"Duplex command {spec['documented_command_code']} did not return CI-V OK; "
+                            "proof aborted without continuing to later targets."
+                        )
+
+                        result["steps"].append(step)
+                        result["summary"]["failed_step"] = idx
+                        failed = True
+                        break
+
+                    after_duplex_result = read_duplex_command(ser)
+                    after_duplex = duplex_from_command(after_duplex_result)
+                    after_duplex_code = duplex_code_from_command(after_duplex_result)
+                    matched = after_duplex == target_duplex
+
+                    step["after_readback"] = {
+                        "duplex": after_duplex,
+                        "duplex_code_hex": after_duplex_code,
+                        "ok": bool(after_duplex_result.get("ok")),
+                        "raw": after_duplex_result,
+                    }
+                    step["matched"] = bool(matched)
+                    step["reason"] = (
+                        f"Duplex command {spec['documented_command_code']} accepted and readback matched."
+                        if matched
+                        else f"Duplex command {spec['documented_command_code']} returned OK, but readback did not match target."
+                    )
+
+                    result["steps"].append(step)
+
+                    if matched:
+                        if target_duplex == "simplex":
+                            result["summary"]["simplex_proved"] = True
+                        elif target_duplex == "minus":
+                            result["summary"]["minus_proved"] = True
+                        elif target_duplex == "plus":
+                            result["summary"]["plus_proved"] = True
+                        current_duplex = after_duplex
+                    else:
+                        result["summary"]["failed_step"] = idx
+                        failed = True
+                        break
+
+                final_duplex_result = read_duplex_command(ser)
+                final_duplex = duplex_from_command(final_duplex_result)
+                final_duplex_code = duplex_code_from_command(final_duplex_result)
+
+                result["after"] = {
+                    "duplex_readback": final_duplex_result,
+                    "duplex": final_duplex,
+                    "duplex_code_hex": final_duplex_code,
+                }
+                result["summary"]["readback_after_ok"] = bool(final_duplex_result.get("ok"))
+
+                all_matched = bool(result["steps"]) and all(
+                    bool(step.get("matched")) for step in result["steps"] if isinstance(step, dict)
+                )
+                result["summary"]["all_requested_steps_matched"] = bool(all_matched)
+
+                if failed:
+                    result.update(
+                        {
+                            "status": "aborted",
+                            "ok": False,
+                            "reason": "Direct CI-V Side-A duplex proof aborted after failed command or readback mismatch.",
+                            "updated_utc": utc_now(),
+                        }
+                    )
+                    return result
+
+                if all_matched:
+                    status = "ok" if bool(result["summary"]["writes_attempted"]) else "ok_with_warning"
+                    reason = (
+                        "Direct CI-V Side-A duplex proof completed; all requested steps matched."
+                        if bool(result["summary"]["writes_attempted"])
+                        else "Direct CI-V Side-A duplex proof completed with no write needed; requested state already matched."
+                    )
+                    result.update(
+                        {
+                            "status": status,
+                            "ok": True,
+                            "reason": reason,
+                            "updated_utc": utc_now(),
+                        }
+                    )
+                    return result
+
+                result.update(
+                    {
+                        "status": "partial",
+                        "ok": False,
+                        "reason": "Direct CI-V Side-A duplex proof completed, but not all requested steps matched.",
+                        "updated_utc": utc_now(),
+                    }
+                )
+                return result
+
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "partial" if serial_opened else "aborted",
+                    "ok": False,
+                    "reason": f"Direct CI-V Side-A duplex proof serial/control path failed: {exc}",
+                    "updated_utc": utc_now(),
+                }
+            )
+            return result
 
     def direct_civ_side_a_readiness_probe(self, candidate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -4646,7 +5247,8 @@ def main() -> int:
 
         print(json.dumps(adapter.direct_civ_side_a_real_tune_test(candidate), indent=2, sort_keys=True))
         return 0
-    
+
+
     if "--direct-civ-side-a-repeater-tune-test" in sys.argv:
         candidate_json = None
         if "--candidate-json" in sys.argv:
@@ -4666,6 +5268,22 @@ def main() -> int:
                 candidate = {"__candidate_json_parse_error": str(exc)}
 
         print(json.dumps(adapter.direct_civ_side_a_repeater_tune_test(candidate), indent=2, sort_keys=True))
+        return 0
+
+    if "--direct-civ-side-a-duplex-proof" in sys.argv:
+        requested = None
+
+        if "--duplex-sequence" in sys.argv:
+            idx = sys.argv.index("--duplex-sequence")
+            if idx + 1 < len(sys.argv):
+                requested = sys.argv[idx + 1]
+
+        if requested is None and "--target-duplex" in sys.argv:
+            idx = sys.argv.index("--target-duplex")
+            if idx + 1 < len(sys.argv):
+                requested = sys.argv[idx + 1]
+
+        print(json.dumps(adapter.direct_civ_side_a_duplex_proof(requested), indent=2, sort_keys=True))
         return 0
 
     print(json.dumps(adapter.get_status(), indent=2, sort_keys=True))

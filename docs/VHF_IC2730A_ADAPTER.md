@@ -1010,3 +1010,50 @@ The result summary records:
   "ready_for_future_automation": false
 }
 
+## Phase 8C-10 — IC-2730A Direct CI-V Duplex Command Proof
+
+Phase 8C-10 adds a separate, tightly gated, manual CLI-only direct CI-V proof for the documented duplex commands:
+
+- `10` set simplex
+- `11` set DUP-
+- `12` set DUP+
+
+This phase is not automation.
+
+No Redis request action was added.
+
+No UI behavior was changed.
+
+No projector behavior was changed.
+
+No systemd unit was changed.
+
+No controller-side scan-manager behavior was changed.
+
+No memory programming was added.
+
+No scan control was added.
+
+No Side B programming was added.
+
+No PTT/transmit control was added.
+
+The Phase 8C-9 repeater tune path still defers duplex writes and still requires duplex readback to already match before it proceeds.
+
+### Purpose
+
+Phase 8C-10 exists because Phase 8C-9 intentionally deferred duplex writes after a standalone `11` / DUP- test returned CI-V NG once.
+
+This proof records whether the standalone documented commands `10`, `11`, and `12` are accepted by the IC-2730A in the direct CI-V path and whether readback using `0F` confirms the requested state.
+
+An NG response is a valid proof result.
+
+The proof must not hide NG, retry endlessly, or continue to later sequence steps after a failed command or readback mismatch.
+
+### New config gate
+
+The duplex proof has its own default-false gate:
+
+```json
+"direct_civ_side_a_duplex_proof_enabled": false
+

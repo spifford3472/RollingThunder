@@ -698,6 +698,7 @@
       "direct_civ_side_a_write_plan_enabled": false,
       "direct_civ_side_a_real_tune_test_enabled": false,
       "direct_civ_side_a_repeater_tune_test_enabled": false,
+      "direct_civ_side_a_duplex_proof_enabled": false,
       "direct_civ_side_a_readiness_probe_commands": [
         "rx_tx_status",
         "operating_frequency",
