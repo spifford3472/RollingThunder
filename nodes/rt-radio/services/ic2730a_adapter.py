@@ -200,6 +200,23 @@ DEFAULT_WRITE_TEST = {
     "duplex": "simplex",
 }
 
+IC2730A_CD_BANK_CHANNEL_RANGES = {
+    "C": (100, 149),
+    "D": (150, 199),
+}
+
+IC2730A_CD_BANK_SIZE = 50
+
+DEFAULT_CD_RELOAD = {
+    "cd_bank_reload_enabled": False,
+    "memory_clear_enabled": False,
+    "dry_run_cd_reload": True,
+    "allow_banks": ["C", "D"],
+    "max_bank_channels": IC2730A_CD_BANK_SIZE,
+    "require_rx_not_tx_before_write": True,
+    "require_stop_scan_before_clear": True,
+    "require_readback_after_write": True,
+}
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -355,6 +372,14 @@ class IC2730AConfig:
     scan_control_enabled: bool = False
     side_b_programming_enabled: bool = False
     memory_programming_enabled: bool = False
+    memory_clear_enabled: bool = False
+    cd_bank_reload_enabled: bool = False
+    dry_run_cd_reload: bool = True
+    allowed_reload_banks: tuple[str, ...] = ("C", "D")
+    max_bank_channels: int = IC2730A_CD_BANK_SIZE
+    require_rx_not_tx_before_write: bool = True
+    require_stop_scan_before_clear: bool = True
+    require_readback_after_write: bool = True
     detect_enabled: bool = True
 
     direct_civ_enabled: bool = DEFAULT_DIRECT_CIV_ENABLED
@@ -457,6 +482,32 @@ class IC2730AConfig:
         if not side_a_readiness_commands:
             side_a_readiness_commands = list(DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS)
 
+        cd_reload = ic.get("cd_reload", {})
+        if not isinstance(cd_reload, dict):
+            cd_reload = {}
+
+        def cd_value(name: str, default: Any) -> Any:
+            return ic.get(name, cd_reload.get(name, default))
+
+        allowed_raw = cd_value("allow_banks", DEFAULT_CD_RELOAD["allow_banks"])
+        allowed_banks: list[str] = []
+        if isinstance(allowed_raw, list):
+            for item in allowed_raw:
+                bank = str(item or "").strip().upper()
+                if bank in IC2730A_CD_BANK_CHANNEL_RANGES and bank not in allowed_banks:
+                    allowed_banks.append(bank)
+
+        if not allowed_banks:
+            allowed_banks = list(DEFAULT_CD_RELOAD["allow_banks"])
+
+        max_bank_channels = _safe_int(
+            cd_value("max_bank_channels", DEFAULT_CD_RELOAD["max_bank_channels"]),
+            int(DEFAULT_CD_RELOAD["max_bank_channels"]),
+            minimum=1,
+        )
+        if max_bank_channels > IC2730A_CD_BANK_SIZE:
+            max_bank_channels = IC2730A_CD_BANK_SIZE
+
         return cls(
             radio_name=_safe_str(vhf.get("radio_name"), DEFAULT_RADIO_NAME),
             enabled=_safe_bool(ic.get("enabled"), True),
@@ -473,6 +524,32 @@ class IC2730AConfig:
             scan_control_enabled=_safe_bool(ic.get("scan_control_enabled"), False),
             side_b_programming_enabled=_safe_bool(ic.get("side_b_programming_enabled"), False),
             memory_programming_enabled=_safe_bool(ic.get("memory_programming_enabled"), False),
+            memory_clear_enabled=_safe_bool(
+                cd_value("memory_clear_enabled", DEFAULT_CD_RELOAD["memory_clear_enabled"]),
+                bool(DEFAULT_CD_RELOAD["memory_clear_enabled"]),
+            ),
+            cd_bank_reload_enabled=_safe_bool(
+                cd_value("cd_bank_reload_enabled", DEFAULT_CD_RELOAD["cd_bank_reload_enabled"]),
+                bool(DEFAULT_CD_RELOAD["cd_bank_reload_enabled"]),
+            ),
+            dry_run_cd_reload=_safe_bool(
+                cd_value("dry_run_cd_reload", DEFAULT_CD_RELOAD["dry_run_cd_reload"]),
+                bool(DEFAULT_CD_RELOAD["dry_run_cd_reload"]),
+            ),
+            allowed_reload_banks=tuple(allowed_banks),
+            max_bank_channels=max_bank_channels,
+            require_rx_not_tx_before_write=_safe_bool(
+                cd_value("require_rx_not_tx_before_write", DEFAULT_CD_RELOAD["require_rx_not_tx_before_write"]),
+                bool(DEFAULT_CD_RELOAD["require_rx_not_tx_before_write"]),
+            ),
+            require_stop_scan_before_clear=_safe_bool(
+                cd_value("require_stop_scan_before_clear", DEFAULT_CD_RELOAD["require_stop_scan_before_clear"]),
+                bool(DEFAULT_CD_RELOAD["require_stop_scan_before_clear"]),
+            ),
+            require_readback_after_write=_safe_bool(
+                cd_value("require_readback_after_write", DEFAULT_CD_RELOAD["require_readback_after_write"]),
+                bool(DEFAULT_CD_RELOAD["require_readback_after_write"]),
+            ),
             detect_enabled=_safe_bool(ic.get("detect_enabled"), True),
 
             direct_civ_enabled=_safe_bool(
@@ -569,6 +646,14 @@ class IC2730AAdapter:
             "scan_control_enabled": bool(cfg.scan_control_enabled),
             "side_b_programming_enabled": bool(cfg.side_b_programming_enabled),
             "memory_programming_enabled": bool(cfg.memory_programming_enabled),
+            "memory_clear_enabled": bool(cfg.memory_clear_enabled),
+            "cd_bank_reload_enabled": bool(cfg.cd_bank_reload_enabled),
+            "dry_run_cd_reload": bool(cfg.dry_run_cd_reload),
+            "allowed_reload_banks": list(cfg.allowed_reload_banks),
+            "max_bank_channels": int(cfg.max_bank_channels),
+            "require_rx_not_tx_before_write": bool(cfg.require_rx_not_tx_before_write),
+            "require_stop_scan_before_clear": bool(cfg.require_stop_scan_before_clear),
+            "require_readback_after_write": bool(cfg.require_readback_after_write),
             "write_test_enabled": bool(cfg.write_test_enabled),
             "write_test_allow_single_memory_write": bool(cfg.write_test_allow_single_memory_write),
             "write_test_sacrificial_group": cfg.write_test_sacrificial_group,
@@ -713,18 +798,50 @@ class IC2730AAdapter:
 
     def query_scan_state(self) -> Dict[str, Any]:
         """
-        Phase 8B has no verified safe scan-state read source.
+        Phase 8.1C no-command scan-state contract.
 
-        Return unknown/not_supported rather than pretending to know.
+        The uploaded IC-2730A bank-manager sample identifies:
+        - CMD 14 0B as a scan-state read attempt.
+        - fallback scan detection by frequency movement.
+
+        This phase does not open serial and does not send the command yet.
         """
 
         return self._result(
             ok=True,
-            status="not_supported",
-            available=bool(self.detect().get("available", False)),
-            reason="IC-2730A scan-state readback is not implemented in Phase 8B.",
+            status="dry_run",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason="Phase 8.1C scan-state query contract built; no CI-V command was sent.",
             extra={
+                "action": "query_scan_state",
+                "phase": "8.1C",
+                "operation_performed": False,
+                "serial_opened": False,
+                "civ_command_sent": False,
+                "read_only": True,
                 "actual_scan_state": "unknown",
+                "planned_read_command": {
+                    "name": "read_scan_state_attempt",
+                    "documented_command_code": "14 0B",
+                    "sent": False,
+                },
+                "fallback_detection": {
+                    "method": "frequency_movement",
+                    "enabled_for_future_phase": True,
+                    "performed": False,
+                },
+                "safety": {
+                    "writes_performed": False,
+                    "memory_write_performed": False,
+                    "memory_clear_performed": False,
+                    "bank_write_performed": False,
+                    "scan_start_performed": False,
+                    "scan_stop_performed": False,
+                    "ptt_or_transmit_control_added": False,
+                    "rigctl_used": False,
+                    "ui_bus_written": False,
+                    "redis_written_by_adapter": False,
+                },
             },
         )
 
@@ -1897,6 +2014,688 @@ class IC2730AAdapter:
             plan=plan,
             summary=summary,
             readback_summary=readback_summary,
+        )
+
+    def _cd_bank_range(self, group: str) -> Optional[tuple[int, int]]:
+        bank = self._safe_group(group)
+        return IC2730A_CD_BANK_CHANNEL_RANGES.get(bank)
+
+    def _cd_memory_channel(self, group: str, channel: int) -> Optional[int]:
+        bank_range = self._cd_bank_range(group)
+        if bank_range is None:
+            return None
+
+        start, end = bank_range
+
+        try:
+            parsed = int(channel)
+        except Exception:
+            return None
+
+        # Accept either a relative bank slot 0-49 or the absolute IC-2730A memory channel.
+        if 0 <= parsed < IC2730A_CD_BANK_SIZE:
+            return start + parsed
+
+        if start <= parsed <= end:
+            return parsed
+
+        return None
+
+    def _normalize_cd_repeater_candidate(self, repeater: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
+        raw = repeater if isinstance(repeater, dict) else {}
+        errors: list[str] = []
+
+        def read_str(name: str, default: str = "") -> str:
+            value = raw.get(name, default)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        def read_float(
+            name: str,
+            *,
+            required: bool,
+            default: Optional[float] = None,
+            minimum: Optional[float] = None,
+            maximum: Optional[float] = None,
+        ) -> Optional[float]:
+            value = raw.get(name)
+
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if required:
+                    errors.append(f"{name} is required")
+                return default
+
+            try:
+                parsed = float(value)
+            except Exception:
+                errors.append(f"{name} must be numeric")
+                return default
+
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+
+            return parsed
+
+        frequency_mhz = read_float(
+            "frequency_mhz",
+            required=True,
+            minimum=118.0,
+            maximum=550.0,
+        )
+
+        mode = read_str("mode", "FM").upper()
+        if mode != "FM":
+            errors.append("mode must be FM for IC-2730A repeater memory planning")
+
+        duplex_raw = read_str("duplex", "simplex").lower()
+        duplex_aliases = {
+            "": "simplex",
+            "none": "simplex",
+            "off": "simplex",
+            "simplex": "simplex",
+            "+": "plus",
+            "plus": "plus",
+            "dup+": "plus",
+            "duplex+": "plus",
+            "-": "minus",
+            "minus": "minus",
+            "dup-": "minus",
+            "duplex-": "minus",
+        }
+        duplex = duplex_aliases.get(duplex_raw)
+        if duplex is None:
+            errors.append("duplex must be one of: simplex, plus, minus, dup+, dup-, +, -")
+            duplex = duplex_raw or "unknown"
+
+        offset_mhz = read_float(
+            "offset_mhz",
+            required=False,
+            default=0.0,
+            minimum=0.0,
+        )
+        if offset_mhz is None:
+            offset_mhz = 0.0
+
+        tone_hz = read_float(
+            "tone_hz",
+            required=False,
+            default=None,
+            minimum=50.0,
+            maximum=300.0,
+        )
+
+        tone_mode_raw = read_str("tone_mode", "").lower()
+        if not tone_mode_raw:
+            tone_mode_raw = "tone" if tone_hz is not None else "none"
+
+        tone_mode_aliases = {
+            "": "none",
+            "none": "none",
+            "off": "none",
+            "no": "none",
+            "tone": "tone",
+            "encode": "tone",
+            "ctcss": "tone",
+            "tsql": "tsql",
+            "tone_sql": "tsql",
+            "tonesql": "tsql",
+            "tone_squelch": "tsql",
+        }
+        tone_mode = tone_mode_aliases.get(tone_mode_raw)
+        if tone_mode is None:
+            errors.append("tone_mode must be one of: none, off, tone, encode, ctcss, tsql")
+            tone_mode = tone_mode_raw or "unknown"
+
+        if tone_mode in {"tone", "tsql"} and tone_hz is None:
+            errors.append("tone_hz is required when tone_mode is tone or tsql")
+
+        label = (
+            read_str("label")
+            or read_str("callsign")
+            or read_str("name")
+            or read_str("repeater_id")
+            or "RT RPT"
+        )
+
+        normalized = {
+            "label": label[:16],
+            "callsign": read_str("callsign"),
+            "name": read_str("name"),
+            "frequency_mhz": round(float(frequency_mhz), 6) if frequency_mhz is not None else None,
+            "mode": mode,
+            "duplex": duplex,
+            "offset_mhz": round(float(offset_mhz), 6),
+            "tone_hz": round(float(tone_hz), 1) if tone_hz is not None else None,
+            "tone_mode": tone_mode,
+            "source_id": read_str("id") or read_str("repeater_id"),
+            "distance_miles": raw.get("distance_miles"),
+            "bearing_degrees": raw.get("bearing_degrees"),
+        }
+
+        return normalized, errors
+
+    def _cd_safety_flags(self) -> Dict[str, Any]:
+        return {
+            "operation_performed": False,
+            "serial_opened": False,
+            "civ_command_sent": False,
+            "writes_performed": False,
+            "memory_write_performed": False,
+            "memory_clear_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "scan_stop_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "ui_bus_written": False,
+            "redis_written_by_adapter": False,
+            "system_bus_written_by_adapter": False,
+        }
+
+    def _cd_gate_summary(self) -> Dict[str, Any]:
+        cfg = self.config
+        return {
+            "enabled": bool(cfg.enabled),
+            "control_mode": cfg.control_mode,
+            "direct_civ_enabled": bool(cfg.direct_civ_enabled),
+            "writes_enabled": bool(cfg.writes_enabled),
+            "memory_programming_enabled": bool(cfg.memory_programming_enabled),
+            "memory_clear_enabled": bool(cfg.memory_clear_enabled),
+            "scan_control_enabled": bool(cfg.scan_control_enabled),
+            "cd_bank_reload_enabled": bool(cfg.cd_bank_reload_enabled),
+            "dry_run_cd_reload": bool(cfg.dry_run_cd_reload),
+            "allowed_reload_banks": list(cfg.allowed_reload_banks),
+            "max_bank_channels": int(cfg.max_bank_channels),
+            "require_rx_not_tx_before_write": bool(cfg.require_rx_not_tx_before_write),
+            "require_stop_scan_before_clear": bool(cfg.require_stop_scan_before_clear),
+            "require_readback_after_write": bool(cfg.require_readback_after_write),
+        }
+
+    def plan_clear_bank(self, group: str) -> Dict[str, Any]:
+        """
+        Phase 8.1C dry-run/no-command bank clear plan.
+
+        Uses uploaded sample reference:
+        - C = 100-149
+        - D = 150-199
+        - CMD 0B clears a memory channel
+
+        No serial open. No CI-V command sent.
+        """
+
+        bank = self._safe_group(group)
+        bank_range = self._cd_bank_range(bank)
+        safety = self._cd_safety_flags()
+
+        if bank_range is None or bank not in self.config.allowed_reload_banks:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason=f"Bank {bank!r} is not allowed for C/D reload planning.",
+                extra={
+                    "action": "plan_clear_bank",
+                    "phase": "8.1C",
+                    **safety,
+                    "target_group": bank,
+                    "gate_summary": self._cd_gate_summary(),
+                    "commands": [],
+                },
+            )
+
+        start, end = bank_range
+        commands = [
+            {
+                "name": "future_clear_memory_channel",
+                "documented_command_code": "0B",
+                "memory_channel": memory_channel,
+                "sent": False,
+            }
+            for memory_channel in range(start, end + 1)
+        ]
+
+        return self._result(
+            ok=True,
+            status="planned",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason=f"Phase 8.1C dry-run clear plan built for bank {bank}; no CI-V command was sent.",
+            extra={
+                "action": "plan_clear_bank",
+                "phase": "8.1C",
+                **safety,
+                "target_group": bank,
+                "memory_channel_start": start,
+                "memory_channel_end": end,
+                "planned_clear_count": len(commands),
+                "gate_summary": self._cd_gate_summary(),
+                "commands": commands,
+            },
+        )
+
+    def plan_program_channel(self, group: str, channel: int, repeater: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Phase 8.1C dry-run/no-command single memory-channel program plan.
+
+        Uses uploaded sample reference:
+        - CMD 08 read/select memory channel
+        - CMD 0A write current VFO state to memory channel
+        - Frequency/mode/duplex/offset/tone/tone-mode sequence occurs before 0A
+
+        No serial open. No CI-V command sent.
+        """
+
+        bank = self._safe_group(group)
+        memory_channel = self._cd_memory_channel(bank, channel)
+        normalized, errors = self._normalize_cd_repeater_candidate(repeater)
+        safety = self._cd_safety_flags()
+
+        if memory_channel is None:
+            errors.append(f"channel {channel!r} is not valid for bank {bank}")
+
+        if bank not in self.config.allowed_reload_banks:
+            errors.append(f"bank {bank!r} is not allowed by config")
+
+        commands: list[Dict[str, Any]] = []
+
+        if not errors:
+            duplex = normalized["duplex"]
+            if duplex == "simplex":
+                duplex_code = "0F 10"
+            elif duplex == "minus":
+                duplex_code = "0F 11"
+            elif duplex == "plus":
+                duplex_code = "0F 12"
+            else:
+                duplex_code = "0F 10/11/12"
+
+            commands = [
+                {
+                    "name": "future_select_a_band_as_main",
+                    "documented_command_code": "07 D0",
+                    "sent": False,
+                },
+                {
+                    "name": "future_write_operating_frequency",
+                    "documented_command_code": "05",
+                    "frequency_mhz": normalized["frequency_mhz"],
+                    "sent": False,
+                },
+                {
+                    "name": "future_set_fm_mode",
+                    "documented_command_code": "06 05",
+                    "mode": normalized["mode"],
+                    "sent": False,
+                },
+                {
+                    "name": "future_write_duplex",
+                    "documented_command_code": duplex_code,
+                    "duplex": normalized["duplex"],
+                    "sent": False,
+                },
+                {
+                    "name": "future_write_offset",
+                    "documented_command_code": "0D",
+                    "offset_mhz": normalized["offset_mhz"],
+                    "sent": False,
+                },
+            ]
+
+            if normalized["tone_mode"] in {"tone", "tsql"}:
+                commands.append(
+                    {
+                        "name": "future_write_repeater_tone_frequency",
+                        "documented_command_code": "1B 00",
+                        "tone_hz": normalized["tone_hz"],
+                        "sent": False,
+                    }
+                )
+
+            commands.append(
+                {
+                    "name": "future_write_tone_mode",
+                    "documented_command_code": "16 42",
+                    "tone_mode": normalized["tone_mode"],
+                    "sent": False,
+                }
+            )
+
+            commands.append(
+                {
+                    "name": "future_write_vfo_state_to_memory_channel",
+                    "documented_command_code": "0A",
+                    "memory_channel": memory_channel,
+                    "sent": False,
+                }
+            )
+
+        if errors:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason="Phase 8.1C program-channel plan rejected: " + "; ".join(errors),
+                extra={
+                    "action": "plan_program_channel",
+                    "phase": "8.1C",
+                    **safety,
+                    "target_group": bank,
+                    "target_channel": channel,
+                    "memory_channel": memory_channel,
+                    "candidate": normalized,
+                    "validation_errors": errors,
+                    "gate_summary": self._cd_gate_summary(),
+                    "commands": commands,
+                },
+            )
+
+        return self._result(
+            ok=True,
+            status="planned",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason=f"Phase 8.1C dry-run program plan built for bank {bank} memory channel {memory_channel}; no CI-V command was sent.",
+            extra={
+                "action": "plan_program_channel",
+                "phase": "8.1C",
+                **safety,
+                "target_group": bank,
+                "target_channel": channel,
+                "memory_channel": memory_channel,
+                "candidate": normalized,
+                "gate_summary": self._cd_gate_summary(),
+                "commands": commands,
+            },
+        )
+
+    def plan_load_bank(
+        self,
+        group: str,
+        repeaters: list[Dict[str, Any]],
+        *,
+        start_scan_after: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Phase 8.1C dry-run/no-command full C/D bank reload plan.
+
+        Controller still owns the decision to reload and which bank is inactive.
+        Adapter owns the radio-specific channel mapping and future CI-V command plan.
+        """
+
+        bank = self._safe_group(group)
+        bank_range = self._cd_bank_range(bank)
+        safety = self._cd_safety_flags()
+
+        raw_repeaters = repeaters if isinstance(repeaters, list) else []
+        errors: list[str] = []
+
+        if bank_range is None:
+            errors.append(f"target_group must be C or D, got {bank!r}")
+
+        if bank not in self.config.allowed_reload_banks:
+            errors.append(f"bank {bank!r} is not allowed by config")
+
+        if len(raw_repeaters) > int(self.config.max_bank_channels):
+            errors.append(
+                f"repeaters list has {len(raw_repeaters)} entries but max_bank_channels is {self.config.max_bank_channels}"
+            )
+
+        if len(raw_repeaters) > IC2730A_CD_BANK_SIZE:
+            errors.append(
+                f"repeaters list has {len(raw_repeaters)} entries but IC-2730A C/D bank size is {IC2730A_CD_BANK_SIZE}"
+            )
+
+        start = None
+        end = None
+        if bank_range is not None:
+            start, end = bank_range
+
+        channel_plans: list[Dict[str, Any]] = []
+
+        if not errors and start is not None:
+            for index, repeater in enumerate(raw_repeaters):
+                memory_channel = start + index
+                normalized, candidate_errors = self._normalize_cd_repeater_candidate(
+                    repeater if isinstance(repeater, dict) else {}
+                )
+
+                channel_plans.append(
+                    {
+                        "slot_index": index,
+                        "memory_channel": memory_channel,
+                        "candidate": normalized,
+                        "valid": not bool(candidate_errors),
+                        "validation_errors": candidate_errors,
+                        "future_write_command": {
+                            "name": "future_write_vfo_state_to_memory_channel",
+                            "documented_command_code": "0A",
+                            "sent": False,
+                        },
+                    }
+                )
+
+                if candidate_errors:
+                    errors.append(f"slot {index} memory {memory_channel}: " + "; ".join(candidate_errors))
+
+        commands: list[Dict[str, Any]] = []
+        if start is not None and end is not None:
+            commands.append(
+                {
+                    "name": "future_stop_scan_before_clear_if_required",
+                    "documented_command_code": "0E 00",
+                    "required_by_config": bool(self.config.require_stop_scan_before_clear),
+                    "sent": False,
+                }
+            )
+
+            commands.append(
+                {
+                    "name": "future_clear_bank",
+                    "documented_command_code": "0B",
+                    "memory_channel_start": start,
+                    "memory_channel_end": end,
+                    "count": IC2730A_CD_BANK_SIZE,
+                    "sent": False,
+                }
+            )
+
+            for item in channel_plans:
+                commands.append(
+                    {
+                        "name": "future_program_memory_channel",
+                        "documented_command_code": "0A",
+                        "memory_channel": item["memory_channel"],
+                        "label": item["candidate"].get("label"),
+                        "sent": False,
+                    }
+                )
+
+            if raw_repeaters:
+                commands.append(
+                    {
+                        "name": "future_select_first_loaded_memory_channel",
+                        "documented_command_code": "08",
+                        "memory_channel": start,
+                        "sent": False,
+                    }
+                )
+
+            if start_scan_after:
+                commands.append(
+                    {
+                        "name": "future_start_memory_bank_scan",
+                        "documented_command_code": "0E 22",
+                        "target_group": bank,
+                        "sent": False,
+                    }
+                )
+
+        if errors:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason="Phase 8.1C C/D bank reload plan rejected: " + "; ".join(errors[:5]),
+                extra={
+                    "action": "plan_cd_bank_reload",
+                    "phase": "8.1C",
+                    **safety,
+                    "target_group": bank,
+                    "requested_count": len(raw_repeaters),
+                    "loaded_count": 0,
+                    "memory_channel_start": start,
+                    "memory_channel_end": end,
+                    "start_scan_after": bool(start_scan_after),
+                    "gate_summary": self._cd_gate_summary(),
+                    "channel_plans": channel_plans,
+                    "commands": commands,
+                    "validation_errors": errors,
+                },
+            )
+
+        return self._result(
+            ok=True,
+            status="planned",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason=f"Phase 8.1C dry-run C/D bank reload plan built for bank {bank}; no CI-V command was sent.",
+            extra={
+                "action": "plan_cd_bank_reload",
+                "phase": "8.1C",
+                **safety,
+                "target_group": bank,
+                "requested_count": len(raw_repeaters),
+                "planned_load_count": len(channel_plans),
+                "memory_channel_start": start,
+                "memory_channel_end": end,
+                "start_scan_after": bool(start_scan_after),
+                "gate_summary": self._cd_gate_summary(),
+                "channel_plans": channel_plans,
+                "commands": commands,
+                "summary": {
+                    "controller_owns_reload_decision": True,
+                    "adapter_owns_civ_bytes": True,
+                    "ui_renderer_only": True,
+                    "ready_for_phase_8_1d_real_gated_clear_load": False,
+                },
+            },
+        )
+
+    def plan_start_memory_bank_scan(self, group: str) -> Dict[str, Any]:
+        bank = self._safe_group(group)
+        bank_range = self._cd_bank_range(bank)
+        safety = self._cd_safety_flags()
+
+        if bank_range is None or bank not in self.config.allowed_reload_banks:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+                reason=f"Bank {bank!r} is not allowed for memory bank scan planning.",
+                extra={
+                    "action": "plan_start_memory_bank_scan",
+                    "phase": "8.1C",
+                    **safety,
+                    "target_group": bank,
+                    "gate_summary": self._cd_gate_summary(),
+                    "commands": [],
+                },
+            )
+
+        start, _end = bank_range
+
+        return self._result(
+            ok=True,
+            status="planned",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason=f"Phase 8.1C memory bank scan start plan built for bank {bank}; no CI-V command was sent.",
+            extra={
+                "action": "plan_start_memory_bank_scan",
+                "phase": "8.1C",
+                **safety,
+                "target_group": bank,
+                "gate_summary": self._cd_gate_summary(),
+                "commands": [
+                    {
+                        "name": "future_select_first_memory_channel_in_bank",
+                        "documented_command_code": "08",
+                        "memory_channel": start,
+                        "sent": False,
+                    },
+                    {
+                        "name": "future_start_memory_bank_scan",
+                        "documented_command_code": "0E 22",
+                        "sent": False,
+                    },
+                ],
+            },
+        )
+
+    def query_active_bank(self) -> Dict[str, Any]:
+        """
+        Phase 8.1C no-command active-bank query contract.
+
+        Future implementation should read/select current memory channel with CMD 08
+        and derive C/D from the absolute memory channel number.
+        """
+
+        return self._result(
+            ok=True,
+            status="dry_run",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason="Phase 8.1C active-bank query contract built; no CI-V command was sent.",
+            extra={
+                "action": "query_active_bank",
+                "phase": "8.1C",
+                **self._cd_safety_flags(),
+                "active_group": None,
+                "active_memory_channel": None,
+                "planned_read_command": {
+                    "name": "future_read_active_memory_channel",
+                    "documented_command_code": "08",
+                    "sent": False,
+                },
+                "bank_mapping": {
+                    "C": {"start": 100, "end": 149},
+                    "D": {"start": 150, "end": 199},
+                },
+                "gate_summary": self._cd_gate_summary(),
+            },
+        )
+
+    def query_active_memory_data(self) -> Dict[str, Any]:
+        """
+        Phase 8.1C no-command active-memory-data contract.
+
+        Future implementation should read the active memory channel and publish a
+        controller-owned VHF active memory model after successful load/readback.
+        """
+
+        return self._result(
+            ok=True,
+            status="dry_run",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason="Phase 8.1C active-memory-data query contract built; no CI-V command was sent.",
+            extra={
+                "action": "query_active_memory_data",
+                "phase": "8.1C",
+                **self._cd_safety_flags(),
+                "active_memory": {
+                    "status": "unknown",
+                    "active_group": None,
+                    "active_memory_channel": None,
+                    "items": [],
+                },
+                "planned_read_commands": [
+                    {
+                        "name": "future_read_active_memory_channel",
+                        "documented_command_code": "08",
+                        "sent": False,
+                    }
+                ],
+                "gate_summary": self._cd_gate_summary(),
+            },
         )
 
     def set_side_b_146520_fm(self) -> Dict[str, Any]:

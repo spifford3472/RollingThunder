@@ -427,6 +427,68 @@ def process_request_if_needed(
         result["source"] = SOURCE
         result["updated_utc"] = utc_now_iso()
 
+    elif action in {"plan_cd_bank_reload", "plan_load_bank"}:
+        repeaters = request.get("repeaters")
+        result = adapter.plan_load_bank(
+            str(request.get("target_group") or request.get("group") or ""),
+            repeaters if isinstance(repeaters, list) else [],
+            start_scan_after=boolish(request.get("start_scan_after"), False),
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "plan_clear_bank":
+        result = adapter.plan_clear_bank(
+            str(request.get("target_group") or request.get("group") or ""),
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "plan_program_channel":
+        result = adapter.plan_program_channel(
+            str(request.get("target_group") or request.get("group") or ""),
+            intish(request.get("target_channel") or request.get("channel"), -1, -1),
+            request.get("repeater") if isinstance(request.get("repeater"), dict) else {},
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "plan_start_memory_bank_scan":
+        result = adapter.plan_start_memory_bank_scan(
+            str(request.get("target_group") or request.get("group") or ""),
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "query_scan_state":
+        result = adapter.query_scan_state()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "query_active_bank":
+        result = adapter.query_active_bank()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "query_active_memory_data":
+        result = adapter.query_active_memory_data()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
     else:
         result = rejected_request_result(
             request_id,
