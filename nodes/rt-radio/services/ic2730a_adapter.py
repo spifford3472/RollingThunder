@@ -92,6 +92,8 @@ DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED = False
 
+DEFAULT_DIRECT_CIV_CD_MEMORY_READ_PROOF_ENABLED = False
+
 STANDARD_CTCSS_TONES_HZ = (
     67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4,
     88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9,
@@ -390,6 +392,7 @@ class IC2730AConfig:
     direct_civ_side_a_real_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED
     direct_civ_side_a_repeater_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED
     direct_civ_side_a_duplex_proof_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED
+    direct_civ_cd_memory_read_proof_enabled: bool = DEFAULT_DIRECT_CIV_CD_MEMORY_READ_PROOF_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
     direct_civ_baud: int = DEFAULT_DIRECT_CIV_BAUD
@@ -584,6 +587,10 @@ class IC2730AConfig:
                 ic.get("direct_civ_side_a_duplex_proof_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED,
             ),
+            direct_civ_cd_memory_read_proof_enabled=_safe_bool(
+                cd_value("cd_memory_read_proof_enabled", DEFAULT_DIRECT_CIV_CD_MEMORY_READ_PROOF_ENABLED),
+                DEFAULT_DIRECT_CIV_CD_MEMORY_READ_PROOF_ENABLED,
+            ),
             direct_civ_serial_port=_safe_str(
                 ic.get("direct_civ_serial_port"),
                 _safe_str(ic.get("serial_port"), DEFAULT_DIRECT_CIV_SERIAL_PORT),
@@ -648,6 +655,7 @@ class IC2730AAdapter:
             "memory_programming_enabled": bool(cfg.memory_programming_enabled),
             "memory_clear_enabled": bool(cfg.memory_clear_enabled),
             "cd_bank_reload_enabled": bool(cfg.cd_bank_reload_enabled),
+            "cd_memory_read_proof_enabled": bool(cfg.direct_civ_cd_memory_read_proof_enabled),
             "dry_run_cd_reload": bool(cfg.dry_run_cd_reload),
             "allowed_reload_banks": list(cfg.allowed_reload_banks),
             "max_bank_channels": int(cfg.max_bank_channels),
@@ -2207,6 +2215,7 @@ class IC2730AAdapter:
             "memory_clear_enabled": bool(cfg.memory_clear_enabled),
             "scan_control_enabled": bool(cfg.scan_control_enabled),
             "cd_bank_reload_enabled": bool(cfg.cd_bank_reload_enabled),
+            "cd_memory_read_proof_enabled": bool(cfg.direct_civ_cd_memory_read_proof_enabled),
             "dry_run_cd_reload": bool(cfg.dry_run_cd_reload),
             "allowed_reload_banks": list(cfg.allowed_reload_banks),
             "max_bank_channels": int(cfg.max_bank_channels),
@@ -2214,6 +2223,299 @@ class IC2730AAdapter:
             "require_stop_scan_before_clear": bool(cfg.require_stop_scan_before_clear),
             "require_readback_after_write": bool(cfg.require_readback_after_write),
         }
+
+    def direct_civ_memory_channel_read_proof(self, group: str, channel: int) -> Dict[str, Any]:
+        """
+        Phase 8.1D-2 gated direct CI-V CMD 08 current-memory-channel read proof.
+
+        Uploaded IC-2730A bank-manager sample says:
+        - CMD 0x08 with no data reads the currently selected memory channel.
+        - There is no direct read-current-bank command.
+        - Bank is derived from current memory channel number.
+
+        This proof sends only:
+          08
+
+        It does not select a memory channel and does not send a channel argument.
+        """
+        cfg = self.config
+        expected_bank = self._safe_group(group)
+
+        try:
+            expected_requested_channel = int(channel)
+        except Exception:
+            expected_requested_channel = -1
+
+        expected_absolute_memory_channel = self._cd_memory_channel(
+            expected_bank,
+            expected_requested_channel,
+        )
+        expected_bank_range = self._cd_bank_range(expected_bank)
+
+        safety = {
+            "read_only": True,
+            "writes_performed": False,
+            "frequency_write_performed": False,
+            "mode_write_performed": False,
+            "duplex_write_performed": False,
+            "offset_write_performed": False,
+            "tone_write_performed": False,
+            "memory_write_performed": False,
+            "memory_clear_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "scan_stop_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "hamlib_used": False,
+            "ui_bus_written": False,
+            "redis_written_by_adapter": False,
+            "system_bus_written_by_adapter": False,
+        }
+
+        def bank_for_channel(memory_channel: Optional[int]) -> Optional[str]:
+            if memory_channel is None:
+                return None
+            all_banks = {
+                "A": (0, 49),
+                "B": (50, 99),
+                "C": (100, 149),
+                "D": (150, 199),
+                "E": (200, 249),
+                "F": (250, 299),
+                "G": (300, 349),
+                "H": (350, 399),
+                "I": (400, 449),
+                "J": (450, 499),
+            }
+            for bank, (start, end) in all_banks.items():
+                if start <= int(memory_channel) <= end:
+                    return bank
+            return None
+
+        def base_extra() -> Dict[str, Any]:
+            return {
+                "action": "direct_civ_memory_channel_read_proof",
+                "phase": "8.1D-2",
+                "operation_performed": False,
+                "serial_opened": False,
+                "civ_command_sent": False,
+                "control_path": "direct_civ",
+                "target_group": expected_bank,
+                "target_channel": expected_requested_channel,
+                "expected_absolute_memory_channel": expected_absolute_memory_channel,
+                "expected_bank_range": {
+                    "start": expected_bank_range[0],
+                    "end": expected_bank_range[1],
+                } if expected_bank_range else None,
+                "documented_command_code": "08",
+                "command": {},
+                "parsed": {},
+                "gate_summary": self._cd_gate_summary(),
+                "safety": safety,
+            }
+
+        errors: list[str] = []
+
+        if expected_bank not in {"C", "D"}:
+            errors.append("target_group must be C or D for this C/D proof")
+
+        if expected_bank not in cfg.allowed_reload_banks:
+            errors.append(f"bank {expected_bank!r} is not allowed by config")
+
+        if expected_absolute_memory_channel is None:
+            errors.append(
+                f"target_channel {expected_requested_channel!r} is not valid for bank {expected_bank}; "
+                "use relative slot 0-49 or absolute channel in the bank range"
+            )
+
+        if errors:
+            return self._result(
+                ok=False,
+                status="rejected",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Phase 8.1D-2 CMD 08 current-memory-channel proof rejected: " + "; ".join(errors),
+                extra={
+                    **base_extra(),
+                    "validation_errors": errors,
+                },
+            )
+
+        gate_failures: list[str] = []
+
+        if not cfg.enabled:
+            gate_failures.append("enabled=false")
+        if cfg.control_mode == "disabled":
+            gate_failures.append("control_mode=disabled")
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_cd_memory_read_proof_enabled:
+            gate_failures.append("cd_memory_read_proof_enabled=false")
+
+        if gate_failures:
+            return self._result(
+                ok=False,
+                status="disabled",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Direct CI-V C/D memory read proof disabled by config: " + ", ".join(gate_failures),
+                extra={
+                    **base_extra(),
+                    "gate_failures": gate_failures,
+                },
+            )
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        # Uploaded sample: CMD 08 with no argument queries current memory channel.
+        payload = bytes([0x08])
+
+        result_extra = base_extra()
+        result_extra.update(
+            {
+                "operation_performed": False,
+                "serial_opened": False,
+                "civ_command_sent": False,
+                "controller_address_hex": f"{controller_addr:02X}",
+                "transceiver_address_hex": f"{transceiver_addr:02X}",
+                "memory_channel_encoding": {
+                    "encoding": "sample_cmd08_no_argument_read_current_channel",
+                    "request_payload_hex": "08",
+                    "response_payload_format": "08 <ch_hundreds_bcd> <ch_tens_ones_bcd>",
+                    "example_response_channel_150": "08 01 50",
+                },
+                "command": {
+                    "name": "cmd08_read_current_memory_channel",
+                    "documented_command_code": "08",
+                    "payload_hex": "08",
+                    "sent": False,
+                },
+            }
+        )
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            return self._result(
+                ok=False,
+                status="unavailable",
+                available=False,
+                reason=f"Python pyserial module is not available; no CI-V command was sent: {exc}",
+                extra=result_extra,
+            )
+
+        serial_opened = False
+
+        try:
+            with serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            ) as port:
+                serial_opened = True
+
+                command_result = self._direct_civ_send_payload_full_window(
+                    port=port,
+                    name="cmd08_read_current_memory_channel",
+                    payload=payload,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+
+                raw = bytes.fromhex(str(command_result.get("raw_response_hex", "")).replace(" ", ""))
+                frames = self._direct_civ_split_frames(raw)
+                response_payload = self._direct_civ_find_response_payload(
+                    frames=frames,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    expected_prefix=bytes([0x08]),
+                )
+
+                current_memory_channel = None
+                active_bank = None
+
+                if response_payload is not None and len(response_payload) >= 3:
+                    current_memory_channel = self._direct_civ_decode_memory_channel_bcd_sample(
+                        response_payload[1:3]
+                    )
+                    active_bank = bank_for_channel(current_memory_channel)
+
+                expected_matches = (
+                    current_memory_channel is not None
+                    and expected_absolute_memory_channel is not None
+                    and int(current_memory_channel) == int(expected_absolute_memory_channel)
+                )
+
+                parsed = {
+                    "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                    "matching_cmd08_response_found": response_payload is not None,
+                    "current_memory_channel": current_memory_channel,
+                    "active_bank": active_bank,
+                    "expected_memory_channel": expected_absolute_memory_channel,
+                    "expected_bank": expected_bank,
+                    "expected_matches_current": expected_matches,
+                    "ok_ng_status": command_result.get("response_status", {}),
+                    "parse_confidence": (
+                        "sample_cmd08_bcd_channel"
+                        if current_memory_channel is not None
+                        else "raw_only"
+                    ),
+                }
+
+                ok = current_memory_channel is not None
+                status = "ok" if ok else "partial"
+
+                result_extra.update(
+                    {
+                        "operation_performed": True,
+                        "serial_opened": True,
+                        "civ_command_sent": bool(command_result.get("sent")),
+                        "command": command_result,
+                        "parsed": parsed,
+                        "active_group": active_bank,
+                        "active_memory_channel": current_memory_channel,
+                        "expected_matches_current": expected_matches,
+                        "safety": safety,
+                    }
+                )
+
+                return self._result(
+                    ok=ok,
+                    status=status,
+                    available=True,
+                    reason=(
+                        "Phase 8.1D-2 CMD 08 current-memory-channel proof completed; no clear/write/scan command was sent."
+                        if ok
+                        else "Phase 8.1D-2 CMD 08 command was sent, but current memory channel could not be decoded; see command.raw_response_hex."
+                    ),
+                    extra=result_extra,
+                )
+
+        except Exception as exc:
+            result_extra.update(
+                {
+                    "operation_performed": bool(serial_opened),
+                    "serial_opened": bool(serial_opened),
+                    "civ_command_sent": False,
+                    "safety": safety,
+                }
+            )
+            return self._result(
+                ok=False,
+                status="error" if serial_opened else "unavailable",
+                available=False,
+                reason=f"Phase 8.1D-2 CMD 08 current-memory-channel proof failed: {exc}",
+                extra=result_extra,
+            )
 
     def plan_clear_bank(self, group: str) -> Dict[str, Any]:
         """
@@ -5678,6 +5980,202 @@ class IC2730AAdapter:
             "tone_squelch_frequency_ok": bool(by_name.get("tone_squelch_frequency", {}).get("ok")),
             "dtcs_code_polarity_ok": bool(by_name.get("dtcs_code_polarity", {}).get("ok")),
         }
+
+    @staticmethod
+    def _direct_civ_hex_bytes(data: bytes) -> str:
+        return " ".join(f"{b:02X}" for b in bytes(data or b""))
+
+    @staticmethod
+    def _direct_civ_build_frame(
+        *,
+        payload: bytes,
+        controller_addr: int,
+        transceiver_addr: int,
+    ) -> bytes:
+        return bytes([0xFE, 0xFE, transceiver_addr, controller_addr]) + bytes(payload) + b"\xFD"
+
+    @staticmethod
+    def _direct_civ_decode_memory_channel_bcd_sample(data: bytes) -> Optional[int]:
+        """
+        Decode IC-2730A sample-program CMD 08 channel response.
+
+        Sample says response payload is:
+          08 <ch_hundreds_bcd> <ch_tens_ones_bcd>
+
+        Examples:
+          00 00 -> 0
+          00 49 -> 49
+          01 00 -> 100
+          01 50 -> 150
+          04 99 -> 499
+        """
+        if len(data) < 2:
+            return None
+
+        digits: list[str] = []
+        for byte in data[:2]:
+            high = (byte >> 4) & 0x0F
+            low = byte & 0x0F
+            if high > 9 or low > 9:
+                return None
+            digits.append(str(high))
+            digits.append(str(low))
+
+        try:
+            return int("".join(digits))
+        except Exception:
+            return None
+        
+    @staticmethod
+    def _direct_civ_encode_memory_channel_bcd(memory_channel: int) -> bytes:
+        """
+        Encode IC-2730A memory channel for the uploaded bank-manager sample command family.
+
+        Conservative layout used for this first proof:
+        - 2 BCD bytes
+        - least-significant decimal pair first
+        - 150 -> 50 01
+        - 100 -> 00 01
+        - 199 -> 99 01
+
+        This is only used by the explicitly gated CMD 08 memory read/select proof.
+        """
+        channel = int(memory_channel)
+        if channel < 0 or channel > 9999:
+            raise ValueError(f"memory_channel out of BCD range: {memory_channel!r}")
+
+        digits = f"{channel:04d}"
+        return bytes(
+            [
+                (int(digits[2]) << 4) | int(digits[3]),
+                (int(digits[0]) << 4) | int(digits[1]),
+            ]
+        )
+
+    @staticmethod
+    def _direct_civ_response_status(raw: bytes) -> Dict[str, Any]:
+        frames = IC2730AAdapter._direct_civ_split_frames(raw)
+
+        for frame in frames:
+            payload = frame[4:-1] if len(frame) >= 6 else b""
+            if payload == b"\xFB" or b"\xFB" in payload:
+                return {
+                    "status": "ok",
+                    "ok": True,
+                    "reason": "CI-V OK response received.",
+                    "frame_hex": IC2730AAdapter._direct_civ_hex_bytes(frame),
+                }
+            if payload == b"\xFA" or b"\xFA" in payload:
+                return {
+                    "status": "ng",
+                    "ok": False,
+                    "reason": "CI-V NG response received.",
+                    "frame_hex": IC2730AAdapter._direct_civ_hex_bytes(frame),
+                }
+
+        if frames:
+            return {
+                "status": "frame_without_ok_ng",
+                "ok": False,
+                "reason": "CI-V frame received, but no OK/NG payload was found.",
+                "frame_count": len(frames),
+            }
+
+        return {
+            "status": "timeout",
+            "ok": False,
+            "reason": "No complete CI-V response frame was parsed.",
+            "frame_count": 0,
+        }
+
+    @staticmethod
+    def _direct_civ_read_raw_full_window(*, port: Any, timeout_seconds: float) -> bytes:
+        """
+        Read for the full timeout window.
+
+        This is intentionally different from _direct_civ_read_raw(), which may stop
+        after the first frame. For proof commands we want to capture possible echo
+        plus a later OK/NG or readback frame.
+        """
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        chunks: list[bytes] = []
+
+        while time.monotonic() < deadline:
+            chunk = port.read(256)
+            if chunk:
+                chunks.append(chunk)
+            else:
+                time.sleep(0.02)
+
+        return b"".join(chunks)
+
+    def _direct_civ_send_payload_full_window(
+        self,
+        *,
+        port: Any,
+        name: str,
+        payload: bytes,
+        controller_addr: int,
+        transceiver_addr: int,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        frame = self._direct_civ_build_frame(
+            payload=payload,
+            controller_addr=controller_addr,
+            transceiver_addr=transceiver_addr,
+        )
+
+        result: Dict[str, Any] = {
+            "name": name,
+            "documented_command_code": self._direct_civ_hex_bytes(payload),
+            "payload_hex": self._direct_civ_hex_bytes(payload),
+            "frame_hex": self._direct_civ_hex_bytes(frame),
+            "sent": False,
+            "raw_response_hex": "",
+            "response_status": {
+                "status": "not_sent",
+                "ok": False,
+                "reason": "Command was not sent.",
+            },
+            "ok": False,
+            "reason": "",
+        }
+
+        try:
+            try:
+                port.reset_input_buffer()
+            except Exception:
+                pass
+
+            try:
+                port.reset_output_buffer()
+            except Exception:
+                pass
+
+            port.write(frame)
+            port.flush()
+            result["sent"] = True
+
+            raw = self._direct_civ_read_raw_full_window(
+                port=port,
+                timeout_seconds=timeout_seconds,
+            )
+            result["raw_response_hex"] = self._direct_civ_hex_bytes(raw)
+            response_status = self._direct_civ_response_status(raw)
+            result["response_status"] = response_status
+            result["ok"] = bool(response_status.get("ok"))
+            result["reason"] = str(response_status.get("reason") or "CI-V command completed.")
+            return result
+
+        except Exception as exc:
+            result["ok"] = False
+            result["response_status"] = {
+                "status": "error",
+                "ok": False,
+                "reason": f"CI-V command failed: {exc}",
+            }
+            result["reason"] = f"CI-V command failed: {exc}"
+            return result
 
     @staticmethod
     def _direct_civ_read_raw(*, port: Any, timeout_seconds: float) -> bytes:

@@ -41,7 +41,7 @@ SOURCE = "vhf_repeater_scan_manager"
 
 KEY_SCAN = "rt:vhf:scan"
 KEY_SCAN_REQUEST = "rt:vhf:scan:request"
-KEY_VHF_ADAPTER = "rt:vhf:adapter"
+KEY_VHF_RADIO = "rt:vhf:radio"
 KEY_NEARBY = "rt:vhf:repeaters:nearby"
 KEY_GPS_POS = "rt:gps:pos"
 KEY_PLANNED_MEMORY = "rt:vhf:repeaters:planned_memory"
@@ -60,6 +60,23 @@ DEFAULT_FORCE_PUBLISH_SECONDS = 300.0
 DEFAULT_NEXT_GROUP = "C"
 VALID_GROUPS = {"C", "D"}
 
+def radio_status(radio: Dict[str, Any]) -> str:
+    return str(radio.get("status", "")).strip().lower()
+
+
+def radio_available(radio: Dict[str, Any]) -> bool:
+    if not radio:
+        return False
+    status = radio_status(radio)
+    return boolish(radio.get("available"), False) and status in {"available", "ready"}
+
+
+def radio_in_dry_run(radio: Dict[str, Any]) -> bool:
+    return radio_status(radio) == "dry_run"
+
+
+def radio_disabled(radio: Dict[str, Any]) -> bool:
+    return radio_status(radio) == "disabled"
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -668,7 +685,7 @@ def build_model(
     redis_client: RedisCli,
     config: Dict[str, Any],
     request: Dict[str, Any],
-    adapter: Dict[str, Any],
+    radio: Dict[str, Any],
     nearby: Dict[str, Any],
     previous: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
@@ -722,8 +739,8 @@ def build_model(
 
     nearby_count = count_nearby(nearby)
     eligible_count = nearby_count
-    adapter_status_value = adapter_status(adapter)
-    adapter_reason = str(adapter.get("reason", "")).strip()
+    radio_status_value = radio_status(radio)
+    radio_reason = str(radio.get("reason", "")).strip()
 
     reload_pending = False
     reload_in_progress = False
@@ -736,21 +753,21 @@ def build_model(
         reload_pending = False
         reload_in_progress = False
 
-    elif not adapter:
+    elif not radio:
         status = "unavailable"
-        reason = "IC-2730A adapter status unavailable."
+        reason = "VHF radio availability model unavailable."
         actual_scan_state = "unknown"
         enabled = False
 
-    elif not adapter_available(adapter):
-        status = "unavailable"
-        reason = adapter_reason or "IC-2730A adapter/control path unavailable."
-        actual_scan_state = "unknown"
+    elif radio_disabled(radio):
+        status = "disabled"
+        reason = radio_reason or "VHF radio/control path disabled."
+        actual_scan_state = "not_scanning"
         enabled = False
 
-    elif adapter_in_dry_run(adapter):
+    elif radio_in_dry_run(radio):
         status = "dry_run"
-        reason = "IC-2730A adapter is in dry-run mode; dry-run planning only."
+        reason = "VHF radio is in dry-run mode; dry-run planning only."
         actual_scan_state = "not_scanning"
         enabled = False
 
@@ -793,13 +810,9 @@ def build_model(
         else:
             reason = "Dry-run reload planning disabled by config."
 
-    elif adapter_detected(adapter) and (
-        not adapter_writes_enabled(adapter)
-        or not adapter_memory_programming_enabled(adapter)
-        or not adapter_scan_control_enabled(adapter)
-    ):
-        status = "pending"
-        reason = "IC-2730A detected, but memory programming/write/scan-control gates are disabled."
+    elif not radio_available(radio):
+        status = "unavailable"
+        reason = radio_reason or "VHF radio/control path unavailable."
         actual_scan_state = "unknown"
         enabled = False
 
@@ -811,7 +824,7 @@ def build_model(
 
     else:
         status = "pending"
-        reason = "All adapter gates appear enabled, but Phase 8A remains dry-run only; no radio command issued."
+        reason = "VHF radio is available, but this phase does not issue scan, tune, memory, or adapter commands."
         actual_scan_state = "unknown"
         enabled = False
 
@@ -843,12 +856,17 @@ def build_model(
         "nearby_count": nearby_count,
         "eligible_count": eligible_count,
         "nearby_model_radius_miles": nearby.get("radius_miles"),
-        "adapter_status": adapter_status_value or None,
-        "adapter_available": bool(adapter_available(adapter)),
-        "adapter_control_mode": adapter.get("control_mode") if isinstance(adapter, dict) else None,
-        "adapter_writes_enabled": adapter_writes_enabled(adapter) if isinstance(adapter, dict) else False,
-        "adapter_memory_programming_enabled": adapter_memory_programming_enabled(adapter) if isinstance(adapter, dict) else False,
-        "adapter_scan_control_enabled": adapter_scan_control_enabled(adapter) if isinstance(adapter, dict) else False,
+        "vhf_radio_status": radio_status_value or None,
+        "vhf_radio_available": bool(radio_available(radio)),
+        "vhf_radio_reason": radio_reason or None,
+
+        # Compatibility aliases for existing display/debug panels.
+        "adapter_status": radio_status_value or None,
+        "adapter_available": bool(radio_available(radio)),
+        "adapter_control_mode": radio.get("adapter_control_mode") if isinstance(radio, dict) else None,
+        "adapter_writes_enabled": False,
+        "adapter_memory_programming_enabled": False,
+        "adapter_scan_control_enabled": False,
         "source": SOURCE,
         "updated_utc": utc_now(),
     }
@@ -924,12 +942,11 @@ def main() -> int:
                 redis_client = RedisCli()
 
             request = load_json_model(redis_client, KEY_SCAN_REQUEST)
-            adapter = load_json_model(redis_client, KEY_VHF_ADAPTER)
+            radio = load_json_model(redis_client, KEY_VHF_RADIO)
             nearby = load_json_model(redis_client, KEY_NEARBY)
             previous = load_json_model(redis_client, KEY_SCAN)
 
-            model, planned_memory = build_model(redis_client, config, request, adapter, nearby, previous)
-
+            model, planned_memory = build_model(redis_client, config, request, radio, nearby, previous)
             force = (time.monotonic() - last_force_publish) >= force_publish_seconds
 
             planned_wrote = False

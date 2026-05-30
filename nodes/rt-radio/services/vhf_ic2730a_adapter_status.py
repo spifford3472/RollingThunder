@@ -63,6 +63,15 @@ MAX_REMEMBERED_REQUEST_IDS = 200
 
 _running = True
 
+NO_RADIO_REQUIRED_ACTIONS = {
+    "plan_cd_bank_reload",
+    "plan_load_bank",
+    "plan_clear_bank",
+    "plan_program_channel",
+    "plan_start_memory_bank_scan",
+}
+
+RADIO_READY_STATUSES = {"available", "ready", "detected"}
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -364,6 +373,14 @@ def request_already_handled(
 
     return False
 
+def adapter_ready_for_radio_request(adapter_model: Dict[str, Any]) -> bool:
+    status = str(adapter_model.get("status") or "").strip().lower()
+    control_mode = str(adapter_model.get("control_mode") or "").strip().lower()
+
+    if control_mode in {"disabled", "dry_run"}:
+        return False
+
+    return boolish(adapter_model.get("available"), False) and status in RADIO_READY_STATUSES
 
 def rejected_request_result(request_id: str, action: str, reason: str) -> Dict[str, Any]:
     return {
@@ -405,7 +422,26 @@ def process_request_if_needed(
 
     config = IC2730AConfig.from_app_config(app)
     adapter = IC2730AAdapter(config)
+    adapter_model_before_request = normalize_adapter_status(adapter.get_status())
 
+    if action not in NO_RADIO_REQUIRED_ACTIONS and not adapter_ready_for_radio_request(adapter_model_before_request):
+        result = rejected_request_result(
+            request_id,
+            action or "unknown",
+            "IC-2730A radio/control path unavailable; unsafe adapter request rejected.",
+        )
+        publish_request_result(
+            client,
+            adapter_model_before_request,
+            result,
+            "adapter_request_rejected_radio_unavailable",
+        )
+        remember_request_id(request_id, remembered, remembered_order)
+        log(
+            f"rejected request_id={request_id} action={action or 'unknown'} "
+            f"because radio/control path is unavailable"
+        )
+        return True
     if action == "write_single_memory_test":
         result = adapter.write_single_memory_test(
             str(request.get("target_group") or ""),
@@ -484,6 +520,20 @@ def process_request_if_needed(
 
     elif action == "query_active_memory_data":
         result = adapter.query_active_memory_data()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "direct_civ_memory_channel_read_proof":
+        raw_target_channel = request.get("target_channel")
+        if raw_target_channel is None:
+            raw_target_channel = request.get("channel")
+
+        result = adapter.direct_civ_memory_channel_read_proof(
+            str(request.get("target_group") or request.get("group") or ""),
+            intish(raw_target_channel, -1, -1),
+        )
         result["request_id"] = request_id
         result["action"] = action
         result["source"] = SOURCE
