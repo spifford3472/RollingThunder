@@ -2834,21 +2834,32 @@ class IC2730AAdapter:
                     }
                 )
 
+        rejected_count = sum(
+            1
+            for item in channel_plans
+            if isinstance(item, dict) and not bool(item.get("valid"))
+        )
+
         if errors:
             return self._result(
                 ok=False,
                 status="rejected",
                 available=bool(self.config.enabled and self.config.control_mode != "disabled"),
-                reason="Phase 8.1C C/D bank reload plan rejected: " + "; ".join(errors[:5]),
+                reason="Planning only rejected before any radio operation: " + "; ".join(errors[:5]),
                 extra={
                     "action": "plan_cd_bank_reload",
-                    "phase": "8.1C",
+                    "phase": "8.1D",
                     **safety,
                     "target_group": bank,
                     "requested_count": len(raw_repeaters),
-                    "loaded_count": 0,
+                    "planned_count": 0,
+                    "planned_load_count": 0,
+                    "rejected_count": max(rejected_count, len(errors)),
                     "memory_channel_start": start,
                     "memory_channel_end": end,
+                    "would_clear_bank": bool(start is not None and end is not None),
+                    "would_program_channels": False,
+                    "would_start_scan_after": bool(start_scan_after),
                     "start_scan_after": bool(start_scan_after),
                     "gate_summary": self._cd_gate_summary(),
                     "channel_plans": channel_plans,
@@ -2857,20 +2868,27 @@ class IC2730AAdapter:
                 },
             )
 
+        planned_count = len(channel_plans)
+
         return self._result(
             ok=True,
             status="planned",
             available=bool(self.config.enabled and self.config.control_mode != "disabled"),
-            reason=f"Phase 8.1C dry-run C/D bank reload plan built for bank {bank}; no CI-V command was sent.",
+            reason="Planning only; no radio operation performed.",
             extra={
                 "action": "plan_cd_bank_reload",
-                "phase": "8.1C",
+                "phase": "8.1D",
                 **safety,
                 "target_group": bank,
                 "requested_count": len(raw_repeaters),
-                "planned_load_count": len(channel_plans),
+                "planned_count": planned_count,
+                "planned_load_count": planned_count,
+                "rejected_count": 0,
                 "memory_channel_start": start,
                 "memory_channel_end": end,
+                "would_clear_bank": True,
+                "would_program_channels": planned_count > 0,
+                "would_start_scan_after": bool(start_scan_after),
                 "start_scan_after": bool(start_scan_after),
                 "gate_summary": self._cd_gate_summary(),
                 "channel_plans": channel_plans,
@@ -2879,11 +2897,11 @@ class IC2730AAdapter:
                     "controller_owns_reload_decision": True,
                     "adapter_owns_civ_bytes": True,
                     "ui_renderer_only": True,
-                    "ready_for_phase_8_1d_real_gated_clear_load": False,
+                    "ready_for_real_gated_clear_load": False,
                 },
             },
         )
-
+    
     def plan_start_memory_bank_scan(self, group: str) -> Dict[str, Any]:
         bank = self._safe_group(group)
         bank_range = self._cd_bank_range(bank)
