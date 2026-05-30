@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 49
+    "build": 51
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -647,6 +647,12 @@
     },
     "scan": {
       "enabled_default": false,
+      "software_scan_enabled": true,
+      "dwell_ms": 500,
+      "confirm_squelch_seconds": 5,
+      "resume_idle_seconds": 15,
+      "idle_poll_seconds": 1,
+      "adapter_result_timeout_seconds": 3,
       "reload_distance_miles": 20,
       "reload_radius_miles": 25,
       "movement_min_delta_miles": 0.05,
@@ -659,15 +665,20 @@
     },
     "ic2730a": {
       "enabled": true,
-      "control_mode": "dry_run",
+      "control_mode": "hamlib_write_test",
       "hamlib_model": 3072,
       "serial_port": "/dev/ic2730a",
       "baud": 9600,
       "timeout_seconds": 2.0,
+      "software_scan_enabled": true,
+      "allow_vfo_tune": true,
+      "allow_smeter_read": true,
+      "allow_rx_tx_status_read": true,
       "writes_enabled": false,
       "scan_control_enabled": false,
       "side_b_programming_enabled": false,
       "memory_programming_enabled": false,
+      "smeter_squlech_threshold": 25,
       "detect_enabled": true,
       "publish_adapter_status": true,
       "publish_interval_seconds": 30,
@@ -683,11 +694,11 @@
       "require_rx_not_tx_before_write": true,
       "require_stop_scan_before_clear": true,
       "require_readback_after_write": true,
+      "direct_civ_readonly_probe_enabled": true,
       "direct_civ_enabled": true,
       "cd_reload": {
         "cd_memory_read_proof_enabled": true
       },
-      "direct_civ_readonly_probe_enabled": true,
       "direct_civ_serial_port": "/dev/ic2730a",
       "direct_civ_baud": 9600,
       "direct_civ_controller_address_hex": "E0",
@@ -708,10 +719,10 @@
         "tone_squelch_frequency",
         "dtcs_code_polarity"
       ],
-      "direct_civ_side_a_readiness_probe_enabled": false,
-      "direct_civ_side_a_write_plan_enabled": false,
+      "direct_civ_side_a_readiness_probe_enabled": true,
+      "direct_civ_side_a_write_plan_enabled": true,
       "direct_civ_side_a_real_tune_test_enabled": false,
-      "direct_civ_side_a_repeater_tune_test_enabled": false,
+      "direct_civ_side_a_repeater_tune_test_enabled": true,
       "direct_civ_side_a_duplex_proof_enabled": false,
       "direct_civ_side_a_readiness_probe_commands": [
         "rx_tx_status",

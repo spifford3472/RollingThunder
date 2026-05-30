@@ -539,6 +539,29 @@ def process_request_if_needed(
         result["source"] = SOURCE
         result["updated_utc"] = utc_now_iso()
 
+    elif action == "tune_repeater_vfo":
+        result = adapter.tune_repeater_vfo(
+            request.get("repeater") if isinstance(request.get("repeater"), dict) else {}
+        )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "read_squelch_status":
+        result = adapter.read_squelch_status()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "read_rx_tx_status":
+        result = adapter.read_rx_tx_status()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
     else:
         result = rejected_request_result(
             request_id,
