@@ -944,6 +944,179 @@ class IC2730AAdapter:
             },
         )
 
+    def read_frequency(self) -> Dict[str, Any]:
+        """
+        Phase 8.3C safe read-only operating-frequency adapter action.
+
+        Reads the current IC-2730A operating frequency through the existing
+        direct CI-V read-only path.
+
+        No memory write.
+        No memory clear.
+        No bank write/load.
+        No built-in scan start/stop.
+        No Side B programming.
+        No PTT/transmit control.
+        No rigctl.
+        No Redis/UI/system-bus writes by the adapter.
+        """
+        cfg = self.config
+        safety = self._software_scan_safety_flags()
+
+        gate_failures: list[str] = []
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_readonly_probe_enabled:
+            gate_failures.append("direct_civ_readonly_probe_enabled=false")
+
+        if gate_failures:
+            return self._result(
+                ok=False,
+                status="disabled",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Frequency read disabled by config: " + ", ".join(gate_failures),
+                extra={
+                    "action": "read_frequency",
+                    "operation_performed": False,
+                    "serial_opened": False,
+                    "civ_command_sent": False,
+                    "frequency_mhz": None,
+                    "frequency_hz": None,
+                    "mode": None,
+                    "raw": {},
+                    "safety": safety,
+                },
+            )
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            return self._result(
+                ok=False,
+                status="unavailable",
+                available=False,
+                reason=f"Python pyserial module is not available; no CI-V command was sent: {exc}",
+                extra={
+                    "action": "read_frequency",
+                    "operation_performed": False,
+                    "serial_opened": False,
+                    "civ_command_sent": False,
+                    "frequency_mhz": None,
+                    "frequency_hz": None,
+                    "mode": None,
+                    "raw": {},
+                    "safety": safety,
+                },
+            )
+
+        try:
+            with serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            ) as port:
+                frequency_command = self._direct_civ_send_readonly_command(
+                    port=port,
+                    name="operating_frequency",
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+
+                mode_command = self._direct_civ_send_readonly_command(
+                    port=port,
+                    name="operating_mode",
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+
+                frequency_parsed = (
+                    frequency_command.get("parsed")
+                    if isinstance(frequency_command.get("parsed"), dict)
+                    else {}
+                )
+                mode_parsed = (
+                    mode_command.get("parsed")
+                    if isinstance(mode_command.get("parsed"), dict)
+                    else {}
+                )
+
+                frequency_mhz = frequency_parsed.get("frequency_mhz")
+                frequency_hz = frequency_parsed.get("frequency_hz")
+                mode = mode_parsed.get("mode")
+
+                frequency_ok = bool(frequency_command.get("ok")) and frequency_mhz is not None
+                mode_ok = bool(mode_command.get("ok")) and mode is not None
+
+                return self._result(
+                    ok=bool(frequency_ok),
+                    status="ok" if frequency_ok else "partial",
+                    available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                    reason=(
+                        "Frequency read completed."
+                        if frequency_ok
+                        else "Frequency read completed but could not be parsed."
+                    ),
+                    extra={
+                        "action": "read_frequency",
+                        "operation_performed": True,
+                        "serial_opened": True,
+                        "civ_command_sent": bool(
+                            frequency_command.get("sent") or mode_command.get("sent")
+                        ),
+                        "frequency_mhz": frequency_mhz,
+                        "frequency_hz": frequency_hz,
+                        "mode": mode if mode_ok else None,
+                        "raw": {
+                            "frequency": {
+                                "ok": bool(frequency_command.get("ok")),
+                                "sent": bool(frequency_command.get("sent")),
+                                "documented_command_code": frequency_command.get("documented_command_code"),
+                                "parsed": frequency_parsed,
+                                "reason": frequency_command.get("reason"),
+                            },
+                            "mode": {
+                                "ok": bool(mode_command.get("ok")),
+                                "sent": bool(mode_command.get("sent")),
+                                "documented_command_code": mode_command.get("documented_command_code"),
+                                "parsed": mode_parsed,
+                                "reason": mode_command.get("reason"),
+                            },
+                        },
+                        "safety": safety,
+                    },
+                )
+
+        except Exception as exc:
+            return self._result(
+                ok=False,
+                status="error",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason=f"Frequency read failed: {exc}",
+                extra={
+                    "action": "read_frequency",
+                    "operation_performed": False,
+                    "serial_opened": False,
+                    "civ_command_sent": False,
+                    "frequency_mhz": None,
+                    "frequency_hz": None,
+                    "mode": None,
+                    "raw": {},
+                    "safety": safety,
+                },
+            )
+
     def read_squelch_status(self) -> Dict[str, Any]:
         """
         Phase 8.2A read-only squelch/S-meter activity check.
@@ -1992,7 +2165,7 @@ class IC2730AAdapter:
                 tune_timing.get("fast_tune_elapsed_ms")
                 or timing["fast_tune_elapsed_ms"]
             )
-                   
+
         tune_commands = tune_result.get("commands_sent") if isinstance(tune_result.get("commands_sent"), list) else []
         skipped_commands = tune_result.get("skipped_commands") if isinstance(tune_result.get("skipped_commands"), list) else []
 

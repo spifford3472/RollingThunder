@@ -130,6 +130,95 @@ Phase 8B behavior:
 - no Side B programming occurs
 - no PTT/transmit controls are added
 
+## Phase 8.3C — Safe read_frequency adapter action
+
+Phase 8.3C adds a safe radio-required adapter request action:
+
+```text
+read_frequency
+
+Request key:
+
+rt:vhf:adapter:request
+
+Last result key:
+
+rt:vhf:adapter:last_result
+
+The action is implemented inside:
+
+nodes/rt-radio/services/ic2730a_adapter.py
+
+It uses the existing direct CI-V read-only path to read:
+
+operating frequency
+operating mode, when available from the same read-only command family
+
+The Redis request service accepts the action in:
+
+nodes/rt-radio/services/vhf_ic2730a_adapter_status.py
+
+The request remains radio-required. If the IC-2730A radio/control path is unavailable, the request service rejects the request before calling the adapter method.
+
+Safety constraints:
+
+no memory write
+no memory clear
+no C/D bank load
+no bank write
+no built-in scan start
+no built-in scan stop
+no Side B programming
+no PTT/transmit control
+no rigctl
+no UI bus write
+
+This phase does not implement user-frequency-change detection and does not add UI behavior.
+
+
+---
+
+# Redis request test
+
+```bash
+REQ_ID="read-frequency-test-$(date +%s)"
+
+redis-cli SET rt:vhf:adapter:request "{\"request_id\":\"$REQ_ID\",\"action\":\"read_frequency\",\"source\":\"manual_test\"}"
+
+redis-cli PUBLISH rt:system:bus "{\"type\":\"state.changed\",\"topic\":\"state.changed\",\"source\":\"manual_test\",\"keys\":[\"rt:vhf:adapter:request\"],\"changed_keys\":[\"rt:vhf:adapter:request\"],\"deleted_keys\":[]}"
+
+sleep 1
+
+redis-cli --raw GET rt:vhf:adapter:last_result | jq .
+Expected successful result shape
+{
+  "request_id": "read-frequency-test-...",
+  "action": "read_frequency",
+  "ok": true,
+  "status": "ok",
+  "available": true,
+  "operation_performed": true,
+  "serial_opened": true,
+  "civ_command_sent": true,
+  "frequency_mhz": 146.52,
+  "frequency_hz": 146520000,
+  "mode": "FM",
+  "reason": "Frequency read completed.",
+  "source": "vhf_ic2730a_adapter_status",
+  "updated_utc": "..."
+}
+Expected unavailable/rejected result shape
+{
+  "request_id": "read-frequency-test-...",
+  "action": "read_frequency",
+  "ok": false,
+  "status": "rejected",
+  "operation_performed": false,
+  "reason": "IC-2730A radio/control path unavailable; unsafe adapter request rejected.",
+  "source": "vhf_ic2730a_adapter_status",
+  "updated_utc": "..."
+}
+
 ## Phase 8C-1 — Hamlib memory/group/scan API findings
 
 Phase 8C-1 is inspection/proof only.

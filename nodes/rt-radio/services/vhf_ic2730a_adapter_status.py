@@ -431,7 +431,7 @@ def process_request_if_needed(
     adapter = IC2730AAdapter(config)
     adapter_model_before_request = normalize_adapter_status(adapter.get_status())
 
-    if action not in NO_RADIO_REQUIRED_ACTIONS and not adapter_ready_for_radio_request(adapter_model_before_request):
+    if action not in NO_RADIO_REQUIRED_ACTIONS and not adapter_ready_for_radio_request(adapter_model_before_request):   
         result = rejected_request_result(
             request_id,
             action or "unknown",
@@ -590,6 +590,13 @@ def process_request_if_needed(
         result["action"] = action
         result["source"] = SOURCE
         result["updated_utc"] = utc_now_iso()
+
+    elif action == "read_frequency":
+        result = adapter.read_frequency()
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()        
 
     else:
         result = rejected_request_result(
