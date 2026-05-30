@@ -552,7 +552,15 @@ def process_request_if_needed(
         result = adapter.software_scan_step(
             request.get("repeater") if isinstance(request.get("repeater"), dict) else {},
             dwell_ms=request.get("dwell_ms"),
+            force_full_tune=boolish(request.get("force_full_tune"), False),
         )
+        result["request_id"] = request_id
+        result["action"] = action
+        result["source"] = SOURCE
+        result["updated_utc"] = utc_now_iso()
+
+    elif action == "reset_software_scan_cache":
+        result = adapter.reset_software_scan_cache()
         result["request_id"] = request_id
         result["action"] = action
         result["source"] = SOURCE

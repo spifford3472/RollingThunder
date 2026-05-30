@@ -50,6 +50,7 @@ DEFAULT_CONFIRM_SQUELCH_SECONDS = 5.0
 DEFAULT_RESUME_IDLE_SECONDS = 15.0
 DEFAULT_IDLE_POLL_SECONDS = 1.0
 DEFAULT_ADAPTER_RESULT_TIMEOUT_SECONDS = 3.0
+DEFAULT_INITIAL_PRIME_SETTLE_SECONDS = 15.0
 DEFAULT_SOFTWARE_SCAN_ENABLED = False
 
 
@@ -581,6 +582,13 @@ def run_scan_cycle(
         DEFAULT_ADAPTER_RESULT_TIMEOUT_SECONDS,
         minimum=0.2,
     )
+    initial_prime_settle_seconds = cfg_float(
+        config,
+        "vhf.scan.initial_prime_settle_seconds",
+        "RT_VHF_SCAN_INITIAL_PRIME_SETTLE_SECONDS",
+        DEFAULT_INITIAL_PRIME_SETTLE_SECONDS,
+        minimum=0.0,
+    )
 
     request = load_json_model(redis_client, KEY_SCAN_REQUEST)
     requested = parse_requested(request, config)
@@ -657,7 +665,101 @@ def run_scan_cycle(
         return start_index
 
     index = start_index % len(repeaters)
+    first_repeater = repeaters[index]
 
+    publish_scan(
+        redis_client,
+        scan_model(
+            requested=True,
+            enabled=True,
+            scanning=False,
+            status="priming_radio",
+            reason=(
+                "Priming IC-2730A scan VFO with a full tune before fast software scanning."
+            ),
+            repeaters=repeaters,
+            current_index=index,
+            current_repeater=first_repeater,
+            dwell_ms=dwell_ms,
+            confirm_squelch_seconds=confirm_seconds,
+            resume_idle_seconds=resume_idle_seconds,
+        ),
+    )
+
+    prime_timeout = max(adapter_timeout, adapter_timeout + (dwell_ms / 1000.0))
+    prime = adapter_request(
+        redis_client,
+        "software_scan_step",
+        {
+            "repeater": first_repeater,
+            "dwell_ms": dwell_ms,
+            "force_full_tune": True,
+        },
+        prime_timeout,
+    )
+
+    if str(prime.get("rx_tx_status") or "").lower() == "tx" or prime.get("tx_active") is True:
+        publish_scan(
+            redis_client,
+            scan_model(
+                requested=True,
+                enabled=True,
+                scanning=False,
+                status="unavailable",
+                reason="Radio reports TX; scan loop will not tune while transmitting.",
+                repeaters=repeaters,
+                current_index=index,
+                current_repeater=first_repeater,
+                dwell_ms=dwell_ms,
+                confirm_squelch_seconds=confirm_seconds,
+                resume_idle_seconds=resume_idle_seconds,
+            ),
+        )
+        time.sleep(1.0)
+        return index
+
+    if str(prime.get("status") or "").lower() == "timeout":
+        publish_scan(
+            redis_client,
+            scan_model(
+                requested=True,
+                enabled=True,
+                scanning=False,
+                status="adapter_timeout",
+                reason="Timed out while priming radio; will retry same repeater index.",
+                repeaters=repeaters,
+                current_index=index,
+                current_repeater=first_repeater,
+                dwell_ms=dwell_ms,
+                confirm_squelch_seconds=confirm_seconds,
+                resume_idle_seconds=resume_idle_seconds,
+            ),
+        )
+        time.sleep(1.0)
+        return index
+
+    if not bool(prime.get("ok")):
+        publish_scan(
+            redis_client,
+            scan_model(
+                requested=True,
+                enabled=True,
+                scanning=False,
+                status="adapter_waiting",
+                reason=str(prime.get("reason") or "Initial radio prime did not complete; will retry same repeater index."),
+                repeaters=repeaters,
+                current_index=index,
+                current_repeater=first_repeater,
+                dwell_ms=dwell_ms,
+                confirm_squelch_seconds=confirm_seconds,
+                resume_idle_seconds=resume_idle_seconds,
+            ),
+        )
+        time.sleep(1.0)
+        return index
+
+    if initial_prime_settle_seconds > 0:
+        time.sleep(initial_prime_settle_seconds)
     while current_requested(redis_client, config):
         radio = load_json_model(redis_client, KEY_VHF_RADIO)
         if not radio_available(radio):
@@ -704,6 +806,7 @@ def run_scan_cycle(
             {
                 "repeater": repeater,
                 "dwell_ms": dwell_ms,
+                "force_full_tune": False,
             },
             step_timeout,
         )
@@ -728,8 +831,46 @@ def run_scan_cycle(
             time.sleep(1.0)
             return index
 
+        step_status = str(step.get("status") or "").lower()
+
+        if step_status == "timeout":
+            publish_scan(
+                redis_client,
+                scan_model(
+                    requested=True,
+                    enabled=True,
+                    scanning=False,
+                    status="adapter_timeout",
+                    reason="Timed out waiting for adapter scan step; retrying same repeater index.",
+                    repeaters=repeaters,
+                    current_index=index,
+                    current_repeater=repeater,
+                    dwell_ms=dwell_ms,
+                    confirm_squelch_seconds=confirm_seconds,
+                    resume_idle_seconds=resume_idle_seconds,
+                ),
+            )
+            time.sleep(1.0)
+            continue
+
         if not bool(step.get("ok")):
-            index = (index + 1) % len(repeaters)
+            publish_scan(
+                redis_client,
+                scan_model(
+                    requested=True,
+                    enabled=True,
+                    scanning=False,
+                    status="adapter_waiting",
+                    reason=str(step.get("reason") or "Adapter scan step failed; retrying same repeater index."),
+                    repeaters=repeaters,
+                    current_index=index,
+                    current_repeater=repeater,
+                    dwell_ms=dwell_ms,
+                    confirm_squelch_seconds=confirm_seconds,
+                    resume_idle_seconds=resume_idle_seconds,
+                ),
+            )
+            time.sleep(1.0)
             continue
 
         if step.get("squelch_open") is not True:

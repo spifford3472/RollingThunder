@@ -71,6 +71,7 @@ DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX = "E0"
 DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX = "90"
 DEFAULT_DIRECT_CIV_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 
+
 DEFAULT_DIRECT_CIV_READONLY_PROBE_COMMANDS = (
     "transceiver_id",
     "operating_frequency",
@@ -95,6 +96,8 @@ DEFAULT_ALLOW_RX_TX_STATUS_READ = False
 DEFAULT_SMETER_SQUELCH_THRESHOLD = 25
 
 DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED = False
+
+DEFAULT_DIRECT_CIV_SIDE_A_FAST_SCAN_TUNE_ENABLED = False
 
 DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED = False
 
@@ -402,7 +405,8 @@ class IC2730AConfig:
     direct_civ_side_a_write_plan_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_WRITE_PLAN_ENABLED
     direct_civ_side_a_real_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REAL_TUNE_TEST_ENABLED
     direct_civ_side_a_repeater_tune_test_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED
-    direct_civ_side_a_duplex_proof_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED
+    direct_civ_side_a_fast_scan_tune_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_FAST_SCAN_TUNE_ENABLED
+    direct_civ_side_a_duplex_proof_enabled: bool = DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED    
     direct_civ_cd_memory_read_proof_enabled: bool = DEFAULT_DIRECT_CIV_CD_MEMORY_READ_PROOF_ENABLED
     direct_civ_side_a_readiness_probe_commands: tuple[str, ...] = DEFAULT_DIRECT_CIV_SIDE_A_READINESS_PROBE_COMMANDS
     direct_civ_serial_port: str = DEFAULT_DIRECT_CIV_SERIAL_PORT
@@ -617,6 +621,10 @@ class IC2730AConfig:
                 ic.get("direct_civ_side_a_repeater_tune_test_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED,
             ),
+            direct_civ_side_a_fast_scan_tune_enabled=_safe_bool(
+                ic.get("direct_civ_side_a_fast_scan_tune_enabled"),
+                DEFAULT_DIRECT_CIV_SIDE_A_FAST_SCAN_TUNE_ENABLED,
+            ),
             direct_civ_side_a_duplex_proof_enabled=_safe_bool(
                 ic.get("direct_civ_side_a_duplex_proof_enabled"),
                 DEFAULT_DIRECT_CIV_SIDE_A_DUPLEX_PROOF_ENABLED,
@@ -665,7 +673,7 @@ class IC2730AAdapter:
     Hamlib constants, VFO details, serial paths, CI-V details, or IC-2730A
     command details.
     """
-
+    _software_scan_vfo_cache: Optional[Dict[str, Any]] = None
     def __init__(self, config: Optional[IC2730AConfig | Dict[str, Any]] = None) -> None:
         if config is None:
             self.config = IC2730AConfig.from_app_config(load_app_config())
@@ -698,6 +706,7 @@ class IC2730AAdapter:
             "require_readback_after_write": bool(cfg.require_readback_after_write),
             "write_test_enabled": bool(cfg.write_test_enabled),
             "write_test_allow_single_memory_write": bool(cfg.write_test_allow_single_memory_write),
+            "direct_civ_side_a_fast_scan_tune_enabled": bool(cfg.direct_civ_side_a_fast_scan_tune_enabled),
             "write_test_sacrificial_group": cfg.write_test_sacrificial_group,
             "write_test_sacrificial_channel": cfg.write_test_sacrificial_channel,
             "source": SOURCE,
@@ -1062,7 +1071,593 @@ class IC2730AAdapter:
                 },
             )
 
-    def software_scan_step(self, repeater: Dict[str, Any], dwell_ms: Optional[int] = None) -> Dict[str, Any]:
+    def reset_software_scan_cache(self) -> Dict[str, Any]:
+        before = (
+            dict(IC2730AAdapter._software_scan_vfo_cache)
+            if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
+            else None
+        )
+        IC2730AAdapter._software_scan_vfo_cache = None
+
+        return self._result(
+            ok=True,
+            status="ok",
+            available=bool(self.config.enabled and self.config.control_mode != "disabled"),
+            reason="Software scan cached VFO state reset.",
+            extra={
+                "action": "reset_software_scan_cache",
+                "operation_performed": False,
+                "cached_scan_vfo_state_before": before,
+                "cached_scan_vfo_state_after": None,
+                "safety": self._software_scan_safety_flags(),
+            },
+        )
+
+    def _software_scan_safety_flags(self) -> Dict[str, Any]:
+        return {
+            "memory_write_performed": False,
+            "memory_clear_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "scan_stop_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "ui_bus_written": False,
+        }
+
+    def _normalize_fast_scan_candidate(self, candidate: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], list[str]]:
+        raw = candidate if isinstance(candidate, dict) else {}
+        errors: list[str] = []
+
+        def candidate_float(
+            name: str,
+            *,
+            required: bool,
+            minimum: Optional[float] = None,
+            maximum: Optional[float] = None,
+        ) -> Optional[float]:
+            value = raw.get(name)
+
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if required:
+                    errors.append(f"{name} is required")
+                return None
+
+            try:
+                parsed = float(value)
+            except Exception:
+                errors.append(f"{name} must be numeric")
+                return None
+
+            if minimum is not None and parsed < minimum:
+                errors.append(f"{name} must be >= {minimum}")
+            if maximum is not None and parsed > maximum:
+                errors.append(f"{name} must be <= {maximum}")
+
+            return parsed
+
+        def candidate_str(name: str, default: str = "") -> str:
+            value = raw.get(name)
+            if value is None:
+                return default
+            return str(value).strip()
+
+        frequency_mhz = candidate_float("frequency_mhz", required=True, minimum=118.0, maximum=550.0)
+
+        mode = candidate_str("mode", "FM").upper()
+        if mode != "FM":
+            errors.append("mode must be FM")
+
+        duplex_raw = candidate_str("duplex", "simplex").lower()
+        duplex_aliases = {
+            "simplex": "simplex",
+            "none": "simplex",
+            "off": "simplex",
+            "plus": "plus",
+            "+": "plus",
+            "dup+": "plus",
+            "duplex+": "plus",
+            "minus": "minus",
+            "-": "minus",
+            "dup-": "minus",
+            "duplex-": "minus",
+        }
+        duplex = duplex_aliases.get(duplex_raw)
+        if duplex is None:
+            errors.append("duplex must be one of: simplex, none, plus, minus, dup+, dup-")
+            duplex = duplex_raw or "unknown"
+
+        offset_mhz = candidate_float("offset_mhz", required=False, minimum=0.0)
+        if offset_mhz is None:
+            offset_mhz = 0.0
+
+        tone_hz_present = raw.get("tone_hz") is not None and not (
+            isinstance(raw.get("tone_hz"), str) and not str(raw.get("tone_hz")).strip()
+        )
+        tone_hz = candidate_float("tone_hz", required=False, minimum=50.0, maximum=300.0)
+
+        tone_mode_raw = candidate_str("tone_mode", "none").lower()
+        tone_mode_aliases = {
+            "": "none",
+            "none": "none",
+            "off": "none",
+            "no": "none",
+            "false": "none",
+            "0": "none",
+            "tone": "tone",
+            "encode": "tone",
+            "ctcss": "tone",
+            "tsql": "tsql",
+            "tone_sql": "tsql",
+            "tonesql": "tsql",
+            "tone_squelch": "tsql",
+        }
+        tone_mode = tone_mode_aliases.get(tone_mode_raw)
+        if tone_mode is None:
+            errors.append("tone_mode must normalize to one of: none, tone, tsql")
+            tone_mode = tone_mode_raw or "unknown"
+
+        if tone_mode in {"tone", "tsql"} and not tone_hz_present:
+            errors.append("tone_hz is required when tone_mode is tone or tsql")
+        if tone_mode == "none":
+            tone_hz = None
+
+        normalized = {
+            "frequency_mhz": round(float(frequency_mhz), 6) if frequency_mhz is not None else None,
+            "mode": mode,
+            "duplex": duplex,
+            "offset_mhz": round(float(offset_mhz), 6),
+            "tone_hz": round(float(tone_hz), 1) if tone_hz is not None else None,
+            "tone_mode": tone_mode,
+        }
+
+        return (None if errors else normalized), errors
+
+    def _fast_scan_frequency_bcd(self, frequency_mhz: float) -> bytes:
+        # Icom CI-V operating frequency payload is 5 BCD bytes, least-significant pair first.
+        hz = int(round(float(frequency_mhz) * 1_000_000.0))
+        digits = f"{hz:010d}"
+        out = bytearray()
+        for idx in range(8, -1, -2):
+            lo = int(digits[idx + 1])
+            hi = int(digits[idx])
+            out.append((hi << 4) | lo)
+        return bytes(out)
+
+    def _fast_scan_offset_bcd(self, offset_mhz: float) -> bytes:
+        # Existing readback interpretation: raw BCD integer 6000 represents 0.600 MHz.
+        raw = int(round(abs(float(offset_mhz)) * 10000.0))
+        digits = f"{raw:06d}"
+        out = bytearray()
+        for idx in range(4, -1, -2):
+            lo = int(digits[idx + 1])
+            hi = int(digits[idx])
+            out.append((hi << 4) | lo)
+        return bytes(out)
+
+    def _fast_scan_tone_bcd(self, tone_hz: float) -> bytes:
+        # CTCSS tone is represented as tenths of Hz in big-endian BCD.
+        # Example: 123.0 Hz -> integer 1230 -> 12 30.
+        raw = int(round(float(tone_hz) * 10.0))
+        digits = f"{raw:04d}"
+        return bytes([
+            (int(digits[0]) << 4) | int(digits[1]),
+            (int(digits[2]) << 4) | int(digits[3]),
+        ])
+
+    def _fast_scan_hex_bytes(self, data: bytes) -> str:
+        return " ".join(f"{b:02X}" for b in data)
+
+    def _fast_scan_command_ok_from_raw(self, raw_hex: str) -> bool:
+        compact = str(raw_hex or "").replace(" ", "").upper()
+        return "FBFD" in compact or compact.endswith("FBFD") or "FB" in compact
+
+    def _direct_civ_side_a_repeater_tune_fast(
+        self,
+        candidate: Dict[str, Any],
+        force_full_tune: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Fast cached Side-A/Main VFO tune path for controller-owned software scanning.
+
+        This intentionally does not call direct_civ_side_a_repeater_tune_test().
+        It does not run full before/after readiness probes. It sends only the
+        direct CI-V commands needed to make the scan slot match the candidate.
+        """
+        cfg = self.config
+
+        safety = self._software_scan_safety_flags()
+        before_cache = (
+            dict(IC2730AAdapter._software_scan_vfo_cache)
+            if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
+            else None
+        )
+
+        normalized, validation_errors = self._normalize_fast_scan_candidate(candidate)
+        if validation_errors or normalized is None:
+            return {
+                "action": "direct_civ_side_a_repeater_tune_fast",
+                "status": "rejected",
+                "ok": False,
+                "operation_performed": False,
+                "force_full_tune": bool(force_full_tune),
+                "tune_attempted": False,
+                "tune_ok": False,
+                "scan_tune_ok": False,
+                "candidate": normalized or {},
+                "validation_errors": validation_errors,
+                "commands_sent": [],
+                "skipped_commands": [],
+                "cached_scan_vfo_state_before": before_cache,
+                "cached_scan_vfo_state_after": before_cache,
+                "reason": "Fast scan tune candidate rejected before serial open: " + "; ".join(validation_errors),
+                "safety": safety,
+            }
+
+        gate_failures: list[str] = []
+        if not cfg.software_scan_enabled:
+            gate_failures.append("software_scan_enabled=false")
+        if not cfg.allow_vfo_tune:
+            gate_failures.append("allow_vfo_tune=false")
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_side_a_fast_scan_tune_enabled:
+            gate_failures.append("direct_civ_side_a_fast_scan_tune_enabled=false")
+
+        if gate_failures:
+            return {
+                "action": "direct_civ_side_a_repeater_tune_fast",
+                "status": "disabled",
+                "ok": False,
+                "operation_performed": False,
+                "force_full_tune": bool(force_full_tune),
+                "tune_attempted": False,
+                "tune_ok": False,
+                "scan_tune_ok": False,
+                "candidate": normalized,
+                "commands_sent": [],
+                "skipped_commands": [],
+                "cached_scan_vfo_state_before": before_cache,
+                "cached_scan_vfo_state_after": before_cache,
+                "reason": "Fast scan tune disabled by config: " + ", ".join(gate_failures),
+                "safety": safety,
+            }
+
+        cache = before_cache
+        full = bool(force_full_tune or cache is None)
+
+        def same_float(a: Any, b: Any, tolerance: float) -> bool:
+            try:
+                return abs(float(a) - float(b)) <= tolerance
+            except Exception:
+                return False
+
+        commands_to_send: list[tuple[str, bytes, str]] = []
+        skipped_commands: list[Dict[str, Any]] = []
+
+        def needs_field(name: str, tolerance: Optional[float] = None) -> bool:
+            if full or not isinstance(cache, dict):
+                return True
+            if tolerance is not None:
+                return not same_float(cache.get(name), normalized.get(name), tolerance)
+            return cache.get(name) != normalized.get(name)
+
+        def skip(name: str, reason: str) -> None:
+            skipped_commands.append({"name": name, "reason": reason})
+
+        # Always select Side A/Main before changing scan VFO state.
+        commands_to_send.append(("select_side_a_main", bytes([0x07, 0xD0]), "07 D0"))
+
+        if needs_field("frequency_mhz", 0.000005):
+            commands_to_send.append(
+                (
+                    "write_operating_frequency",
+                    bytes([0x05]) + self._fast_scan_frequency_bcd(float(normalized["frequency_mhz"])),
+                    "05 + BCD frequency",
+                )
+            )
+        else:
+            skip("write_operating_frequency", "Frequency unchanged in adapter scan cache.")
+
+        if needs_field("mode"):
+            commands_to_send.append(("set_fm_mode", bytes([0x06, 0x05]), "06 05"))
+        else:
+            skip("set_fm_mode", "Mode unchanged in adapter scan cache.")
+
+        if needs_field("duplex"):
+            duplex = str(normalized["duplex"])
+            if duplex == "simplex":
+                commands_to_send.append(("set_simplex", bytes([0x0F, 0x10]), "0F 10"))
+            elif duplex == "minus":
+                commands_to_send.append(("set_dup_minus", bytes([0x0F, 0x11]), "0F 11"))
+            elif duplex == "plus":
+                commands_to_send.append(("set_dup_plus", bytes([0x0F, 0x12]), "0F 12"))
+            else:
+                return {
+                    "action": "direct_civ_side_a_repeater_tune_fast",
+                    "status": "rejected",
+                    "ok": False,
+                    "operation_performed": False,
+                    "force_full_tune": bool(force_full_tune),
+                    "tune_attempted": False,
+                    "tune_ok": False,
+                    "scan_tune_ok": False,
+                    "candidate": normalized,
+                    "commands_sent": [],
+                    "skipped_commands": skipped_commands,
+                    "cached_scan_vfo_state_before": before_cache,
+                    "cached_scan_vfo_state_after": before_cache,
+                    "reason": f"Unsupported duplex value for fast scan tune: {duplex!r}",
+                    "safety": safety,
+                }
+        else:
+            skip("set_duplex", "Duplex unchanged in adapter scan cache.")
+
+        if needs_field("offset_mhz", 0.0005):
+            commands_to_send.append(
+                (
+                    "write_offset",
+                    bytes([0x0D]) + self._fast_scan_offset_bcd(float(normalized["offset_mhz"])),
+                    "0D + BCD offset",
+                )
+            )
+        else:
+            skip("write_offset", "Offset unchanged in adapter scan cache.")
+
+        if str(normalized["tone_mode"]) in {"tone", "tsql"} and needs_field("tone_hz", 0.05):
+            commands_to_send.append(
+                (
+                    "write_repeater_tone_frequency",
+                    bytes([0x1B, 0x00]) + self._fast_scan_tone_bcd(float(normalized["tone_hz"])),
+                    "1B 00 + BCD tone",
+                )
+            )
+        else:
+            skip("write_repeater_tone_frequency", "Tone frequency unchanged or not required for tone_mode none.")
+
+        if needs_field("tone_mode"):
+            tone_mode = str(normalized["tone_mode"])
+            if tone_mode == "none":
+                commands_to_send.append(("set_tone_mode_off", bytes([0x16, 0x42, 0x00]), "16 42 00"))
+            elif tone_mode == "tone":
+                commands_to_send.append(("set_tone_encode", bytes([0x16, 0x42, 0x01]), "16 42 01"))
+            elif tone_mode == "tsql":
+                commands_to_send.append(("set_tone_squelch", bytes([0x16, 0x42, 0x02]), "16 42 02"))
+            else:
+                return {
+                    "action": "direct_civ_side_a_repeater_tune_fast",
+                    "status": "rejected",
+                    "ok": False,
+                    "operation_performed": False,
+                    "force_full_tune": bool(force_full_tune),
+                    "tune_attempted": False,
+                    "tune_ok": False,
+                    "scan_tune_ok": False,
+                    "candidate": normalized,
+                    "commands_sent": [],
+                    "skipped_commands": skipped_commands,
+                    "cached_scan_vfo_state_before": before_cache,
+                    "cached_scan_vfo_state_after": before_cache,
+                    "reason": f"Unsupported tone_mode for fast scan tune: {tone_mode!r}",
+                    "safety": safety,
+                }
+        else:
+            skip("set_tone_mode", "Tone mode unchanged in adapter scan cache.")
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            return {
+                "action": "direct_civ_side_a_repeater_tune_fast",
+                "status": "unavailable",
+                "ok": False,
+                "operation_performed": False,
+                "force_full_tune": bool(force_full_tune),
+                "tune_attempted": False,
+                "tune_ok": False,
+                "scan_tune_ok": False,
+                "candidate": normalized,
+                "commands_sent": [],
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": before_cache,
+                "cached_scan_vfo_state_after": before_cache,
+                "reason": f"Python pyserial module is not available; no fast scan tune command was sent: {exc}",
+                "safety": safety,
+            }
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        commands_sent: list[Dict[str, Any]] = []
+        serial_opened = False
+        frequency_readback: Dict[str, Any] = {}
+
+        try:
+            with serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            ) as port:
+                serial_opened = True
+
+                for name, payload, documented_code in commands_to_send:
+                    command_result = self._direct_civ_send_payload_full_window(
+                        port=port,
+                        name=name,
+                        payload=payload,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        timeout_seconds=cfg.direct_civ_timeout_seconds,
+                    )
+
+                    raw_hex = str(command_result.get("raw_response_hex") or "")
+                    response_status = command_result.get("response_status")
+                    response_status_text = ""
+                    if isinstance(response_status, dict):
+                        response_status_text = str(response_status.get("status") or "").lower()
+
+                    command_ok = (
+                        response_status_text == "ok"
+                        or self._fast_scan_command_ok_from_raw(raw_hex)
+                        or bool(command_result.get("ok"))
+                    )
+
+                    command_summary = {
+                        "name": name,
+                        "documented_command_code": documented_code,
+                        "payload_hex": self._fast_scan_hex_bytes(payload),
+                        "sent": bool(command_result.get("sent")),
+                        "ok": bool(command_ok),
+                        "raw": command_result,
+                    }
+                    commands_sent.append(command_summary)
+
+                    if not command_ok:
+                        return {
+                            "action": "direct_civ_side_a_repeater_tune_fast",
+                            "status": "partial",
+                            "ok": False,
+                            "operation_performed": True,
+                            "serial_opened": bool(serial_opened),
+                            "civ_command_sent": bool(command_result.get("sent")),
+                            "force_full_tune": bool(force_full_tune),
+                            "tune_attempted": True,
+                            "tune_ok": False,
+                            "scan_tune_ok": False,
+                            "candidate": normalized,
+                            "commands_sent": commands_sent,
+                            "skipped_commands": skipped_commands,
+                            "cached_scan_vfo_state_before": before_cache,
+                            "cached_scan_vfo_state_after": before_cache,
+                            "reason": f"Fast scan tune aborted after CI-V command failure: {name}",
+                            "safety": safety,
+                        }
+                    
+                frequency_command = self._direct_civ_send_payload_full_window(
+                    port=port,
+                    name="fast_scan_verify_operating_frequency",
+                    payload=bytes([0x03]),
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+
+                raw = bytes.fromhex(str(frequency_command.get("raw_response_hex", "")).replace(" ", ""))
+                frames = self._direct_civ_split_frames(raw)
+                response_payload = self._direct_civ_find_response_payload(
+                    frames=frames,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    expected_prefix=bytes([0x03]),
+                )
+
+                parsed = (
+                    self._direct_civ_parse_payload("operating_frequency", response_payload)
+                    if response_payload is not None
+                    else {}
+                )
+
+                readback_frequency_mhz = parsed.get("frequency_mhz") if isinstance(parsed, dict) else None
+                frequency_matches = same_float(
+                    readback_frequency_mhz,
+                    normalized.get("frequency_mhz"),
+                    0.000005,
+                )
+
+                frequency_readback = {
+                    "command": frequency_command,
+                    "parsed": parsed,
+                    "frequency_mhz": readback_frequency_mhz,
+                    "frequency_matches": bool(frequency_matches),
+                    "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                }
+
+                if not frequency_matches:
+                    return {
+                        "action": "direct_civ_side_a_repeater_tune_fast",
+                        "status": "partial",
+                        "ok": False,
+                        "operation_performed": True,
+                        "serial_opened": bool(serial_opened),
+                        "civ_command_sent": bool(commands_sent),
+                        "force_full_tune": bool(force_full_tune),
+                        "tune_attempted": True,
+                        "tune_ok": False,
+                        "scan_tune_ok": False,
+                        "candidate": normalized,
+                        "frequency_mhz": normalized.get("frequency_mhz"),
+                        "frequency_readback": frequency_readback,
+                        "commands_sent": commands_sent,
+                        "skipped_commands": skipped_commands,
+                        "frequency_readback": frequency_readback,
+                        "cached_scan_vfo_state_before": before_cache,
+                        "cached_scan_vfo_state_after": before_cache,
+                        "reason": (
+                            "Fast scan tune command sequence completed, but frequency readback did not match candidate; "
+                            "cache was not updated."
+                        ),
+                        "safety": safety,
+                    }                    
+
+        except Exception as exc:
+            return {
+                "action": "direct_civ_side_a_repeater_tune_fast",
+                "status": "error" if serial_opened else "unavailable",
+                "ok": False,
+                "operation_performed": bool(serial_opened),
+                "serial_opened": bool(serial_opened),
+                "civ_command_sent": bool(commands_sent),
+                "force_full_tune": bool(force_full_tune),
+                "tune_attempted": bool(commands_to_send),
+                "tune_ok": False,
+                "scan_tune_ok": False,
+                "candidate": normalized,
+                "commands_sent": commands_sent,
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": before_cache,
+                "cached_scan_vfo_state_after": before_cache,
+                "reason": f"Fast scan tune serial/control path failed: {exc}",
+                "safety": safety,
+            }
+
+        IC2730AAdapter._software_scan_vfo_cache = dict(normalized)
+        after_cache = dict(IC2730AAdapter._software_scan_vfo_cache)
+
+        return {
+            "action": "direct_civ_side_a_repeater_tune_fast",
+            "status": "ok",
+            "ok": True,
+            "operation_performed": True,
+            "serial_opened": bool(serial_opened),
+            "civ_command_sent": bool(commands_sent),
+            "force_full_tune": bool(force_full_tune),
+            "tune_attempted": True,
+            "tune_ok": True,
+            "scan_tune_ok": True,
+            "candidate": normalized,
+            "frequency_mhz": normalized.get("frequency_mhz"),
+            "commands_sent": commands_sent,
+            "skipped_commands": skipped_commands,
+            "cached_scan_vfo_state_before": before_cache,
+            "cached_scan_vfo_state_after": after_cache,
+            "reason": "Fast cached software scan tune completed.",
+            "safety": safety,
+        }
+
+    def software_scan_step(
+        self,
+        repeater: Dict[str, Any],
+        dwell_ms: Optional[int] = None,
+        force_full_tune: bool = False,
+    ) -> Dict[str, Any]:
         """
         Phase 8.2B one-request software scan slot.
 
@@ -1113,12 +1708,8 @@ class IC2730AAdapter:
             gate_failures.append("direct_civ_enabled=false")
         if not cfg.direct_civ_readonly_probe_enabled:
             gate_failures.append("direct_civ_readonly_probe_enabled=false")
-        if not cfg.direct_civ_side_a_readiness_probe_enabled:
-            gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
-        if not cfg.direct_civ_side_a_write_plan_enabled:
-            gate_failures.append("direct_civ_side_a_write_plan_enabled=false")
-        if not cfg.direct_civ_side_a_repeater_tune_test_enabled:
-            gate_failures.append("direct_civ_side_a_repeater_tune_test_enabled=false")
+        if not cfg.direct_civ_side_a_fast_scan_tune_enabled:
+            gate_failures.append("direct_civ_side_a_fast_scan_tune_enabled=false")
 
         base_extra = {
             "action": "software_scan_step",
@@ -1126,6 +1717,19 @@ class IC2730AAdapter:
             "tx_active": None,
             "rx_tx_status": None,
             "tune_attempted": False,
+            "force_full_tune": bool(force_full_tune),
+            "scan_tune_ok": False,
+            "skipped_commands": [],
+            "cached_scan_vfo_state_before": (
+                dict(IC2730AAdapter._software_scan_vfo_cache)
+                if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
+                else None
+            ),
+            "cached_scan_vfo_state_after": (
+                dict(IC2730AAdapter._software_scan_vfo_cache)
+                if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
+                else None
+            ),
             "tune_ok": False,
             "frequency_mhz": candidate.get("frequency_mhz"),
             "squelch_open": None,
@@ -1288,28 +1892,28 @@ class IC2730AAdapter:
                 },
             )
 
-        tune_result = self.direct_civ_side_a_repeater_tune_test(candidate)
+        tune_result = self._direct_civ_side_a_repeater_tune_fast(
+            candidate,
+            force_full_tune=bool(force_full_tune),
+        )
         tune_commands = tune_result.get("commands_sent") if isinstance(tune_result.get("commands_sent"), list) else []
+        skipped_commands = tune_result.get("skipped_commands") if isinstance(tune_result.get("skipped_commands"), list) else []
+
         commands_sent.append(
             {
-                "name": "tune_repeater_vfo",
+                "name": "fast_scan_tune_repeater_vfo",
                 "ok": bool(tune_result.get("ok")),
                 "status": tune_result.get("status"),
                 "reason": tune_result.get("reason"),
+                "force_full_tune": bool(force_full_tune),
                 "commands_sent": tune_commands,
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": tune_result.get("cached_scan_vfo_state_before"),
+                "cached_scan_vfo_state_after": tune_result.get("cached_scan_vfo_state_after"),
             }
         )
 
-        tune_summary = tune_result.get("summary") if isinstance(tune_result.get("summary"), dict) else {}
-
-        scan_tune_ok = bool(tune_result.get("ok"))
-        scan_tune_ok = scan_tune_ok or bool(
-            tune_summary.get("readback_after_ok")
-            and tune_summary.get("frequency_matches")
-            and tune_summary.get("mode_matches")
-            and tune_summary.get("duplex_matches")
-            and tune_summary.get("offset_matches")
-        )
+        scan_tune_ok = bool(tune_result.get("scan_tune_ok") or tune_result.get("ok"))
 
         if not scan_tune_ok:
             return self._result(
@@ -1327,6 +1931,10 @@ class IC2730AAdapter:
                     "scan_tune_ok": False,
                     "commands_sent": commands_sent,
                     "raw_tune_result": tune_result,
+                    "force_full_tune": bool(force_full_tune),
+                    "skipped_commands": skipped_commands,
+                    "cached_scan_vfo_state_before": tune_result.get("cached_scan_vfo_state_before"),
+                    "cached_scan_vfo_state_after": tune_result.get("cached_scan_vfo_state_after"),
                 },
             )
 
@@ -1367,6 +1975,10 @@ class IC2730AAdapter:
                 "tune_ok": bool(tune_result.get("ok")),
                 "scan_tune_ok": bool(scan_tune_ok),
                 "squelch_open": squelch_open,
+                "force_full_tune": bool(force_full_tune),
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": tune_result.get("cached_scan_vfo_state_before"),
+                "cached_scan_vfo_state_after": tune_result.get("cached_scan_vfo_state_after"),                
                 "smeter_level": smeter_level,
                 "smeter_squelch_threshold": threshold,
                 "commands_sent": commands_sent,

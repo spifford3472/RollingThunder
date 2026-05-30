@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 54
+    "build": 55
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -653,6 +653,7 @@
       "resume_idle_seconds": 15,
       "idle_poll_seconds": 1,
       "adapter_result_timeout_seconds": 12,
+      "initial_prime_settle_seconds": 15,
       "reload_distance_miles": 20,
       "reload_radius_miles": 25,
       "movement_min_delta_miles": 0.05,
@@ -723,6 +724,7 @@
       "direct_civ_side_a_write_plan_enabled": true,
       "direct_civ_side_a_real_tune_test_enabled": false,
       "direct_civ_side_a_repeater_tune_test_enabled": true,
+      "direct_civ_side_a_fast_scan_tune_enabled": true,
       "direct_civ_side_a_duplex_proof_enabled": false,
       "direct_civ_side_a_readiness_probe_commands": [
         "rx_tx_status",
