@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 56
+    "build": 57
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -647,6 +647,7 @@
     },
     "scan": {
       "enabled_default": false,
+      "mode_default": "repeaters",
       "software_scan_enabled": true,
       "dwell_ms": 500,
       "confirm_squelch_seconds": 5,
@@ -654,8 +655,11 @@
       "idle_poll_seconds": 1,
       "adapter_result_timeout_seconds": 12,
       "initial_prime_settle_seconds": 15,
-      "reload_distance_miles": 20,
-      "reload_radius_miles": 25,
+      "repeater_radius_miles": 25,
+      "map_radius_miles": 30,
+      "gps_reload_distance_miles": 5,
+      "ptt_reload_holdoff_seconds": 180,
+      "squelch_reload_holdoff_seconds": 120,
       "movement_min_delta_miles": 0.05,
       "movement_jump_reject_miles": 5.0,
       "max_memory_channels_per_group": 100,

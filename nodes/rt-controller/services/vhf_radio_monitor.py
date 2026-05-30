@@ -36,6 +36,7 @@ KEY_VHF_RADIO = "rt:vhf:radio"
 BUS_SYSTEM = "rt:system:bus"
 SOURCE = "vhf_radio_monitor"
 KEY_VHF_ADAPTER = "rt:vhf:adapter"
+RADIO_COMMAND_READY_STATUSES = {"available", "ready"}
 
 _running = True
 
@@ -154,6 +155,8 @@ def stable_part(model: Dict[str, Any]) -> Dict[str, Any]:
         "last_failure_utc": model.get("last_failure_utc"),
         "adapter_status": model.get("adapter_status"),
         "adapter_control_mode": model.get("adapter_control_mode"),
+        "command_available": model.get("command_available"),
+        "command_ready_statuses": model.get("command_ready_statuses"),
     }
 
 
@@ -201,6 +204,8 @@ def normalize_radio_model(cfg: Dict[str, Any], adapter: Optional[Dict[str, Any]]
         "reason": "VHF radio availability unknown.",
         "last_successful_command_utc": None,
         "last_failure_utc": None,
+        "command_available": False,
+        "command_ready_statuses": sorted(RADIO_COMMAND_READY_STATUSES),
         "source": SOURCE,
         "updated_utc": now,
     }
@@ -259,6 +264,7 @@ def normalize_radio_model(cfg: Dict[str, Any], adapter: Optional[Dict[str, Any]]
             {
                 "available": True,
                 "status": "available",
+                "command_available": True,
                 "reason": adapter.get("reason") or "IC-2730A radio/control path available.",
                 "last_successful_command_utc": adapter.get("last_successful_command_utc")
                 or adapter.get("updated_utc"),

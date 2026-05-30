@@ -264,6 +264,169 @@ Suggested fields:
 - `power_w` (optional)
 - `ts`
 ---
+### 4.7.1 VHF Radio / Scan ###
+
+`rt:vhf:adapter`
+
+**Owner:** `rt-radio` / `vhf_ic2730a_adapter_status`
+
+**Type:** object
+
+**Meaning:** Low-level IC-2730A adapter/control-path status. This is not a UI command surface.
+
+`rt:vhf:radio`
+
+**Owner:** `rt-controller` / `vhf_radio_monitor`
+
+**Type:** object
+
+**Meaning:** Controller-facing VHF radio availability model derived from `rt:vhf:adapter`.
+
+Important controller command rule:
+
+The VHF radio command path is available only when:
+
+```json
+{
+  "available": true,
+  "status": "available"
+}
+
+or another explicitly documented ready status such as "ready" is present.
+
+Recommended fields:
+
+{
+  "available": true,
+  "status": "available",
+  "command_available": true,
+  "command_ready_statuses": ["available", "ready"],
+  "radio_name": "Icom IC-2730A",
+  "adapter_name": "ic2730a",
+  "port": "/dev/ic2730a",
+  "reason": "IC-2730A radio/control path available.",
+  "adapter_status": "detected",
+  "adapter_control_mode": "hamlib_write_test",
+  "source": "vhf_radio_monitor",
+  "updated_utc": "2026-05-30T00:00:00Z"
+}
+
+rt:vhf:scan:request
+
+Owner: intent worker/controller input path
+
+Type: object
+
+Meaning: User-requested VHF scan enable/disable state. This key is an intent-derived request only. It must not command the radio directly.
+
+rt:vhf:scan
+
+Owner: rt-controller / vhf_repeater_scan_manager
+
+Type: object
+
+Meaning: Controller-owned VHF repeater software scan state.
+
+Recommended fields:
+
+{
+  "enabled": true,
+  "requested": true,
+  "mode": "repeaters",
+  "scanning": true,
+  "actual_scan_state": "scanning",
+  "status": "scanning",
+  "reason": "Scanning repeater example.",
+  "current_index": 0,
+  "current_frequency_mhz": 146.94,
+  "current_repeater_id": "example",
+  "current_repeater": {},
+  "last_squelch_activity_utc": null,
+  "last_ptt_activity_utc": null,
+  "last_user_frequency_change_utc": null,
+  "dwell_ms": 500,
+  "confirm_squelch_seconds": 5,
+  "resume_idle_seconds": 15,
+  "repeater_radius_miles": 25,
+  "map_radius_miles": 30,
+  "gps_reload_distance_miles": 5,
+  "ptt_reload_holdoff_seconds": 180,
+  "squelch_reload_holdoff_seconds": 120,
+  "repeater_count": 12,
+  "nearby_count": 12,
+  "source": "vhf_repeater_scan_manager",
+  "updated_utc": "2026-05-30T00:00:00Z"
+}
+
+Safety rules:
+
+UI controls emit intents only.
+UI must not command VHF radio actions.
+UI must not calculate scan targets, distance, C/D banks, or SQLite repeater lookups.
+Controller must check rt:vhf:radio availability before adapter requests that tune, scan, read squelch, read RX/TX status, read S-meter, write memory, select memory, or otherwise touch the radio.
+Adapter remains the only place that knows IC-2730A, CI-V, serial, or Hamlib details.
+
+---
+
+### 5. `docs/INTENTS.md`
+
+In the `vhf.scan.set_enabled` section, replace the current incomplete code block area with this cleaned text:
+
+```markdown
+### 4.82 VHF scan intent
+
+#### `vhf.scan.set_enabled`
+
+Purpose:
+
+Requests that the controller enable or disable the VHF repeater scan state machine.
+
+This is an intent-derived request only. It does not command the radio directly.
+
+Payload examples:
+
+```json
+{
+  "intent": "vhf.scan.set_enabled",
+  "enabled": true
+}
+
+{
+  "type": "vhf.scan.set_enabled",
+  "payload": {
+    "enabled": false
+  }
+}
+
+Rules:
+
+UI/browser controls may emit this intent.
+The intent worker may write rt:vhf:scan:request.
+The controller owns rt:vhf:scan.
+The controller must check rt:vhf:radio before radio-touching adapter requests.
+The adapter owns all IC-2730A / CI-V / serial behavior.
+This intent must not write memories, clear memories, load C/D banks, start built-in radio scan, program Side B, or expose PTT/transmit controls.
+
+The current docs already define `vhf.scan.set_enabled`, but the markdown fence is incomplete around the payload examples. :contentReference[oaicite:9]{index=9}
+
+## Verification commands
+
+### Syntax checks
+
+```bash
+cd /opt/rollingthunder
+
+python3 -m py_compile \
+  nodes/rt-controller/services/vhf_repeater_scan_manager.py \
+  nodes/rt-controller/services/vhf_radio_monitor.py \
+  nodes/rt-radio/services/vhf_ic2730a_adapter_status.py \
+  nodes/rt-radio/services/ic2730a_adapter.py \
+  tools/ui_intent_worker.py
+
+python3 -m json.tool config/app.json >/dev/null
+
+
+---
 ### 4.8 Meshtastic ###
 'rt:meshtastic:link'
 

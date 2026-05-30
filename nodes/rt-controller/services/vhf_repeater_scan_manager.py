@@ -52,6 +52,12 @@ DEFAULT_IDLE_POLL_SECONDS = 1.0
 DEFAULT_ADAPTER_RESULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_INITIAL_PRIME_SETTLE_SECONDS = 15.0
 DEFAULT_SOFTWARE_SCAN_ENABLED = False
+DEFAULT_MODE = "repeaters"
+DEFAULT_REPEATER_RADIUS_MILES = 25
+DEFAULT_MAP_RADIUS_MILES = 30
+DEFAULT_GPS_RELOAD_DISTANCE_MILES = 5
+DEFAULT_PTT_RELOAD_HOLDOFF_SECONDS = 180
+DEFAULT_SQUELCH_RELOAD_HOLDOFF_SECONDS = 120
 
 
 def utc_now() -> str:
@@ -154,6 +160,56 @@ def cfg_int(
         warn(f"invalid integer config {dotted}={raw!r}; using {default!r}")
         return int(default)
 
+
+def scan_config_values(config: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(
+        os.environ.get("RT_VHF_SCAN_MODE_DEFAULT")
+        or deep_get(config, "vhf.scan.mode_default", DEFAULT_MODE)
+        or DEFAULT_MODE
+    ).strip().lower()
+
+    if mode not in {"repeaters", "air", "news"}:
+        warn(f"invalid vhf.scan.mode_default={mode!r}; using {DEFAULT_MODE!r}")
+        mode = DEFAULT_MODE
+
+    return {
+        "mode": mode,
+        "repeater_radius_miles": cfg_float(
+            config,
+            "vhf.scan.repeater_radius_miles",
+            "RT_VHF_SCAN_REPEATER_RADIUS_MILES",
+            DEFAULT_REPEATER_RADIUS_MILES,
+            minimum=0.0,
+        ),
+        "map_radius_miles": cfg_float(
+            config,
+            "vhf.scan.map_radius_miles",
+            "RT_VHF_SCAN_MAP_RADIUS_MILES",
+            DEFAULT_MAP_RADIUS_MILES,
+            minimum=0.0,
+        ),
+        "gps_reload_distance_miles": cfg_float(
+            config,
+            "vhf.scan.gps_reload_distance_miles",
+            "RT_VHF_SCAN_GPS_RELOAD_DISTANCE_MILES",
+            DEFAULT_GPS_RELOAD_DISTANCE_MILES,
+            minimum=0.0,
+        ),
+        "ptt_reload_holdoff_seconds": cfg_float(
+            config,
+            "vhf.scan.ptt_reload_holdoff_seconds",
+            "RT_VHF_SCAN_PTT_RELOAD_HOLDOFF_SECONDS",
+            DEFAULT_PTT_RELOAD_HOLDOFF_SECONDS,
+            minimum=0.0,
+        ),
+        "squelch_reload_holdoff_seconds": cfg_float(
+            config,
+            "vhf.scan.squelch_reload_holdoff_seconds",
+            "RT_VHF_SCAN_SQUELCH_RELOAD_HOLDOFF_SECONDS",
+            DEFAULT_SQUELCH_RELOAD_HOLDOFF_SECONDS,
+            minimum=0.0,
+        ),
+    }
 
 def parse_float(value: Any) -> Optional[float]:
     if value is None:
@@ -474,38 +530,61 @@ def scan_model(
     current_index: int = 0,
     current_repeater: Optional[Dict[str, Any]] = None,
     last_squelch_activity_utc: Optional[str] = None,
+    last_ptt_activity_utc: Optional[str] = None,
+    last_user_frequency_change_utc: Optional[str] = None,
     dwell_ms: int = DEFAULT_DWELL_MS,
     timing: Optional[Dict[str, Any]] = None,
     confirm_squelch_seconds: float = DEFAULT_CONFIRM_SQUELCH_SECONDS,
     resume_idle_seconds: float = DEFAULT_RESUME_IDLE_SECONDS,
+    scan_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    scan_cfg = scan_cfg if isinstance(scan_cfg, dict) else {}
+
+    mode = str(scan_cfg.get("mode") or DEFAULT_MODE).strip().lower()
+    if mode not in {"repeaters", "air", "news"}:
+        mode = DEFAULT_MODE
+
     current_frequency = None
+    current_repeater_id = None
+
     if isinstance(current_repeater, dict):
         current_frequency = current_repeater.get("frequency_mhz")
+        current_repeater_id = (
+            current_repeater.get("id")
+            or current_repeater.get("source_id")
+            or current_repeater.get("callsign")
+            or current_repeater.get("name")
+        )
 
     return {
         "enabled": bool(enabled),
         "requested": bool(requested),
-        "mode": "repeaters",
+        "mode": mode,
         "scanning": bool(scanning),
         "actual_scan_state": "scanning" if scanning else "not_scanning",
         "status": status,
         "reason": reason,
         "current_index": int(current_index),
         "current_frequency_mhz": current_frequency,
+        "current_repeater_id": current_repeater_id,
         "current_repeater": current_repeater,
         "last_squelch_activity_utc": last_squelch_activity_utc,
-        "last_ptt_activity_utc": None,
+        "last_ptt_activity_utc": last_ptt_activity_utc,
+        "last_user_frequency_change_utc": last_user_frequency_change_utc,
         "dwell_ms": int(dwell_ms),
         "timing": timing or {},
         "confirm_squelch_seconds": float(confirm_squelch_seconds),
         "resume_idle_seconds": float(resume_idle_seconds),
+        "repeater_radius_miles": float(scan_cfg.get("repeater_radius_miles", DEFAULT_REPEATER_RADIUS_MILES)),
+        "map_radius_miles": float(scan_cfg.get("map_radius_miles", DEFAULT_MAP_RADIUS_MILES)),
+        "gps_reload_distance_miles": float(scan_cfg.get("gps_reload_distance_miles", DEFAULT_GPS_RELOAD_DISTANCE_MILES)),
+        "ptt_reload_holdoff_seconds": float(scan_cfg.get("ptt_reload_holdoff_seconds", DEFAULT_PTT_RELOAD_HOLDOFF_SECONDS)),
+        "squelch_reload_holdoff_seconds": float(scan_cfg.get("squelch_reload_holdoff_seconds", DEFAULT_SQUELCH_RELOAD_HOLDOFF_SECONDS)),
         "repeater_count": len(repeaters),
         "nearby_count": len(repeaters),
         "source": SOURCE,
         "updated_utc": utc_now(),
     }
-
 
 def write_adapter_request(redis_client: RedisCli, action: str, payload: Dict[str, Any]) -> str:
     request_id = f"vhf-softscan-{action}-{uuid.uuid4().hex}"
@@ -607,6 +686,7 @@ def run_scan_cycle(
         DEFAULT_INITIAL_PRIME_SETTLE_SECONDS,
         minimum=0.0,
     )
+    scan_cfg = scan_config_values(config)
 
     request = load_json_model(redis_client, KEY_SCAN_REQUEST)
     requested = parse_requested(request, config)
@@ -644,6 +724,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         return start_index
@@ -661,6 +742,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         return start_index
@@ -678,6 +760,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         return start_index
@@ -701,6 +784,7 @@ def run_scan_cycle(
             dwell_ms=dwell_ms,
             confirm_squelch_seconds=confirm_seconds,
             resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
         ),
     )
 
@@ -731,6 +815,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         time.sleep(1.0)
@@ -751,6 +836,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         time.sleep(1.0)
@@ -771,6 +857,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         time.sleep(1.0)
@@ -794,6 +881,7 @@ def run_scan_cycle(
                     dwell_ms=dwell_ms,
                     confirm_squelch_seconds=confirm_seconds,
                     resume_idle_seconds=resume_idle_seconds,
+                    scan_cfg=scan_cfg,
                 ),
             )
             return index
@@ -814,6 +902,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
 
@@ -866,6 +955,7 @@ def run_scan_cycle(
                     dwell_ms=dwell_ms,
                     confirm_squelch_seconds=confirm_seconds,
                     resume_idle_seconds=resume_idle_seconds,
+                    scan_cfg=scan_cfg,
                 ),
             )
             time.sleep(1.0)
@@ -911,10 +1001,34 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
 
         time.sleep(confirm_seconds)
+
+        radio = load_json_model(redis_client, KEY_VHF_RADIO)
+        if not radio_available(radio):
+            publish_scan(
+                redis_client,
+                scan_model(
+                    requested=True,
+                    enabled=False,
+                    scanning=False,
+                    status="unavailable",
+                    reason="VHF radio became unavailable before squelch confirmation; no radio command sent.",
+                    repeaters=repeaters,
+                    current_index=index,
+                    current_repeater=repeater,
+                    last_squelch_activity_utc=first_activity_utc,
+                    dwell_ms=dwell_ms,
+                    confirm_squelch_seconds=confirm_seconds,
+                    resume_idle_seconds=resume_idle_seconds,
+                    scan_cfg=scan_cfg,
+                ),
+            )
+            return index
+
         confirm = adapter_request(redis_client, "read_squelch_status", {}, adapter_timeout)
 
         if confirm.get("squelch_open") is True:
@@ -934,11 +1048,34 @@ def run_scan_cycle(
                     dwell_ms=dwell_ms,
                     confirm_squelch_seconds=confirm_seconds,
                     resume_idle_seconds=resume_idle_seconds,
+                    scan_cfg=scan_cfg,
                 ),
             )
 
             idle_start = time.monotonic()
             while current_requested(redis_client, config):
+                radio = load_json_model(redis_client, KEY_VHF_RADIO)
+                if not radio_available(radio):
+                    publish_scan(
+                        redis_client,
+                        scan_model(
+                            requested=True,
+                            enabled=False,
+                            scanning=False,
+                            status="unavailable",
+                            reason="VHF radio became unavailable while waiting for channel idle; no radio command sent.",
+                            repeaters=repeaters,
+                            current_index=index,
+                            current_repeater=repeater,
+                            last_squelch_activity_utc=last_activity_utc,
+                            dwell_ms=dwell_ms,
+                            confirm_squelch_seconds=confirm_seconds,
+                            resume_idle_seconds=resume_idle_seconds,
+                            scan_cfg=scan_cfg,
+                        ),
+                    )
+                    return index
+
                 idle_check = adapter_request(redis_client, "read_squelch_status", {}, adapter_timeout)
                 if idle_check.get("squelch_open") is True:
                     idle_start = time.monotonic()
@@ -957,6 +1094,7 @@ def run_scan_cycle(
                             dwell_ms=dwell_ms,
                             confirm_squelch_seconds=confirm_seconds,
                             resume_idle_seconds=resume_idle_seconds,
+                            scan_cfg=scan_cfg,
                         ),
                     )
                 elif time.monotonic() - idle_start >= resume_idle_seconds:
@@ -979,6 +1117,7 @@ def run_scan_cycle(
             dwell_ms=dwell_ms,
             confirm_squelch_seconds=confirm_seconds,
             resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
         ),
     )
     return index
