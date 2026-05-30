@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 51
+    "build": 54
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -652,7 +652,7 @@
       "confirm_squelch_seconds": 5,
       "resume_idle_seconds": 15,
       "idle_poll_seconds": 1,
-      "adapter_result_timeout_seconds": 3,
+      "adapter_result_timeout_seconds": 12,
       "reload_distance_miles": 20,
       "reload_radius_miles": 25,
       "movement_min_delta_miles": 0.05,
@@ -678,7 +678,7 @@
       "scan_control_enabled": false,
       "side_b_programming_enabled": false,
       "memory_programming_enabled": false,
-      "smeter_squlech_threshold": 25,
+      "smeter_squelch_threshold": 25,
       "detect_enabled": true,
       "publish_adapter_status": true,
       "publish_interval_seconds": 30,

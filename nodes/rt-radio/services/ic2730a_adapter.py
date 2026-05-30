@@ -92,6 +92,7 @@ DEFAULT_SOFTWARE_SCAN_ENABLED = False
 DEFAULT_ALLOW_VFO_TUNE = False
 DEFAULT_ALLOW_SMETER_READ = False
 DEFAULT_ALLOW_RX_TX_STATUS_READ = False
+DEFAULT_SMETER_SQUELCH_THRESHOLD = 25
 
 DEFAULT_DIRECT_CIV_SIDE_A_REPEATER_TUNE_TEST_ENABLED = False
 
@@ -415,6 +416,7 @@ class IC2730AConfig:
     allow_vfo_tune: bool = DEFAULT_ALLOW_VFO_TUNE
     allow_smeter_read: bool = DEFAULT_ALLOW_SMETER_READ
     allow_rx_tx_status_read: bool = DEFAULT_ALLOW_RX_TX_STATUS_READ
+    smeter_squelch_threshold: int = DEFAULT_SMETER_SQUELCH_THRESHOLD
 
     write_test_enabled: bool = False
     write_test_allow_single_memory_write: bool = False
@@ -1059,6 +1061,318 @@ class IC2730AAdapter:
                     "raw": {},
                 },
             )
+
+    def software_scan_step(self, repeater: Dict[str, Any], dwell_ms: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Phase 8.2B one-request software scan slot.
+
+        Controller owns scan loop, selected repeater, index advancement,
+        stop/resume decisions, and Redis state model.
+
+        Adapter owns:
+        - CI-V RX/TX read using CMD 1C 00
+        - Side A/Main VFO tune behavior
+        - dwell timing inside this scan slot
+        - CI-V S-meter read using CMD 15 01
+        - S-meter threshold evaluation
+
+        No memory write.
+        No bank write.
+        No memory clear.
+        No built-in scan start.
+        No Side B programming.
+        No PTT/transmit controls.
+        No rigctl.
+        """
+        cfg = self.config
+        candidate = repeater if isinstance(repeater, dict) else {}
+        slot_dwell_ms = _safe_int(dwell_ms, 500, minimum=0)
+
+        safety = {
+            "memory_write_performed": False,
+            "memory_clear_performed": False,
+            "bank_write_performed": False,
+            "scan_start_performed": False,
+            "scan_stop_performed": False,
+            "side_b_programming_performed": False,
+            "ptt_or_transmit_control_added": False,
+            "rigctl_used": False,
+            "ui_bus_written": False,
+        }
+
+        gate_failures: list[str] = []
+        if not cfg.software_scan_enabled:
+            gate_failures.append("software_scan_enabled=false")
+        if not cfg.allow_rx_tx_status_read:
+            gate_failures.append("allow_rx_tx_status_read=false")
+        if not cfg.allow_vfo_tune:
+            gate_failures.append("allow_vfo_tune=false")
+        if not cfg.allow_smeter_read:
+            gate_failures.append("allow_smeter_read=false")
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_readonly_probe_enabled:
+            gate_failures.append("direct_civ_readonly_probe_enabled=false")
+        if not cfg.direct_civ_side_a_readiness_probe_enabled:
+            gate_failures.append("direct_civ_side_a_readiness_probe_enabled=false")
+        if not cfg.direct_civ_side_a_write_plan_enabled:
+            gate_failures.append("direct_civ_side_a_write_plan_enabled=false")
+        if not cfg.direct_civ_side_a_repeater_tune_test_enabled:
+            gate_failures.append("direct_civ_side_a_repeater_tune_test_enabled=false")
+
+        base_extra = {
+            "action": "software_scan_step",
+            "operation_performed": False,
+            "tx_active": None,
+            "rx_tx_status": None,
+            "tune_attempted": False,
+            "tune_ok": False,
+            "frequency_mhz": candidate.get("frequency_mhz"),
+            "squelch_open": None,
+            "smeter_level": None,
+            "smeter_squelch_threshold": int(getattr(cfg, "smeter_squelch_threshold", DEFAULT_SMETER_SQUELCH_THRESHOLD)),
+            "dwell_ms": slot_dwell_ms,
+            "commands_sent": [],
+            "safety": safety,
+        }
+
+        if gate_failures:
+            return self._result(
+                ok=False,
+                status="disabled",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Software scan step disabled by config: " + ", ".join(gate_failures),
+                extra=base_extra,
+            )
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        def read_direct_command(name: str, payload: bytes, expected_prefix: bytes) -> Dict[str, Any]:
+            try:
+                import serial  # type: ignore
+            except Exception as exc:
+                return {
+                    "name": name,
+                    "documented_command_code": self._direct_civ_hex_bytes(payload),
+                    "sent": False,
+                    "ok": False,
+                    "parsed": {},
+                    "reason": f"Python pyserial module is not available; no CI-V command was sent: {exc}",
+                }
+
+            try:
+                with serial.Serial(
+                    port=cfg.direct_civ_serial_port,
+                    baudrate=cfg.direct_civ_baud,
+                    timeout=cfg.direct_civ_timeout_seconds,
+                    write_timeout=cfg.direct_civ_timeout_seconds,
+                ) as port:
+                    command_result = self._direct_civ_send_payload_full_window(
+                        port=port,
+                        name=name,
+                        payload=payload,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        timeout_seconds=cfg.direct_civ_timeout_seconds,
+                    )
+
+                    raw = bytes.fromhex(str(command_result.get("raw_response_hex", "")).replace(" ", ""))
+                    frames = self._direct_civ_split_frames(raw)
+                    response_payload = self._direct_civ_find_response_payload(
+                        frames=frames,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        expected_prefix=expected_prefix,
+                    )
+
+                    parsed: Dict[str, Any] = {}
+                    if response_payload is not None:
+                        if name == "squelch_status":
+                            smeter_level = None
+                            threshold = int(getattr(cfg, "smeter_squelch_threshold", DEFAULT_SMETER_SQUELCH_THRESHOLD))
+                            squelch_open = None
+
+                            if len(response_payload) >= 3:
+                                smeter_level = int(response_payload[-1])
+                                squelch_open = smeter_level >= threshold
+
+                            parsed = {
+                                "ok": squelch_open is not None,
+                                "squelch_open": squelch_open,
+                                "smeter_level": smeter_level,
+                                "smeter_squelch_threshold": threshold,
+                                "response_payload_hex": self._direct_civ_hex_bytes(response_payload),
+                                "reason": (
+                                    "S-meter response parsed."
+                                    if squelch_open is not None
+                                    else "S-meter response could not be parsed."
+                                ),
+                            }
+                        else:
+                            parsed = self._direct_civ_parse_payload(name, response_payload)
+
+                    return {
+                        "name": name,
+                        "documented_command_code": self._direct_civ_hex_bytes(payload),
+                        "sent": bool(command_result.get("sent")),
+                        "ok": bool(parsed.get("ok")),
+                        "parsed": parsed,
+                        "raw": {
+                            "command": command_result,
+                            "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                        },
+                        "reason": str(parsed.get("reason") or command_result.get("reason") or "CI-V read completed."),
+                    }
+
+            except Exception as exc:
+                return {
+                    "name": name,
+                    "documented_command_code": self._direct_civ_hex_bytes(payload),
+                    "sent": False,
+                    "ok": False,
+                    "parsed": {},
+                    "reason": f"Direct CI-V {name} read failed: {exc}",
+                }
+
+        commands_sent: list[Dict[str, Any]] = []
+
+        rx_command = read_direct_command(
+            "rx_tx_status",
+            bytes([0x1C, 0x00]),
+            bytes([0x1C, 0x00]),
+        )
+        commands_sent.append(rx_command)
+
+        rx_parsed = rx_command.get("parsed") if isinstance(rx_command.get("parsed"), dict) else {}
+        rx_tx_status = rx_parsed.get("rx_tx_status") or rx_parsed.get("status")
+        tx_active = None
+        if isinstance(rx_tx_status, str):
+            tx_active = rx_tx_status.strip().lower() == "tx"
+        elif rx_parsed.get("rx_not_tx") is not None:
+            tx_active = not bool(rx_parsed.get("rx_not_tx"))
+
+        if tx_active is True:
+            return self._result(
+                ok=False,
+                status="guarded",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Radio reports TX; software scan step aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "operation_performed": bool(rx_command.get("sent")),
+                    "tx_active": True,
+                    "rx_tx_status": rx_tx_status,
+                    "commands_sent": commands_sent,
+                },
+            )
+
+        if not bool(rx_command.get("ok")):
+            return self._result(
+                ok=False,
+                status="partial",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="RX/TX status could not be safely read; software scan step aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "operation_performed": bool(rx_command.get("sent")),
+                    "tx_active": tx_active,
+                    "rx_tx_status": rx_tx_status,
+                    "commands_sent": commands_sent,
+                },
+            )
+
+        tune_result = self.direct_civ_side_a_repeater_tune_test(candidate)
+        tune_commands = tune_result.get("commands_sent") if isinstance(tune_result.get("commands_sent"), list) else []
+        commands_sent.append(
+            {
+                "name": "tune_repeater_vfo",
+                "ok": bool(tune_result.get("ok")),
+                "status": tune_result.get("status"),
+                "reason": tune_result.get("reason"),
+                "commands_sent": tune_commands,
+            }
+        )
+
+        tune_summary = tune_result.get("summary") if isinstance(tune_result.get("summary"), dict) else {}
+
+        scan_tune_ok = bool(tune_result.get("ok"))
+        scan_tune_ok = scan_tune_ok or bool(
+            tune_summary.get("readback_after_ok")
+            and tune_summary.get("frequency_matches")
+            and tune_summary.get("mode_matches")
+            and tune_summary.get("duplex_matches")
+            and tune_summary.get("offset_matches")
+        )
+
+        if not scan_tune_ok:
+            return self._result(
+                ok=False,
+                status="partial",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason=str(tune_result.get("reason") or "Repeater VFO tune failed during software scan step."),
+                extra={
+                    **base_extra,
+                    "operation_performed": True,
+                    "tx_active": False,
+                    "rx_tx_status": rx_tx_status,
+                    "tune_attempted": True,
+                    "tune_ok": False,
+                    "scan_tune_ok": False,
+                    "commands_sent": commands_sent,
+                    "raw_tune_result": tune_result,
+                },
+            )
+
+        if slot_dwell_ms > 0:
+            time.sleep(slot_dwell_ms / 1000.0)
+
+        smeter_command = read_direct_command(
+            "squelch_status",
+            bytes([0x15, 0x01]),
+            bytes([0x15, 0x01]),
+        )
+        commands_sent.append(smeter_command)
+
+        smeter_parsed = smeter_command.get("parsed") if isinstance(smeter_command.get("parsed"), dict) else {}
+
+        squelch_open = smeter_parsed.get("squelch_open")
+        smeter_level = smeter_parsed.get("smeter_level")
+        threshold = smeter_parsed.get(
+            "smeter_squelch_threshold",
+            int(getattr(cfg, "smeter_squelch_threshold", DEFAULT_SMETER_SQUELCH_THRESHOLD)),
+        )
+
+        return self._result(
+            ok=bool(scan_tune_ok) and squelch_open is not None,
+            status="ok" if squelch_open is not None else "partial",
+            available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+            reason=(
+                "Software scan step completed."
+                if squelch_open is not None
+                else "Software scan step tuned, but S-meter response could not be parsed."
+            ),
+            extra={
+                **base_extra,
+                "operation_performed": True,
+                "tx_active": False,
+                "rx_tx_status": rx_tx_status,
+                "tune_attempted": True,
+                "tune_ok": bool(tune_result.get("ok")),
+                "scan_tune_ok": bool(scan_tune_ok),
+                "squelch_open": squelch_open,
+                "smeter_level": smeter_level,
+                "smeter_squelch_threshold": threshold,
+                "commands_sent": commands_sent,
+                "raw_tune_result": tune_result,
+            },
+        )
 
     def query_identity(self) -> Dict[str, Any]:
         """

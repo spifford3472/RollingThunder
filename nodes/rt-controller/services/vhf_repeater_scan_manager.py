@@ -680,8 +680,35 @@ def run_scan_cycle(
 
         repeater = repeaters[index]
 
-        rx_tx = adapter_request(redis_client, "read_rx_tx_status", {}, adapter_timeout)
-        if str(rx_tx.get("rx_tx_status") or "").lower() == "tx" or rx_tx.get("tx_active") is True:
+        publish_scan(
+            redis_client,
+            scan_model(
+                requested=True,
+                enabled=True,
+                scanning=True,
+                status="scanning",
+                reason=f"Scanning repeater {repeater.get('name') or repeater.get('callsign') or repeater.get('frequency_mhz')}.",
+                repeaters=repeaters,
+                current_index=index,
+                current_repeater=repeater,
+                dwell_ms=dwell_ms,
+                confirm_squelch_seconds=confirm_seconds,
+                resume_idle_seconds=resume_idle_seconds,
+            ),
+        )
+
+        step_timeout = max(adapter_timeout, adapter_timeout + (dwell_ms / 1000.0))
+        step = adapter_request(
+            redis_client,
+            "software_scan_step",
+            {
+                "repeater": repeater,
+                "dwell_ms": dwell_ms,
+            },
+            step_timeout,
+        )
+
+        if str(step.get("rx_tx_status") or "").lower() == "tx" or step.get("tx_active") is True:
             publish_scan(
                 redis_client,
                 scan_model(
@@ -701,32 +728,11 @@ def run_scan_cycle(
             time.sleep(1.0)
             return index
 
-        publish_scan(
-            redis_client,
-            scan_model(
-                requested=True,
-                enabled=True,
-                scanning=True,
-                status="scanning",
-                reason=f"Tuning repeater {repeater.get('name') or repeater.get('callsign') or repeater.get('frequency_mhz')}.",
-                repeaters=repeaters,
-                current_index=index,
-                current_repeater=repeater,
-                dwell_ms=dwell_ms,
-                confirm_squelch_seconds=confirm_seconds,
-                resume_idle_seconds=resume_idle_seconds,
-            ),
-        )
-
-        tune = adapter_request(redis_client, "tune_repeater_vfo", {"repeater": repeater}, adapter_timeout)
-        if not bool(tune.get("ok")):
+        if not bool(step.get("ok")):
             index = (index + 1) % len(repeaters)
             continue
 
-        time.sleep(dwell_ms / 1000.0)
-
-        squelch = adapter_request(redis_client, "read_squelch_status", {}, adapter_timeout)
-        if squelch.get("squelch_open") is not True:
+        if step.get("squelch_open") is not True:
             index = (index + 1) % len(repeaters)
             continue
 
