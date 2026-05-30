@@ -237,6 +237,9 @@ DEFAULT_CD_RELOAD = {
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+def _elapsed_ms(start_mono: float) -> int:
+    return int(round((time.monotonic() - start_mono) * 1000.0))
+
 def _safe_hex_byte(value: Any, default: str) -> int:
     text = str(value if value is not None else default).strip()
     if text.lower().startswith("0x"):
@@ -1268,6 +1271,11 @@ class IC2730AAdapter:
         cfg = self.config
 
         safety = self._software_scan_safety_flags()
+        fast_tune_started_mono = time.monotonic()
+        timing: Dict[str, Any] = {
+            "fast_tune_elapsed_ms": 0,
+            "commands": [],
+        }        
         before_cache = (
             dict(IC2730AAdapter._software_scan_vfo_cache)
             if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
@@ -1489,6 +1497,7 @@ class IC2730AAdapter:
                 serial_opened = True
 
                 for name, payload, documented_code in commands_to_send:
+                    command_started_mono = time.monotonic()
                     command_result = self._direct_civ_send_payload_full_window(
                         port=port,
                         name=name,
@@ -1497,6 +1506,7 @@ class IC2730AAdapter:
                         transceiver_addr=transceiver_addr,
                         timeout_seconds=cfg.direct_civ_timeout_seconds,
                     )
+                    command_elapsed_ms = _elapsed_ms(command_started_mono)
 
                     raw_hex = str(command_result.get("raw_response_hex") or "")
                     response_status = command_result.get("response_status")
@@ -1517,8 +1527,15 @@ class IC2730AAdapter:
                         "sent": bool(command_result.get("sent")),
                         "ok": bool(command_ok),
                         "raw": command_result,
+                        "elapsed_ms": command_elapsed_ms,
                     }
                     commands_sent.append(command_summary)
+                    timing["commands"].append(
+                        {
+                            "name": name,
+                            "elapsed_ms": command_elapsed_ms,
+                        }
+                    )                    
 
                     if not command_ok:
                         return {
@@ -1541,44 +1558,95 @@ class IC2730AAdapter:
                             "safety": safety,
                         }
                     
-                frequency_command = self._direct_civ_send_payload_full_window(
-                    port=port,
-                    name="fast_scan_verify_operating_frequency",
-                    payload=bytes([0x03]),
-                    controller_addr=controller_addr,
-                    transceiver_addr=transceiver_addr,
-                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                frequency_write_sent = any(
+                    isinstance(cmd, dict)
+                    and cmd.get("name") == "write_operating_frequency"
+                    and bool(cmd.get("sent"))
+                    for cmd in commands_sent
                 )
 
-                raw = bytes.fromhex(str(frequency_command.get("raw_response_hex", "")).replace(" ", ""))
-                frames = self._direct_civ_split_frames(raw)
-                response_payload = self._direct_civ_find_response_payload(
-                    frames=frames,
-                    controller_addr=controller_addr,
-                    transceiver_addr=transceiver_addr,
-                    expected_prefix=bytes([0x03]),
-                )
-
-                parsed = (
-                    self._direct_civ_parse_payload("operating_frequency", response_payload)
-                    if response_payload is not None
-                    else {}
-                )
-
-                readback_frequency_mhz = parsed.get("frequency_mhz") if isinstance(parsed, dict) else None
-                frequency_matches = same_float(
-                    readback_frequency_mhz,
-                    normalized.get("frequency_mhz"),
-                    0.000005,
-                )
-
+                frequency_matches = True
                 frequency_readback = {
-                    "command": frequency_command,
-                    "parsed": parsed,
-                    "frequency_mhz": readback_frequency_mhz,
-                    "frequency_matches": bool(frequency_matches),
-                    "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                    "skipped": True,
+                    "reason": "Frequency readback skipped because cached fast path did not write operating frequency.",
                 }
+
+                if full or frequency_write_sent:
+                    verify_started_mono = time.monotonic()
+                    frequency_command = self._direct_civ_send_payload_full_window(
+                        port=port,
+                        name="fast_scan_verify_operating_frequency",
+                        payload=bytes([0x03]),
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        timeout_seconds=cfg.direct_civ_timeout_seconds,
+                    )
+                    verify_elapsed_ms = _elapsed_ms(verify_started_mono)
+                    timing["commands"].append(
+                        {
+                            "name": "fast_scan_verify_operating_frequency",
+                            "elapsed_ms": verify_elapsed_ms,
+                        }
+                    )
+
+                    raw = bytes.fromhex(str(frequency_command.get("raw_response_hex", "")).replace(" ", ""))
+                    frames = self._direct_civ_split_frames(raw)
+                    response_payload = self._direct_civ_find_response_payload(
+                        frames=frames,
+                        controller_addr=controller_addr,
+                        transceiver_addr=transceiver_addr,
+                        expected_prefix=bytes([0x03]),
+                    )
+
+                    parsed = (
+                        self._direct_civ_parse_payload("operating_frequency", response_payload)
+                        if response_payload is not None
+                        else {}
+                    )
+
+                    readback_frequency_mhz = parsed.get("frequency_mhz") if isinstance(parsed, dict) else None
+                    frequency_matches = same_float(
+                        readback_frequency_mhz,
+                        normalized.get("frequency_mhz"),
+                        0.000005,
+                    )
+
+                    frequency_readback = {
+                        "command": frequency_command,
+                        "elapsed_ms": verify_elapsed_ms,
+                        "parsed": parsed,
+                        "frequency_mhz": readback_frequency_mhz,
+                        "frequency_matches": bool(frequency_matches),
+                        "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                    }
+
+                    if not frequency_matches:
+                        timing["fast_tune_elapsed_ms"] = _elapsed_ms(fast_tune_started_mono)
+                        return {
+                            "action": "direct_civ_side_a_repeater_tune_fast",
+                            "status": "partial",
+                            "ok": False,
+                            "operation_performed": True,
+                            "serial_opened": bool(serial_opened),
+                            "civ_command_sent": bool(commands_sent),
+                            "force_full_tune": bool(force_full_tune),
+                            "tune_attempted": True,
+                            "tune_ok": False,
+                            "scan_tune_ok": False,
+                            "candidate": normalized,
+                            "frequency_mhz": normalized.get("frequency_mhz"),
+                            "frequency_readback": frequency_readback,
+                            "commands_sent": commands_sent,
+                            "skipped_commands": skipped_commands,
+                            "cached_scan_vfo_state_before": before_cache,
+                            "cached_scan_vfo_state_after": before_cache,
+                            "reason": (
+                                "Fast scan tune command sequence completed, but frequency readback did not match candidate; "
+                                "cache was not updated."
+                            ),
+                            "timing": timing,
+                            "safety": safety,
+                        }
 
                 if not frequency_matches:
                     return {
@@ -1631,6 +1699,7 @@ class IC2730AAdapter:
         IC2730AAdapter._software_scan_vfo_cache = dict(normalized)
         after_cache = dict(IC2730AAdapter._software_scan_vfo_cache)
 
+        timing["fast_tune_elapsed_ms"] = _elapsed_ms(fast_tune_started_mono)
         return {
             "action": "direct_civ_side_a_repeater_tune_fast",
             "status": "ok",
@@ -1644,6 +1713,8 @@ class IC2730AAdapter:
             "scan_tune_ok": True,
             "candidate": normalized,
             "frequency_mhz": normalized.get("frequency_mhz"),
+            "frequency_readback": frequency_readback,
+            "timing": timing,
             "commands_sent": commands_sent,
             "skipped_commands": skipped_commands,
             "cached_scan_vfo_state_before": before_cache,
@@ -1680,6 +1751,16 @@ class IC2730AAdapter:
         No rigctl.
         """
         cfg = self.config
+        step_started_mono = time.monotonic()
+        timing: Dict[str, Any] = {
+            "software_scan_step_elapsed_ms": 0,
+            "rx_tx_read_elapsed_ms": 0,
+            "fast_tune_elapsed_ms": 0,
+            "dwell_elapsed_ms": 0,
+            "smeter_read_elapsed_ms": 0,
+            "request_received_utc": utc_now(),
+            "result_published_utc": None,
+        }        
         candidate = repeater if isinstance(repeater, dict) else {}
         slot_dwell_ms = _safe_int(dwell_ms, 500, minimum=0)
 
@@ -1759,7 +1840,8 @@ class IC2730AAdapter:
         )
 
         def read_direct_command(name: str, payload: bytes, expected_prefix: bytes) -> Dict[str, Any]:
-            try:
+            read_started_mono = time.monotonic()
+            try:                
                 import serial  # type: ignore
             except Exception as exc:
                 return {
@@ -1769,6 +1851,7 @@ class IC2730AAdapter:
                     "ok": False,
                     "parsed": {},
                     "reason": f"Python pyserial module is not available; no CI-V command was sent: {exc}",
+                    "elapsed_ms": _elapsed_ms(read_started_mono),
                 }
 
             try:
@@ -1833,6 +1916,7 @@ class IC2730AAdapter:
                             "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
                         },
                         "reason": str(parsed.get("reason") or command_result.get("reason") or "CI-V read completed."),
+                        "elapsed_ms": _elapsed_ms(read_started_mono),
                     }
 
             except Exception as exc:
@@ -1843,6 +1927,7 @@ class IC2730AAdapter:
                     "ok": False,
                     "parsed": {},
                     "reason": f"Direct CI-V {name} read failed: {exc}",
+                    "elapsed_ms": _elapsed_ms(read_started_mono),
                 }
 
         commands_sent: list[Dict[str, Any]] = []
@@ -1852,6 +1937,7 @@ class IC2730AAdapter:
             bytes([0x1C, 0x00]),
             bytes([0x1C, 0x00]),
         )
+        timing["rx_tx_read_elapsed_ms"] = int(rx_command.get("elapsed_ms") or 0)
         commands_sent.append(rx_command)
 
         rx_parsed = rx_command.get("parsed") if isinstance(rx_command.get("parsed"), dict) else {}
@@ -1892,10 +1978,21 @@ class IC2730AAdapter:
                 },
             )
 
+        tune_started_mono = time.monotonic()
         tune_result = self._direct_civ_side_a_repeater_tune_fast(
             candidate,
             force_full_tune=bool(force_full_tune),
         )
+        timing["fast_tune_elapsed_ms"] = _elapsed_ms(tune_started_mono)
+
+        tune_timing = tune_result.get("timing") if isinstance(tune_result.get("timing"), dict) else {}
+        if tune_timing:
+            timing["fast_tune"] = tune_timing
+            timing["fast_tune_elapsed_ms"] = int(
+                tune_timing.get("fast_tune_elapsed_ms")
+                or timing["fast_tune_elapsed_ms"]
+            )
+                   
         tune_commands = tune_result.get("commands_sent") if isinstance(tune_result.get("commands_sent"), list) else []
         skipped_commands = tune_result.get("skipped_commands") if isinstance(tune_result.get("skipped_commands"), list) else []
 
@@ -1913,6 +2010,10 @@ class IC2730AAdapter:
             }
         )
 
+        timing["fast_tune_elapsed_ms"] = _elapsed_ms(tune_started_mono)
+        tune_timing = tune_result.get("timing") if isinstance(tune_result.get("timing"), dict) else {}
+        if tune_timing:
+            timing["fast_tune"] = tune_timing
         scan_tune_ok = bool(tune_result.get("scan_tune_ok") or tune_result.get("ok"))
 
         if not scan_tune_ok:
@@ -1938,14 +2039,19 @@ class IC2730AAdapter:
                 },
             )
 
+        dwell_started_mono = time.monotonic()
         if slot_dwell_ms > 0:
             time.sleep(slot_dwell_ms / 1000.0)
+        timing["dwell_elapsed_ms"] = _elapsed_ms(dwell_started_mono)
 
         smeter_command = read_direct_command(
             "squelch_status",
             bytes([0x15, 0x01]),
             bytes([0x15, 0x01]),
         )
+        timing["smeter_read_elapsed_ms"] = int(smeter_command.get("elapsed_ms") or 0)
+        timing["software_scan_step_elapsed_ms"] = _elapsed_ms(step_started_mono)
+        timing["result_published_utc"] = utc_now()        
         commands_sent.append(smeter_command)
 
         smeter_parsed = smeter_command.get("parsed") if isinstance(smeter_command.get("parsed"), dict) else {}
@@ -1983,6 +2089,7 @@ class IC2730AAdapter:
                 "smeter_squelch_threshold": threshold,
                 "commands_sent": commands_sent,
                 "raw_tune_result": tune_result,
+                "timing": timing,                
             },
         )
 
@@ -7328,25 +7435,117 @@ class IC2730AAdapter:
         }
 
     @staticmethod
-    def _direct_civ_read_raw_full_window(*, port: Any, timeout_seconds: float) -> bytes:
+    def _direct_civ_read_raw_full_window(
+        *,
+        port: Any,
+        timeout_seconds: float,
+        controller_addr: Optional[int] = None,
+        transceiver_addr: Optional[int] = None,
+        expected_prefix: Optional[bytes] = None,
+        settle_seconds: float = 0.03,
+    ) -> bytes:
         """
-        Read for the full timeout window.
+        Read enough of the CI-V response window to capture echo plus the useful
+        response frame, then return early.
 
-        This is intentionally different from _direct_civ_read_raw(), which may stop
-        after the first frame. For proof commands we want to capture possible echo
-        plus a later OK/NG or readback frame.
+        Important pyserial detail:
+        port.read(256) can block until the serial timeout even when the useful
+        response frame has already arrived. For software scanning, temporarily
+        use short read timeouts so the loop can inspect frames promptly.
         """
         deadline = time.monotonic() + max(0.1, float(timeout_seconds))
         chunks: list[bytes] = []
+        saw_complete_response = False
+        response_seen_mono: Optional[float] = None
 
-        while time.monotonic() < deadline:
-            chunk = port.read(256)
-            if chunk:
-                chunks.append(chunk)
-            else:
-                time.sleep(0.02)
+        old_timeout = getattr(port, "timeout", None)
 
-        return b"".join(chunks)
+        def split_frames(raw: bytes) -> list[bytes]:
+            frames: list[bytes] = []
+            idx = 0
+
+            while idx < len(raw):
+                start = raw.find(b"\xFE\xFE", idx)
+                if start < 0:
+                    break
+
+                end = raw.find(b"\xFD", start + 2)
+                if end < 0:
+                    break
+
+                frames.append(raw[start : end + 1])
+                idx = end + 1
+
+            return frames
+
+        def has_useful_response(raw: bytes) -> bool:
+            frames = split_frames(raw)
+
+            for frame in frames:
+                if len(frame) < 6:
+                    continue
+
+                if frame[0] != 0xFE or frame[1] != 0xFE or frame[-1] != 0xFD:
+                    continue
+
+                dest = frame[2]
+                src = frame[3]
+                frame_payload = frame[4:-1]
+
+                if controller_addr is not None and dest != controller_addr:
+                    continue
+
+                if transceiver_addr is not None and src != transceiver_addr:
+                    continue
+
+                if frame_payload in {b"\xFB", b"\xFA"}:
+                    return True
+
+                if expected_prefix is not None and frame_payload.startswith(expected_prefix):
+                    return True
+
+            return False
+
+        try:
+            try:
+                port.timeout = min(0.05, max(0.005, float(timeout_seconds)))
+            except Exception:
+                pass
+
+            while time.monotonic() < deadline:
+                waiting = 0
+                try:
+                    waiting = int(getattr(port, "in_waiting", 0) or 0)
+                except Exception:
+                    waiting = 0
+
+                read_size = max(1, min(256, waiting if waiting > 0 else 1))
+                chunk = port.read(read_size)
+
+                if chunk:
+                    chunks.append(chunk)
+                    raw = b"".join(chunks)
+
+                    if has_useful_response(raw):
+                        if not saw_complete_response:
+                            saw_complete_response = True
+                            response_seen_mono = time.monotonic()
+
+                        if response_seen_mono is not None and time.monotonic() - response_seen_mono >= settle_seconds:
+                            break
+                else:
+                    if saw_complete_response and response_seen_mono is not None:
+                        if time.monotonic() - response_seen_mono >= settle_seconds:
+                            break
+                    time.sleep(0.005)
+
+            return b"".join(chunks)
+
+        finally:
+            try:
+                port.timeout = old_timeout
+            except Exception:
+                pass
 
     def _direct_civ_send_payload_full_window(
         self,
@@ -7398,6 +7597,9 @@ class IC2730AAdapter:
             raw = self._direct_civ_read_raw_full_window(
                 port=port,
                 timeout_seconds=timeout_seconds,
+                controller_addr=controller_addr,
+                transceiver_addr=transceiver_addr,
+                expected_prefix=payload,
             )
             result["raw_response_hex"] = self._direct_civ_hex_bytes(raw)
             response_status = self._direct_civ_response_status(raw)

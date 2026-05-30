@@ -475,6 +475,7 @@ def scan_model(
     current_repeater: Optional[Dict[str, Any]] = None,
     last_squelch_activity_utc: Optional[str] = None,
     dwell_ms: int = DEFAULT_DWELL_MS,
+    timing: Optional[Dict[str, Any]] = None,
     confirm_squelch_seconds: float = DEFAULT_CONFIRM_SQUELCH_SECONDS,
     resume_idle_seconds: float = DEFAULT_RESUME_IDLE_SECONDS,
 ) -> Dict[str, Any]:
@@ -496,6 +497,7 @@ def scan_model(
         "last_squelch_activity_utc": last_squelch_activity_utc,
         "last_ptt_activity_utc": None,
         "dwell_ms": int(dwell_ms),
+        "timing": timing or {},
         "confirm_squelch_seconds": float(confirm_squelch_seconds),
         "resume_idle_seconds": float(resume_idle_seconds),
         "repeater_count": len(repeaters),
@@ -541,8 +543,24 @@ def adapter_request(
     payload: Dict[str, Any],
     timeout_seconds: float,
 ) -> Dict[str, Any]:
+    started_mono = time.monotonic()
     request_id = write_adapter_request(redis_client, action, payload)
-    return wait_for_adapter_result(redis_client, request_id, timeout_seconds)
+    result = wait_for_adapter_result(redis_client, request_id, timeout_seconds)
+
+    controller_timing = result.get("controller_timing")
+    if not isinstance(controller_timing, dict):
+        controller_timing = {}
+
+    controller_timing.update(
+        {
+            "adapter_request_action": action,
+            "adapter_request_elapsed_ms": int(round((time.monotonic() - started_mono) * 1000.0)),
+            "adapter_result_timeout_seconds": float(timeout_seconds),
+        }
+    )
+
+    result["controller_timing"] = controller_timing
+    return result
 
 
 def current_requested(redis_client: RedisCli, config: Dict[str, Any]) -> bool:

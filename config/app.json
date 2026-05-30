@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 55
+    "build": 56
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -643,7 +643,7 @@
       "default_mode": "FM",
       "label": "2m Calling",
       "receive_only": false,
-      "publish_interval_seconds": 30
+      "publish_interval_seconds": 300
     },
     "scan": {
       "enabled_default": false,
@@ -683,7 +683,7 @@
       "detect_enabled": true,
       "publish_adapter_status": true,
       "publish_interval_seconds": 30,
-      "force_publish_seconds": 300,
+      "force_publish_seconds": 900,
       "cd_bank_reload_enabled": false,
       "memory_clear_enabled": false,
       "dry_run_cd_reload": true,
@@ -738,7 +738,7 @@
         "dtcs_code_polarity"
       ]
     },
-    "request_poll_seconds": 1,
+    "request_poll_seconds": 0.1,
     "write_test": {
       "enabled": false,
       "allow_single_memory_write": false,

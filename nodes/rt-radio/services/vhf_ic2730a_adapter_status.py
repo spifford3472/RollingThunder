@@ -58,7 +58,7 @@ SOURCE = "vhf_ic2730a_adapter_status"
 
 DEFAULT_PUBLISH_INTERVAL_SECONDS = 30
 DEFAULT_FORCE_PUBLISH_SECONDS = 300
-DEFAULT_REQUEST_POLL_SECONDS = 1
+DEFAULT_REQUEST_POLL_SECONDS = 0.1
 MAX_REMEMBERED_REQUEST_IDS = 200
 
 _running = True
@@ -128,6 +128,12 @@ def intish(value: Any, default: int, minimum: int) -> int:
     except Exception:
         return default
 
+def floatish(value: Any, default: float, minimum: float) -> float:
+    try:
+        parsed = float(value)
+        return parsed if parsed >= minimum else default
+    except Exception:
+        return default
 
 def get_vhf_config(app: Dict[str, Any]) -> Dict[str, Any]:
     raw = app.get("vhf", {})
@@ -157,11 +163,11 @@ def get_publish_config(app: Dict[str, Any]) -> Dict[str, Any]:
             DEFAULT_FORCE_PUBLISH_SECONDS,
             30,
         ),
-        "request_poll_seconds": intish(
+        "request_poll_seconds": floatish(
             os.environ.get("RT_VHF_ADAPTER_REQUEST_POLL_SECONDS")
             or ic.get("request_poll_seconds"),
             DEFAULT_REQUEST_POLL_SECONDS,
-            1,
+            0.05,
         ),
     }
 
@@ -407,6 +413,7 @@ def process_request_if_needed(
 
     request_id = str(request.get("request_id") or "").strip()
     action = str(request.get("action") or "").strip()
+    request_received_utc = utc_now_iso()
 
     if not request_id:
         request_id = f"missing-request-id-{utc_now_iso()}"
@@ -558,6 +565,10 @@ def process_request_if_needed(
         result["action"] = action
         result["source"] = SOURCE
         result["updated_utc"] = utc_now_iso()
+        timing = result.get("timing") if isinstance(result.get("timing"), dict) else {}
+        timing.setdefault("request_received_utc", request_received_utc)
+        timing["result_published_utc"] = utc_now_iso()
+        result["timing"] = timing
 
     elif action == "reset_software_scan_cache":
         result = adapter.reset_software_scan_cache()
@@ -587,7 +598,7 @@ def process_request_if_needed(
             f"Unknown or unsupported adapter request action: {action or 'missing'}",
         )
 
-    adapter_model = normalize_adapter_status(adapter.get_status())
+    adapter_model = adapter_model_before_request
     publish_request_result(client, adapter_model, result, "adapter_request_processed")
     remember_request_id(request_id, remembered, remembered_order)
 
@@ -632,7 +643,7 @@ def main() -> int:
             )
 
             publish_due = (time.monotonic() - last_status_check_mono) >= interval_sec
-            if publish_cfg["publish_adapter_status"] and (publish_due or request_processed):
+            if publish_cfg["publish_adapter_status"] and publish_due:
                 model = build_adapter_status(app)
                 old_model = read_existing(client)
 
@@ -664,10 +675,10 @@ def main() -> int:
             client = None
             warn(f"cycle failed: {exc}")
 
-        slept = 0
-        while _running and slept < sleep_seconds:
-            time.sleep(1)
-            slept += 1
+        sleep_until = time.monotonic() + float(sleep_seconds)
+        while _running and time.monotonic() < sleep_until:
+            remaining = sleep_until - time.monotonic()
+            time.sleep(min(0.05, max(0.0, remaining)))
 
     log("stopping")
     return 0
