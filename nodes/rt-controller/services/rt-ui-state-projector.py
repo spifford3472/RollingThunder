@@ -90,6 +90,8 @@ DEFAULT_BINDING_REFRESH_KEYS = {
     "rt:vhf:radio",
     "rt:vhf:repeaters:nearby",
     "rt:vhf:scan",
+    "rt:vhf:page",
+    "rt:vhf:map",
     "rt:vhf:repeaters:active_memory",
     "rt:vhf:side_b",
     "rt:ui:model:controller_services_summary",

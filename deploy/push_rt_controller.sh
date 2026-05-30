@@ -100,6 +100,7 @@ UNITS=(
   "rt-vhf-radio-monitor.service"
   "rt-vhf-side-b-manager.service"
   "rt-vhf-repeater-scan-manager.service"
+  "rt-vhf-page-model.service"
 )
 
 # Build a safely-escaped unit string for remote shell usage

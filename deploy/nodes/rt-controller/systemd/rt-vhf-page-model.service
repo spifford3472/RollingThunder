@@ -1,0 +1,25 @@
+[Unit]
+Description=RollingThunder VHF page and map view model
+After=network-online.target redis-server.service rt-vhf-radio-monitor.service rt-vhf-repeater-lookup.service rt-vhf-repeater-scan-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollingthunder
+Environment=PYTHONUNBUFFERED=1
+Environment=RT_REDIS_HOST=127.0.0.1
+Environment=RT_REDIS_PORT=6379
+Environment=RT_REDIS_DB=0
+EnvironmentFile=/etc/rollingthunder/redis.env
+EnvironmentFile=-/etc/rollingthunder/rollingthunder.env
+EnvironmentFile=-/opt/rollingthunder/config/rollingthunder.env
+ExecStart=/usr/bin/python3 /opt/rollingthunder/services/vhf_page_model.py
+Restart=always
+RestartSec=6
+User=spiff
+
+# Phase 8.3D safety: this service only reads Redis state and writes VHF page/map Redis models.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

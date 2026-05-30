@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 58
+    "build": 65
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -169,6 +169,39 @@
       },
       "provides": [
         "state.core"
+      ]
+    },
+    "vhf_page_model": {
+      "id": "vhf_page_model",
+      "scope": "always_on",
+      "ownerNode": "rt-controller",
+      "systemd": {
+        "unit": "rt-vhf-page-model.service"
+      },
+      "dependsOn": [
+        "redis_state",
+        "gps_ingest"
+      ],
+      "lifecycle": {
+        "startPolicy": "onBoot",
+        "stopPolicy": "never",
+        "restartPolicy": {
+          "mode": "onFailure",
+          "backoffMs": 2000,
+          "maxBackoffMs": 30000
+        }
+      },
+      "health": {
+        "type": "state_freshness",
+        "target": {
+          "key": "rt:vhf:page",
+          "namespace": "globals.state.namespace"
+        },
+        "staleAfterMs": 5000
+      },
+      "provides": [
+        "state.vhf.page",
+        "state.vhf.map"
       ]
     },
     "mqtt_bus": {
@@ -637,6 +670,7 @@
     "repeater_db_path": "/opt/rollingthunder/data/vhf/repeaters.sqlite3",
     "repeater_lookup_interval_sec": 30,
     "repeater_radius_miles": 25,
+    "page_model_interval_seconds": 1.0,
     "side_b": {
       "enabled": true,
       "default_frequency_mhz": 146.52,

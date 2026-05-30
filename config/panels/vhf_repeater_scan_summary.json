@@ -14,12 +14,14 @@
     "fallbackPollMs": 5000
   },
 
-  "bindings": [
-    { "id": "radio", "source": "state", "key": "rt:vhf:radio" },
-    { "id": "nearby", "source": "state", "key": "rt:vhf:repeaters:nearby" },
-    { "id": "scan", "source": "state", "key": "rt:vhf:scan" },
-    { "id": "active_memory", "source": "state", "key": "rt:vhf:repeaters:active_memory" }
-  ],
+"bindings": [
+  { "id": "page", "source": "state", "key": "rt:vhf:page" },
+  { "id": "map", "source": "state", "key": "rt:vhf:map" },
+  { "id": "radio", "source": "state", "key": "rt:vhf:radio" },
+  { "id": "nearby", "source": "state", "key": "rt:vhf:repeaters:nearby" },
+  { "id": "scan", "source": "state", "key": "rt:vhf:scan" },
+  { "id": "active_memory", "source": "state", "key": "rt:vhf:repeaters:active_memory" }
+],
 
   "actions": [],
 
