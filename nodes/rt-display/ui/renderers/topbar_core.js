@@ -371,7 +371,7 @@ export function renderTopbarCore(container, panel, data) {
 
   // ---- VHF radio availability
   // Renderer consumes projected/controller-owned state only.
-  // It does not test, tune, scan, or infer radio availability.
+  // It does not test, tune, scan, command, or infer radio details.
   const vhfRadio = data?.vhf_radio || null;
 
   let vhfSymbol = "●";
@@ -385,15 +385,18 @@ export function renderTopbarCore(container, panel, data) {
       vhfRadio.available === "1" ||
       String(vhfRadio.available || "").toLowerCase() === "true";
 
-    if (vhfStatus === "online" && vhfAvailable) {
+    if (vhfAvailable && (vhfStatus === "available" || vhfStatus === "ready")) {
       vhfSymbol = "✔";
       vhfOpacity = 1.0;
-    } else if (vhfStatus === "degraded") {
+    } else if (vhfStatus === "dry_run") {
       vhfSymbol = "⚠";
       vhfOpacity = 0.9;
-    } else if (vhfStatus === "offline") {
+    } else if (vhfStatus === "unavailable" || vhfStatus === "error") {
       vhfSymbol = "✗";
-      vhfOpacity = 0.6;
+      vhfOpacity = 0.65;
+    } else if (vhfStatus === "disabled") {
+      vhfSymbol = "○";
+      vhfOpacity = 0.45;
     } else {
       vhfSymbol = "●";
       vhfOpacity = 0.55;

@@ -45,6 +45,7 @@ KEY_VHF_RADIO = "rt:vhf:radio"
 KEY_NEARBY = "rt:vhf:repeaters:nearby"
 KEY_GPS_POS = "rt:gps:pos"
 KEY_PLANNED_MEMORY = "rt:vhf:repeaters:planned_memory"
+KEY_ADAPTER_REQUEST = "rt:vhf:adapter:request"
 
 SYSTEM_BUS = "rt:system:bus"
 
@@ -53,7 +54,7 @@ DEFAULT_RADIUS_MILES = 40.0
 DEFAULT_RELOAD_DISTANCE_MILES = 20.0
 DEFAULT_MOVEMENT_MIN_DELTA_MILES = 0.05
 DEFAULT_MOVEMENT_JUMP_REJECT_MILES = 5.0
-DEFAULT_MAX_MEMORY_CHANNELS_PER_GROUP = 100
+DEFAULT_MAX_MEMORY_CHANNELS_PER_GROUP = 50
 DEFAULT_DRY_RUN_RELOAD_ONLY = True
 DEFAULT_PUBLISH_INTERVAL_SECONDS = 30.0
 DEFAULT_FORCE_PUBLISH_SECONDS = 300.0
@@ -471,6 +472,85 @@ def normalize_group(value: Any, default: str = DEFAULT_NEXT_GROUP) -> str:
 def other_group(group: str) -> str:
     return "D" if group == "C" else "C"
 
+def group_memory_start(group: str) -> int:
+    """IC-2730A C/D memory-bank absolute channel start."""
+    group = normalize_group(group)
+    return 100 if group == "C" else 150
+
+
+def group_memory_range(group: str) -> Tuple[int, int]:
+    start = group_memory_start(group)
+    return start, start + 49
+
+
+def normalize_repeater_duplex(item: Dict[str, Any], offset_mhz: Optional[float]) -> str:
+    raw = str(item.get("duplex") or item.get("offset_direction") or "").strip().lower()
+
+    if raw in {"+", "plus", "positive", "up"}:
+        return "+"
+    if raw in {"-", "minus", "negative", "down"}:
+        return "-"
+    if raw in {"simplex", "off", "none", "0", "0.0"}:
+        return "simplex"
+
+    if offset_mhz is not None:
+        if offset_mhz > 0:
+            return "+"
+        if offset_mhz < 0:
+            return "-"
+
+    return "simplex"
+
+def normalize_repeater_tone_mode(item: Dict[str, Any], tone_hz: Optional[float]) -> str:
+    raw = str(
+        item.get("tone_mode")
+        or item.get("tone_type")
+        or item.get("ctcss_mode")
+        or ""
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+
+    if raw in {"", "none", "off", "no", "false", "0"}:
+        return "tone" if tone_hz is not None else "off"
+
+    if raw in {
+        "tone",
+        "encode",
+        "encode_only",
+        "tx_tone",
+        "tone_encode",
+        "ctcss_encode",
+        "repeater_tone",
+    }:
+        return "tone"
+
+    if raw in {
+        "ctcss",
+    }:
+        return "ctcss"
+
+    if raw in {
+        "tsql",
+        "tone_sql",
+        "tone_squelch",
+        "tonesquelch",
+        "decode",
+        "encode_decode",
+        "encode_and_decode",
+        "encode_and_tsql",
+        "tone_and_tsql",
+        "ctcss_sql",
+        "ctcss_squelch",
+    }:
+        return "tsql"
+
+    return "tone" if tone_hz is not None else "off"
+
+def source_item_id(item: Dict[str, Any]) -> Optional[str]:
+    for key in ("id", "source_id", "repeater_id", "station_id"):
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
 
 def numeric_tone(value: Any) -> Optional[float]:
     if value is None:
@@ -545,6 +625,10 @@ def build_planned_memory_model(
     radius_miles: float,
     max_memory_channels: int,
 ) -> Dict[str, Any]:
+    target_group = normalize_group(target_group)
+    memory_start, memory_end = group_memory_range(target_group)
+    max_channels = max(1, min(int(max_memory_channels), memory_end - memory_start + 1))
+
     items: List[Dict[str, Any]] = []
     skipped_invalid = 0
     skipped_digital = 0
@@ -571,7 +655,11 @@ def build_planned_memory_model(
         tx_freq = item_tx_frequency(raw_item)
         offset: Optional[float] = None
         if tx_freq is not None:
-            offset = round(tx_freq - freq, 6)
+            offset = abs(round(tx_freq - freq, 6))
+        else:
+            offset_val = parse_float(raw_item.get("offset_mhz"))
+            if offset_val is not None:
+                offset = abs(round(offset_val, 6))
 
         tone = numeric_tone(raw_item.get("tx_tone"))
         if tone is None:
@@ -579,51 +667,117 @@ def build_planned_memory_model(
         if tone is None:
             tone = numeric_tone(raw_item.get("tone_hz"))
 
+        tone_mode = normalize_repeater_tone_mode(raw_item, tone)
+
+        channel_index = len(items)
+        memory_channel = memory_start + channel_index
+
         planned: Dict[str, Any] = {
-            "channel": len(items) + 1,
+            "channel_index": channel_index,
+            "channel": channel_index + 1,
+            "memory_channel": memory_channel,
             "name": repeater_name(raw_item),
             "callsign": repeater_callsign(raw_item),
             "frequency_mhz": freq,
+            "mode": "FM",
+            "duplex": normalize_repeater_duplex(raw_item, offset),
             "offset_mhz": offset,
             "tone_hz": tone,
-            "mode": "FM",
+            "tone_mode": tone_mode,
             "distance_miles": round(distance, 1) if distance is not None else None,
+            "bearing_degrees": raw_item.get("bearing_degrees"),
+            "skywarn": boolish(raw_item.get("skywarn"), False),
+            "ares": boolish(raw_item.get("ares"), False),
+            "selected": boolish(raw_item.get("selected"), channel_index == 0),
         }
 
-        for key in ("repeater_id", "state", "special"):
+        item_id = source_item_id(raw_item)
+        if item_id is not None:
+            planned["source_id"] = item_id
+
+        for key in ("repeater_id", "state", "special", "type"):
             if key in raw_item and raw_item.get(key) not in (None, ""):
                 planned[key] = raw_item.get(key)
 
         items.append(planned)
-        if len(items) >= max_memory_channels:
+        if len(items) >= max_channels:
             break
 
     now = utc_now()
     status = "dry_run" if items else "unavailable"
     reason = (
-        "Dry-run memory reload plan generated; no radio programming performed."
+        "Memory reload plan generated; no radio programming performed."
         if items
-        else "No eligible analog FM repeaters available for dry-run memory reload plan."
+        else "No eligible analog FM repeaters available for memory reload plan."
     )
 
     return {
         "status": status,
         "target_group": target_group,
         "source_group": source_group,
+        "memory_channel_start": memory_start,
+        "memory_channel_end": memory_end,
         "repeater_count": count_nearby(nearby),
         "memory_count": len(items),
         "radius_miles": display_number(radius_miles),
         "nearby_model_radius_miles": nearby.get("radius_miles"),
-        "max_memory_channels": max_memory_channels,
+        "max_memory_channels": max_channels,
         "skipped_invalid_frequency": skipped_invalid,
         "skipped_non_fm": skipped_digital,
         "skipped_transmit_prohibited": skipped_tx_prohibited,
+        "operation_performed": False,
         "reason": reason,
         "items": items,
+        "repeaters": items,
         "source": SOURCE,
         "updated_utc": now,
     }
 
+def build_adapter_cd_reload_plan_request(
+    planned_memory: Dict[str, Any],
+    state: Dict[str, Any],
+    *,
+    radius_miles: float,
+    reload_distance_miles: float,
+) -> Dict[str, Any]:
+    target_group = normalize_group(planned_memory.get("target_group"))
+    last_movement_utc = str(state.get("last_movement_utc") or "unknown").replace(":", "").replace("-", "")
+    request_id = f"vhf-cd-reload-plan-{target_group}-{last_movement_utc}"
+
+    origin: Dict[str, Any] = {}
+    last_location = state.get("last_movement_location")
+    if isinstance(last_location, dict):
+        origin = {
+            "lat": last_location.get("lat"),
+            "lon": last_location.get("lon"),
+            "updated_utc": state.get("last_movement_utc"),
+        }
+
+    return {
+        "request_id": request_id,
+        "action": "plan_cd_bank_reload",
+        "source": SOURCE,
+        "target_group": target_group,
+        "inactive_group": target_group,
+        "source_group": planned_memory.get("source_group"),
+        "start_scan_after": False,
+        "dry_run": True,
+        "operation_requested": "plan_only",
+        "operation_performed": False,
+        "reason": "reload_distance_reached_plan_only",
+        "origin": origin,
+        "reload": {
+            "radius_miles": display_number(radius_miles),
+            "reload_distance_miles": display_number(reload_distance_miles),
+            "distance_since_reload_miles": rounded_miles(
+                parse_float(state.get("distance_since_reload_miles")) or 0.0
+            ),
+            "max_channels": planned_memory.get("max_memory_channels"),
+            "memory_channel_start": planned_memory.get("memory_channel_start"),
+            "memory_channel_end": planned_memory.get("memory_channel_end"),
+        },
+        "repeaters": planned_memory.get("items") if isinstance(planned_memory.get("items"), list) else [],
+    }
 
 def initial_state_from_previous(previous: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     configured_next = cfg_str(config, "vhf.scan.next_group", "RT_VHF_SCAN_NEXT_GROUP", DEFAULT_NEXT_GROUP)
@@ -688,7 +842,7 @@ def build_model(
     radio: Dict[str, Any],
     nearby: Dict[str, Any],
     previous: Dict[str, Any],
-) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     requested = parse_requested(request, config)
 
     radius_miles = cfg_float(
@@ -735,6 +889,7 @@ def build_model(
 
     state = initial_state_from_previous(previous, config)
     planned_memory: Optional[Dict[str, Any]] = None
+    adapter_request: Optional[Dict[str, Any]] = None
     movement_status: Optional[str] = None
 
     nearby_count = count_nearby(nearby)
@@ -823,10 +978,50 @@ def build_model(
         enabled = False
 
     else:
-        status = "pending"
-        reason = "VHF radio is available, but this phase does not issue scan, tune, memory, or adapter commands."
+        status = "available"
+        reason = "VHF radio is available; waiting for reload distance before planning C/D reload."
         actual_scan_state = "unknown"
         enabled = False
+
+        state, movement_status = apply_movement_tracking(
+            redis_client,
+            state,
+            movement_min_delta_miles,
+            movement_jump_reject_miles,
+        )
+
+        current_distance = parse_float(state.get("distance_since_reload_miles")) or 0.0
+        if current_distance >= reload_distance_miles:
+            reload_pending = True
+            target_group = normalize_group(state.get("next_group"))
+            source_group = state.get("active_group") or state.get("last_successful_group") or other_group(target_group)
+
+            planned_memory = build_planned_memory_model(
+                nearby,
+                target_group=target_group,
+                source_group=str(source_group) if source_group else None,
+                radius_miles=radius_miles,
+                max_memory_channels=max_memory_channels,
+            )
+
+            if planned_memory.get("status") == "dry_run" and planned_memory.get("memory_count", 0) > 0:
+                adapter_request = build_adapter_cd_reload_plan_request(
+                    planned_memory,
+                    state,
+                    radius_miles=radius_miles,
+                    reload_distance_miles=reload_distance_miles,
+                )
+                state["last_reload_status"] = "plan_requested"
+                state["last_reload_reason"] = "Planning-only C/D reload request published for adapter validation."
+                state["last_reload_utc"] = utc_now()
+                state["last_reload_location"] = state.get("last_movement_location")
+                reload_pending = True
+                reason = "Planning-only C/D reload request ready for adapter validation; no radio programming performed."
+            else:
+                state["last_reload_status"] = "unavailable"
+                state["last_reload_reason"] = planned_memory.get("reason") if planned_memory else "Memory reload plan failed."
+                reload_pending = True
+                reason = str(state["last_reload_reason"])
 
     distance = parse_float(state.get("distance_since_reload_miles")) or 0.0
 
@@ -871,7 +1066,7 @@ def build_model(
         "updated_utc": utc_now(),
     }
 
-    return model, planned_memory
+    return model, planned_memory, adapter_request
 
 
 def comparable_model(model: Dict[str, Any]) -> Dict[str, Any]:
@@ -946,7 +1141,7 @@ def main() -> int:
             nearby = load_json_model(redis_client, KEY_NEARBY)
             previous = load_json_model(redis_client, KEY_SCAN)
 
-            model, planned_memory = build_model(redis_client, config, request, radio, nearby, previous)
+            model, planned_memory, adapter_request = build_model(redis_client, config, request, radio, nearby, previous)
             force = (time.monotonic() - last_force_publish) >= force_publish_seconds
 
             planned_wrote = False
@@ -959,6 +1154,16 @@ def main() -> int:
                     reason="vhf_planned_memory_changed",
                 )
 
+            adapter_request_wrote = False
+            if adapter_request is not None:
+                adapter_request_wrote = publish_json_if_changed(
+                    redis_client,
+                    KEY_ADAPTER_REQUEST,
+                    adapter_request,
+                    force=False,
+                    reason="vhf_adapter_plan_request_changed",
+                )
+
             wrote = publish_json_if_changed(
                 redis_client,
                 KEY_SCAN,
@@ -967,7 +1172,7 @@ def main() -> int:
                 reason="vhf_scan_model_changed",
             )
 
-            if wrote or planned_wrote:
+            if wrote or planned_wrote or adapter_request_wrote:
                 last_force_publish = time.monotonic()
                 log(
                     f"published requested={model['requested']} "
