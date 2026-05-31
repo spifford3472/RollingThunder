@@ -98,6 +98,7 @@ def get_vhf_config(app: Dict[str, Any]) -> Dict[str, Any]:
         "radio_control_mode": str(raw.get("radio_control_mode", "stub")).strip().lower(),
         "radio_monitor_interval_sec": intish(raw.get("radio_monitor_interval_sec", 30), 30, 5),
         "radio_force_publish_sec": intish(raw.get("radio_force_publish_sec", 300), 300, 30),
+        "adapter_stale_after_sec": intish(raw.get("adapter_stale_after_sec", 45), 45, 5),
     }
 
 
@@ -140,7 +141,43 @@ def get_redis_client(app: Dict[str, Any]) -> "redis.Redis":
 
 
 def build_model(cfg: Dict[str, Any], adapter: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    return normalize_radio_model(cfg, adapter)
+    stale_after_sec = int(cfg.get("adapter_stale_after_sec") or 45)
+    stale, age_ms = adapter_is_stale(adapter, stale_after_sec)
+
+    if stale:
+        now = utc_now_iso()
+        stale_adapter = dict(adapter) if isinstance(adapter, dict) else {}
+
+        stale_adapter.update(
+            {
+                "available": False,
+                "status": "unavailable",
+                "reason": (
+                    "IC-2730A adapter status is stale; treating VHF radio as unavailable."
+                    if adapter
+                    else "IC-2730A adapter status unavailable."
+                ),
+                "stale": True,
+                "stale_after_sec": stale_after_sec,
+                "adapter_age_ms": int(age_ms) if age_ms is not None else None,
+                "updated_utc": stale_adapter.get("updated_utc") or now,
+            }
+        )
+
+        model = normalize_radio_model(cfg, stale_adapter)
+        model["stale"] = True
+        model["adapter_stale"] = True
+        model["adapter_age_ms"] = int(age_ms) if age_ms is not None else None
+        model["stale_after_sec"] = stale_after_sec
+        model["updated_utc"] = now
+        return model
+
+    model = normalize_radio_model(cfg, adapter)
+    model["stale"] = False
+    model["adapter_stale"] = False
+    model["adapter_age_ms"] = int(age_ms) if age_ms is not None else None
+    model["stale_after_sec"] = stale_after_sec
+    return model
 
 
 def stable_part(model: Dict[str, Any]) -> Dict[str, Any]:
@@ -157,6 +194,8 @@ def stable_part(model: Dict[str, Any]) -> Dict[str, Any]:
         "adapter_control_mode": model.get("adapter_control_mode"),
         "command_available": model.get("command_available"),
         "command_ready_statuses": model.get("command_ready_statuses"),
+        "stale": model.get("stale"),
+        "adapter_stale": model.get("adapter_stale"),
     }
 
 
@@ -190,6 +229,32 @@ def truthy(value: Any) -> bool:
         return value.strip().lower() in {"true", "yes", "y", "on", "available", "ready"}
     return False
 
+def parse_utc_iso_ms(value: Any) -> Optional[float]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except Exception:
+        return None
+
+
+def adapter_is_stale(adapter: Optional[Dict[str, Any]], stale_after_sec: int) -> Tuple[bool, Optional[float]]:
+    if not adapter:
+        return True, None
+
+    ts_ms = parse_utc_iso_ms(adapter.get("updated_utc"))
+    if ts_ms is None:
+        return True, None
+
+    age_ms = (time.time() * 1000.0) - ts_ms
+    return age_ms > (float(stale_after_sec) * 1000.0), age_ms
 
 def normalize_radio_model(cfg: Dict[str, Any], adapter: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     now = utc_now_iso()

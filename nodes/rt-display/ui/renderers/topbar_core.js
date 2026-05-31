@@ -377,31 +377,42 @@ export function renderTopbarCore(container, panel, data) {
   let vhfSymbol = "●";
   let vhfOpacity = 0.55;
 
-  if (isObj(vhfRadio)) {
-    const vhfStatus = String(vhfRadio.status || "unknown").toLowerCase();
-    const vhfAvailable =
-      vhfRadio.available === true ||
-      vhfRadio.available === 1 ||
-      vhfRadio.available === "1" ||
-      String(vhfRadio.available || "").toLowerCase() === "true";
+  const vhfStale =
+    vhfRadio?.stale === true ||
+    vhfRadio?.adapter_stale === true ||
+    String(vhfRadio?.stale || "").toLowerCase() === "true" ||
+    String(vhfRadio?.adapter_stale || "").toLowerCase() === "true";  
 
-    if (vhfAvailable && (vhfStatus === "available" || vhfStatus === "ready")) {
-      vhfSymbol = "✔";
-      vhfOpacity = 1.0;
-    } else if (vhfStatus === "dry_run") {
-      vhfSymbol = "⚠";
-      vhfOpacity = 0.9;
-    } else if (vhfStatus === "unavailable" || vhfStatus === "error") {
-      vhfSymbol = "✗";
-      vhfOpacity = 0.65;
-    } else if (vhfStatus === "disabled") {
+  if (isObj(vhfRadio)) {
+    if (vhfStale) {
       vhfSymbol = "○";
       vhfOpacity = 0.45;
-    } else {
-      vhfSymbol = "●";
-      vhfOpacity = 0.55;
-    }
+    } else {    
+      const vhfStatus = String(vhfRadio.status || "unknown").toLowerCase();
+      const vhfAvailable =
+        vhfRadio.available === true ||
+        vhfRadio.available === 1 ||
+        vhfRadio.available === "1" ||
+        String(vhfRadio.available || "").toLowerCase() === "true";
+
+      if (vhfAvailable && (vhfStatus === "available" || vhfStatus === "ready")) {
+        vhfSymbol = "✔";
+        vhfOpacity = 1.0;
+      } else if (vhfStatus === "dry_run") {
+        vhfSymbol = "⚠";
+        vhfOpacity = 0.9;
+      } else if (vhfStatus === "unavailable" || vhfStatus === "error") {
+        vhfSymbol = "✗";
+        vhfOpacity = 0.65;
+      } else if (vhfStatus === "disabled") {
+        vhfSymbol = "○";
+        vhfOpacity = 0.45;
+      } else {
+        vhfSymbol = "●";
+        vhfOpacity = 0.55;
+      }
   }
+}
 
   container.innerHTML = `
     <div class="rt-topbar"
