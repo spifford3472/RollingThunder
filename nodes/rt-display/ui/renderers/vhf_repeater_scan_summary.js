@@ -241,6 +241,12 @@ function renderRows(items, opts = {}) {
             border:1px solid rgba(255,255,255,.11);
             border-radius:16px;
             padding:.55rem .75rem .55rem .95rem;
+            box-shadow:${cls.includes("rt-selected") ? "inset 0 0 0 2px rgba(255,255,255,.65)" : "none"};
+            overflow:hidden;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+          ">
             ${cls.includes("rt-vhf-active") ? `
               <div aria-hidden="true" style="
                 position:absolute;
@@ -252,12 +258,7 @@ function renderRows(items, opts = {}) {
                 box-shadow:0 0 10px rgba(255,23,68,.95);
               "></div>
             ` : ""}
-            box-shadow:${cls.includes("rt-selected") ? "inset 0 0 0 2px rgba(255,255,255,.65)" : "none"};
-            overflow:hidden;
-            display:flex;
-            flex-direction:column;
-            justify-content:center;
-          ">
+
             <div style="
               display:grid;
               grid-template-columns:minmax(0,1fr) auto;

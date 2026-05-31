@@ -43,8 +43,120 @@ POTA_BANDS_KEY = "rt:pota:ui:ssb:bands"
 POTA_SPOTS_SELECTED_KEY = "rt:pota:ui:ssb:spots:selected"
 POTA_SPOT_STATUS_KEY_PREFIX ="rt:pota:spot_status:"
 
+VHF_SELECT_REQUEST_KEY = "rt:vhf:select:request"
+VHF_SELECT_STATE_KEY = "rt:vhf:select:state"
+VHF_SELECT_DUPLICATE_SUPPRESS_MS = 1500
+VHF_SELECT_COMPLETED_SUPPRESS_MS = 10000
+
 def utc_day_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def publish_vhf_repeater_select_request(
+    r: redis.Redis,
+    item: Dict[str, Any],
+    selected_index: int,
+    selected_id: str | None = None,
+) -> str:
+    """
+    Controller-side VHF repeater select request.
+
+    This does not command the radio.
+    This does not write rt:vhf:adapter:request.
+    The scan manager owns the serialized stop-scan + tune transaction.
+    """
+    item = as_dict(item)
+    now = now_ms()
+
+    resolved_id = str(
+        selected_id
+        or item.get("id")
+        or item.get("repeater_id")
+        or item.get("source_id")
+        or item.get("callsign")
+        or item.get("label")
+        or ""
+    ).strip()
+
+    if not resolved_id:
+        return "ignored_no_selected_id"
+
+    # Button-bounce / repeated-OK suppression before the scan manager even sees it.
+    current_request = as_dict(get_json_or_value(r, VHF_SELECT_REQUEST_KEY))
+    current_selected_id = str(current_request.get("selected_id") or "").strip()
+    try:
+        current_requested_at_ms = int(current_request.get("requested_at_ms") or 0)
+    except Exception:
+        current_requested_at_ms = 0
+
+    if (
+        current_selected_id
+        and current_selected_id == resolved_id
+        and current_requested_at_ms > 0
+        and now - current_requested_at_ms < VHF_SELECT_DUPLICATE_SUPPRESS_MS
+    ):
+        return "ignored_duplicate_vhf_select"
+
+    # If the scan manager is already in the actual tune phase, do not replace it.
+    # If it is only queued/stopping_scan, a different selected row may replace the pending request.
+    select_state = as_dict(get_json_or_value(r, VHF_SELECT_STATE_KEY))
+    active = bool(select_state.get("active"))
+    phase = str(select_state.get("phase") or "").strip()
+
+    if active and phase in {"stopping_scan", "tuning", "waiting_result"}:
+        active_id = str(select_state.get("selected_id") or "").strip()
+        if active_id == resolved_id:
+            return "ignored_vhf_select_already_tuning"
+        return "ignored_vhf_select_tune_busy"
+
+    # Suppress repeated OK on the same row shortly after a completed tune.
+    # This prevents stacked button presses from re-tuning the same repeater
+    # immediately after the first transaction completes.
+    state_selected_id = str(select_state.get("selected_id") or "").strip()
+    state_status = str(select_state.get("status") or "").strip().lower()
+    state_phase = str(select_state.get("phase") or "").strip().lower()
+    state_updated_raw = str(select_state.get("updated_at_ms") or select_state.get("updated_ms") or "").strip()
+
+    state_updated_ms = 0
+    try:
+        state_updated_ms = int(state_updated_raw)
+    except Exception:
+        state_updated_ms = 0
+
+    # Current select_state uses updated_utc, not updated_ms, so add a fallback:
+    # if same row is complete and no ms timestamp exists, use the request timestamp
+    # suppression path below as the primary bounce guard.
+    if (
+        state_selected_id == resolved_id
+        and state_phase == "complete"
+        and state_status in {"ok", "partial"}
+        and state_updated_ms > 0
+        and now - state_updated_ms < VHF_SELECT_COMPLETED_SUPPRESS_MS
+    ):
+        return "ignored_recently_completed_vhf_select"
+
+    request_id = f"vhf-select-{now}-{resolved_id}"
+
+    payload = {
+        "request_id": request_id,
+        "selected_id": resolved_id,
+        "selected_index": int(selected_index),
+        "page": "vhf",
+        "panel": "vhf_repeater_scan_summary",
+        "source": "ui_interaction_state",
+        "requested_at_ms": now,
+        "requested_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+    # Include the display item for diagnostics only.
+    # The scan manager must re-resolve the authoritative repeater before tuning.
+    payload["display_item"] = item
+
+    r.set(
+        VHF_SELECT_REQUEST_KEY,
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+    )
+    publish_state_changed(r, [VHF_SELECT_REQUEST_KEY], source="ui_interaction_state")
+    return "vhf_select_requested"
 
 def publish_radio_log_qso_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
     context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
@@ -1934,16 +2046,30 @@ def run_main_loop():
                                 publish_ui_result(r, intent, "hf_spot_selected")
 
                             elif state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
-                                # VHF OK/select behavior is intentionally deferred.
-                                # Do not stop scan, tune radio, or publish adapter requests here yet.
-                                publish_ui_result(r, intent, "ignored_vhf_ok_not_implemented")
+                                browse = as_dict(state.get("browse"))
+
+                                try:
+                                    browse_selected_index = int(browse.get("selected_index", selected_index))
+                                except Exception:
+                                    browse_selected_index = selected_index
+
+                                browse_selected_id = str(browse.get("selected_id") or "").strip()
+
+                                result = publish_vhf_repeater_select_request(
+                                    r,
+                                    item,
+                                    browse_selected_index,
+                                    browse_selected_id,
+                                )
+
+                                publish_ui_result(r, intent, result)
 
                             else:
                                 publish_ui_result(r, intent, "ignored_no_ok_handler")
 
                         else:
                             publish_ui_result(r, intent, "ignored_no_modal_or_browse")
-                            
+
                     elif intent == "ui.encoder.press":
                         # Encoder press is a panel-local shortcut. It must not confirm modals.
                         if state.get("modal") is not None:

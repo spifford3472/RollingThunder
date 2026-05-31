@@ -561,7 +561,13 @@ def build_models(config: Dict[str, Any], redis: RedisCli) -> Tuple[Dict[str, Any
     scan_requested = boolish(scan.get("requested"), False)
     scanning = boolish(scan.get("scanning"), False) or str(scan.get("actual_scan_state") or "").lower() == "scanning"
 
-    if scan_enabled or scan_requested or scanning:
+    manual_selected = str(scan.get("status") or "").strip().lower() in {
+        "manual_select_tuning",
+        "manual_selected",
+        "manual_select_failed",
+    }
+
+    if scan_enabled or scan_requested or scanning or manual_selected:
         active_id, active_index, current_repeater = selected_scan_target(scan)
     else:
         active_id, active_index, current_repeater = None, None, None

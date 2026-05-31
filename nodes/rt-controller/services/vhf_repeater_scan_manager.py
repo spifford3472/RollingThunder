@@ -41,6 +41,8 @@ KEY_VHF_RADIO = "rt:vhf:radio"
 KEY_NEARBY = "rt:vhf:repeaters:nearby"
 KEY_ADAPTER_REQUEST = "rt:vhf:adapter:request"
 KEY_ADAPTER_LAST_RESULT = "rt:vhf:adapter:last_result"
+KEY_VHF_SELECT_REQUEST = "rt:vhf:select:request"
+KEY_VHF_SELECT_STATE = "rt:vhf:select:state"
 
 SYSTEM_BUS = "rt:system:bus"
 
@@ -50,6 +52,7 @@ DEFAULT_CONFIRM_SQUELCH_SECONDS = 5.0
 DEFAULT_RESUME_IDLE_SECONDS = 15.0
 DEFAULT_IDLE_POLL_SECONDS = 1.0
 DEFAULT_ADAPTER_RESULT_TIMEOUT_SECONDS = 3.0
+DEFAULT_MANUAL_SELECT_ADAPTER_TIMEOUT_SECONDS = 60.0
 DEFAULT_INITIAL_PRIME_SETTLE_SECONDS = 15.0
 DEFAULT_SOFTWARE_SCAN_ENABLED = False
 DEFAULT_MODE = "repeaters"
@@ -58,6 +61,7 @@ DEFAULT_MAP_RADIUS_MILES = 30
 DEFAULT_GPS_RELOAD_DISTANCE_MILES = 5
 DEFAULT_PTT_RELOAD_HOLDOFF_SECONDS = 180
 DEFAULT_SQUELCH_RELOAD_HOLDOFF_SECONDS = 120
+
 
 
 def utc_now() -> str:
@@ -645,6 +649,326 @@ def adapter_request(
 def current_requested(redis_client: RedisCli, config: Dict[str, Any]) -> bool:
     return parse_requested(load_json_model(redis_client, KEY_SCAN_REQUEST), config)
 
+def compact_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), sort_keys=True)
+
+
+def write_scan_request_disabled_for_select(
+    redis_client: RedisCli,
+    select_request: Dict[str, Any],
+) -> None:
+    payload = {
+        "requested": False,
+        "enabled": False,
+        "reason": "manual_repeater_select",
+        "source": SOURCE,
+        "selected_id": str(select_request.get("selected_id") or ""),
+        "selected_index": select_request.get("selected_index"),
+        "updated_utc": utc_now(),
+    }
+    redis_client.set(KEY_SCAN_REQUEST, compact_json(payload))
+    publish_state_changed(redis_client, [KEY_SCAN_REQUEST], "vhf_manual_select_scan_request_disabled")
+
+
+def write_select_state(
+    redis_client: RedisCli,
+    *,
+    request_id: str,
+    selected_id: str,
+    selected_index: Optional[int],
+    active: bool,
+    phase: str,
+    status: str,
+    reason: str,
+    adapter_request_id: Optional[str] = None,
+    adapter_result: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "active": bool(active),
+        "request_id": request_id,
+        "selected_id": selected_id,
+        "selected_index": selected_index,
+        "phase": phase,
+        "status": status,
+        "reason": reason,
+        "source": SOURCE,
+        "updated_utc": utc_now(),
+        "updated_at_ms": int(time.time() * 1000),
+    }
+
+    if adapter_request_id:
+        payload["adapter_request_id"] = adapter_request_id
+
+    if adapter_result is not None:
+        payload["adapter_result"] = adapter_result
+
+    redis_client.set(KEY_VHF_SELECT_STATE, compact_json(payload))
+    publish_state_changed(redis_client, [KEY_VHF_SELECT_STATE], "vhf_select_state_changed")
+
+
+def latest_unhandled_select_request(redis_client: RedisCli) -> Dict[str, Any]:
+    request = load_json_model(redis_client, KEY_VHF_SELECT_REQUEST)
+    if not request:
+        return {}
+
+    request_id = str(request.get("request_id") or "").strip()
+    selected_id = str(request.get("selected_id") or "").strip()
+
+    if not request_id or not selected_id:
+        return {}
+
+    state = load_json_model(redis_client, KEY_VHF_SELECT_STATE)
+    if (
+        str(state.get("request_id") or "").strip() == request_id
+        and boolish(state.get("active"), False) is False
+        and str(state.get("status") or "").strip().lower() in {"ok", "partial", "rejected", "error", "timeout"}
+    ):
+        return {}
+
+    return request
+
+
+def select_request_pending(redis_client: RedisCli) -> bool:
+    return bool(latest_unhandled_select_request(redis_client))
+
+
+def resolve_selected_repeater(
+    select_request: Dict[str, Any],
+    repeaters: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[int], str]:
+    selected_id = str(select_request.get("selected_id") or "").strip()
+
+    try:
+        selected_index = int(select_request.get("selected_index"))
+    except Exception:
+        selected_index = None
+
+    if selected_id:
+        for idx, repeater in enumerate(repeaters):
+            rid = str(
+                repeater.get("id")
+                or repeater.get("source_id")
+                or repeater.get("repeater_id")
+                or repeater.get("callsign")
+                or repeater.get("name")
+                or ""
+            ).strip()
+
+            if rid and rid == selected_id:
+                return repeater, idx, "matched_selected_id"
+
+    if selected_index is not None and 0 <= selected_index < len(repeaters):
+        return repeaters[selected_index], selected_index, "matched_selected_index"
+
+    return None, None, "selected_repeater_not_found"
+
+
+def process_vhf_select_request(
+    redis_client: RedisCli,
+    config: Dict[str, Any],
+    repeaters: List[Dict[str, Any]],
+    current_index: int,
+    dwell_ms: int,
+    confirm_seconds: float,
+    resume_idle_seconds: float,
+    scan_cfg: Dict[str, Any],
+    adapter_timeout: float,
+) -> Optional[int]:
+    select_request = latest_unhandled_select_request(redis_client)
+    if not select_request:
+        return None
+
+    request_id = str(select_request.get("request_id") or "").strip()
+    selected_id = str(select_request.get("selected_id") or "").strip()
+
+    try:
+        selected_index = int(select_request.get("selected_index"))
+    except Exception:
+        selected_index = None
+
+    if not request_id or not selected_id:
+        return None
+
+    write_select_state(
+        redis_client,
+        request_id=request_id,
+        selected_id=selected_id,
+        selected_index=selected_index,
+        active=True,
+        phase="stopping_scan",
+        status="pending",
+        reason="Stopping software scan before manual repeater select.",
+    )
+
+    write_scan_request_disabled_for_select(redis_client, select_request)
+
+    # Latest-selection-wins before tuning starts.
+    # If the user moved to another row and pressed OK while we were stopping scan,
+    # honor the newer select request instead of sending two tune requests.
+    latest_request = latest_unhandled_select_request(redis_client)
+    if latest_request:
+        latest_request_id = str(latest_request.get("request_id") or "").strip()
+        if latest_request_id and latest_request_id != request_id:
+            select_request = latest_request
+            request_id = latest_request_id
+            selected_id = str(select_request.get("selected_id") or "").strip()
+            try:
+                selected_index = int(select_request.get("selected_index"))
+            except Exception:
+                selected_index = None
+
+            write_select_state(
+                redis_client,
+                request_id=request_id,
+                selected_id=selected_id,
+                selected_index=selected_index,
+                active=True,
+                phase="stopping_scan",
+                status="pending",
+                reason="Replaced pending VHF select with latest selected row before tuning.",
+            )
+            write_scan_request_disabled_for_select(redis_client, select_request)
+
+    repeater, resolved_index, resolve_reason = resolve_selected_repeater(select_request, repeaters)
+
+    if repeater is None:
+        write_select_state(
+            redis_client,
+            request_id=request_id,
+            selected_id=selected_id,
+            selected_index=selected_index,
+            active=False,
+            phase="complete",
+            status="rejected",
+            reason="Selected repeater could not be resolved from controller-owned repeater list.",
+        )
+
+        publish_scan(
+            redis_client,
+            scan_model(
+                requested=False,
+                enabled=False,
+                scanning=False,
+                status="manual_select_rejected",
+                reason="Selected repeater could not be resolved; no radio command sent.",
+                repeaters=repeaters,
+                current_index=current_index,
+                dwell_ms=dwell_ms,
+                confirm_squelch_seconds=confirm_seconds,
+                resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
+            ),
+            reason="vhf_manual_select_rejected",
+        )
+        return current_index
+
+    target_index = resolved_index if resolved_index is not None else current_index
+
+    write_select_state(
+        redis_client,
+        request_id=request_id,
+        selected_id=selected_id,
+        selected_index=target_index,
+        active=True,
+        phase="tuning",
+        status="pending",
+        reason=f"Sending one adapter tune request for selected repeater ({resolve_reason}).",
+    )
+
+    publish_scan(
+        redis_client,
+        scan_model(
+            requested=False,
+            enabled=False,
+            scanning=False,
+            status="manual_select_tuning",
+            reason="Manual repeater select requested; tuning selected repeater.",
+            repeaters=repeaters,
+            current_index=target_index,
+            current_repeater=repeater,
+            last_user_frequency_change_utc=utc_now(),
+            dwell_ms=dwell_ms,
+            confirm_squelch_seconds=confirm_seconds,
+            resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
+        ),
+        reason="vhf_manual_select_tuning",
+    )
+
+    result = adapter_request(
+        redis_client,
+        "tune_repeater_vfo",
+        {
+            "reason": "manual_repeater_select",
+            "selected_id": selected_id,
+            "selected_index": target_index,
+            "repeater": repeater,
+        },
+        adapter_timeout,
+    )
+
+    ok = bool(result.get("ok"))
+    status = str(result.get("status") or ("ok" if ok else "error")).strip().lower()
+
+    tuned_or_attempted = (
+        ok
+        or status == "partial"
+        or bool(result.get("operation_performed"))
+        or result.get("frequency_mhz") is not None
+    )
+
+    final_scan_status = "manual_selected" if tuned_or_attempted else "manual_select_failed"
+    final_reason = (
+        "Manual repeater select tune completed."
+        if ok
+        else (
+            "Manual repeater select tune completed with readback warning."
+            if tuned_or_attempted
+            else str(result.get("reason") or "Manual repeater select tune failed.")
+        )
+    )
+
+    write_select_state(
+        redis_client,
+        request_id=request_id,
+        selected_id=selected_id,
+        selected_index=target_index,
+        active=False,
+        phase="complete",
+        status=status,
+        reason=final_reason,
+        adapter_request_id=str(result.get("request_id") or ""),
+        adapter_result={
+            "ok": ok,
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "operation_performed": result.get("operation_performed"),
+            "action": result.get("action"),
+            "frequency_mhz": result.get("frequency_mhz"),
+        },
+    )
+
+    publish_scan(
+        redis_client,
+        scan_model(
+            requested=False,
+            enabled=False,
+            scanning=False,
+            status=final_scan_status,
+            reason=final_reason,
+            repeaters=repeaters,
+            current_index=target_index,
+            current_repeater=repeater,
+            last_user_frequency_change_utc=utc_now(),
+            dwell_ms=dwell_ms,
+            confirm_squelch_seconds=confirm_seconds,
+            resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
+        ),
+        reason="vhf_manual_select_complete",
+    )
+
+    return target_index
 
 def run_scan_cycle(
     redis_client: RedisCli,
@@ -679,13 +1003,23 @@ def run_scan_cycle(
         DEFAULT_ADAPTER_RESULT_TIMEOUT_SECONDS,
         minimum=0.2,
     )
+
+    manual_select_adapter_timeout = cfg_float(
+        config,
+        "vhf.scan.manual_select_adapter_result_timeout_seconds",
+        "RT_VHF_MANUAL_SELECT_ADAPTER_RESULT_TIMEOUT_SECONDS",
+        DEFAULT_MANUAL_SELECT_ADAPTER_TIMEOUT_SECONDS,
+        minimum=1.0,
+    )
+
     initial_prime_settle_seconds = cfg_float(
         config,
         "vhf.scan.initial_prime_settle_seconds",
         "RT_VHF_SCAN_INITIAL_PRIME_SETTLE_SECONDS",
         DEFAULT_INITIAL_PRIME_SETTLE_SECONDS,
         minimum=0.0,
-    )
+    )    
+    
     scan_cfg = scan_config_values(config)
 
     request = load_json_model(redis_client, KEY_SCAN_REQUEST)
@@ -694,7 +1028,30 @@ def run_scan_cycle(
     nearby = load_json_model(redis_client, KEY_NEARBY)
     repeaters = eligible_repeaters(nearby)
 
+    select_result_index = process_vhf_select_request(
+        redis_client,
+        config,
+        repeaters,
+        start_index,
+        dwell_ms,
+        confirm_seconds,
+        resume_idle_seconds,
+        scan_cfg,
+        manual_select_adapter_timeout,
+    )
+    if select_result_index is not None:
+        return select_result_index
+
     if not requested:
+        existing_scan = load_json_model(redis_client, KEY_SCAN)
+        existing_status = str(existing_scan.get("status") or "").strip().lower()
+
+        # Preserve the controller-owned manual selection after OK/select completes.
+        # Otherwise the next idle scan-manager cycle immediately erases the
+        # selected repeater and publishes generic disabled/not_scanning state.
+        if existing_status in {"manual_selected", "manual_select_tuning"}:
+            return start_index
+
         publish_scan(
             redis_client,
             scan_model(
@@ -707,6 +1064,7 @@ def run_scan_cycle(
                 dwell_ms=dwell_ms,
                 confirm_squelch_seconds=confirm_seconds,
                 resume_idle_seconds=resume_idle_seconds,
+                scan_cfg=scan_cfg,
             ),
         )
         return start_index
@@ -864,8 +1222,12 @@ def run_scan_cycle(
         return index
 
     if initial_prime_settle_seconds > 0:
-        time.sleep(initial_prime_settle_seconds)
-    while current_requested(redis_client, config):
+        settle_deadline = time.monotonic() + initial_prime_settle_seconds
+        while time.monotonic() < settle_deadline:
+            if select_request_pending(redis_client):
+                break
+            time.sleep(min(0.1, max(0.0, settle_deadline - time.monotonic())))
+    while current_requested(redis_client, config) and not select_request_pending(redis_client):
         radio = load_json_model(redis_client, KEY_VHF_RADIO)
         if not radio_available(radio):
             publish_scan(
@@ -1053,7 +1415,7 @@ def run_scan_cycle(
             )
 
             idle_start = time.monotonic()
-            while current_requested(redis_client, config):
+            while current_requested(redis_client, config) and not select_request_pending(redis_client):
                 radio = load_json_model(redis_client, KEY_VHF_RADIO)
                 if not radio_available(radio):
                     publish_scan(
