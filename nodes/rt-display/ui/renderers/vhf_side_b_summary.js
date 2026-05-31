@@ -144,28 +144,35 @@ function renderBadges(repeater, status) {
   `;
 }
 
-function renderOptions(options) {
+function renderOptions(options, opts = {}) {
   if (!options.length) {
     return `<div class="rt-muted" style="font-size:1.05rem;">No VHF options supplied.</div>`;
   }
 
+  const selectedIndexRaw = Number.parseInt(opts.selectedIndex ?? "0", 10);
+  const selectedIndex = Math.max(
+    0,
+    Math.min(options.length - 1, Number.isFinite(selectedIndexRaw) ? selectedIndexRaw : 0)
+  );
+
   return `
     <div style="display:flex; gap:.45rem; flex-wrap:wrap;">
-      ${options.map((option) => {
+      ${options.map((option, idx) => {
         const label = optionLabel(option) || "OPTION";
         const disabled = optionDisabled(option);
-        const selected = boolish(option?.selected) || boolish(option?.active);
+        const selected = idx === selectedIndex;
 
         return `
           <span style="
             display:inline-block;
-            border:1px solid ${selected ? "rgba(255,255,255,.55)" : "rgba(255,255,255,.18)"};
+            border:1px solid ${selected ? "rgba(255,255,255,.68)" : "rgba(255,255,255,.18)"};
             border-radius:999px;
             padding:.25rem .62rem;
             font-size:.95rem;
             font-weight:900;
             opacity:${disabled ? ".42" : "1"};
-            background:${selected ? "rgba(255,255,255,.13)" : "rgba(255,255,255,.035)"};
+            background:${selected ? "rgba(255,255,255,.16)" : "rgba(255,255,255,.035)"};
+            box-shadow:${selected ? "inset 0 0 0 2px rgba(255,255,255,.18)" : "none"};
           ">${esc(label)}${disabled ? " · OFF" : ""}</span>
         `;
       }).join("")}
@@ -174,36 +181,59 @@ function renderOptions(options) {
 }
 
 function inferScanEnabled(page, scan, status) {
+  if (typeof scan?.requested === "boolean") return scan.requested;
+  if (typeof scan?.enabled === "boolean") return scan.enabled;
+  if (typeof scan?.scanning === "boolean") return scan.scanning;
+
   if (typeof page?.scan_enabled === "boolean") return page.scan_enabled;
   if (typeof status?.scan_enabled === "boolean") return status.scan_enabled;
-  if (typeof scan?.enabled === "boolean") return scan.enabled;
-  if (typeof scan?.requested === "boolean") return scan.requested;
 
   const state = String(
     status?.scan_state ||
     status?.actual_scan_state ||
+    status?.state ||
     page?.scan_state ||
     scan?.actual_scan_state ||
     scan?.status ||
     ""
   ).trim().toLowerCase();
 
-  return ["enabled", "scanning", "active", "software_scanning"].includes(state);
+  return [
+    "enabled",
+    "scanning",
+    "active",
+    "software_scanning",
+    "priming_radio",
+    "confirming_activity",
+    "stopped_on_activity"
+  ].includes(state);
 }
 
-function attachScanButton(container, enabled) {
-  const btn = container.querySelector("[data-rt-vhf-scan-toggle='1']");
-  if (!btn) return;
+function rightPanelOptions(scanEnabled) {
+  if (scanEnabled) {
+    return [
+      { key: "stop_scan", label: "Stop Scan" },
+    ];
+  }
 
-  btn.addEventListener("click", () => {
-    container.dispatchEvent(new CustomEvent("rt-emit-intent", {
-      bubbles: true,
-      detail: {
-        intent: "vhf.scan.set_enabled",
-        params: { enabled: !enabled }
-      }
-    }));
-  });
+  return [
+    { key: "start_scan", label: "Start Scan" },
+    { key: "repeaters", label: "Repeaters" },
+    { key: "air", label: "Air" },
+    { key: "news", label: "News" },
+  ];
+}
+
+function selectedRightOptionIndex(options, browse) {
+  if (!options.length) return 0;
+
+  let selectedIndex = 0;
+
+  if (browse && browse.active === true && Number.isFinite(Number(browse.selected_index))) {
+    selectedIndex = Number(browse.selected_index);
+  }
+
+  return Math.max(0, Math.min(options.length - 1, selectedIndex));
 }
 
 export function renderVhfSideBSummary(container, panel, data) {
@@ -211,10 +241,17 @@ export function renderVhfSideBSummary(container, panel, data) {
   const scan = unwrapObject(data?.scan);
   const status = statusPanel(page);
   const repeater = selectedRepeater(page, status);
-  const options = asArray(page?.options);
-
   const scanEnabled = inferScanEnabled(page, scan, status);
   const actionLabel = scanEnabled ? "STOP SCAN" : "START SCAN";
+
+  const browse = data?.ui_browse && typeof data.ui_browse === "object"
+    ? data.ui_browse
+    : null;
+
+  const rightOptions = rightPanelOptions(scanEnabled);
+  const selectedRightIndex = selectedRightOptionIndex(rightOptions, browse);
+  const selectedRightKey = String(rightOptions[selectedRightIndex]?.key || "").trim();
+  const actionSelected = selectedRightKey === "start_scan" || selectedRightKey === "stop_scan";
 
   const headline = firstText(
     status.headline,
@@ -318,12 +355,11 @@ export function renderVhfSideBSummary(container, panel, data) {
           ">${esc(reason)}</div>
         </div>
 
-        <button
-          type="button"
-          data-rt-vhf-scan-toggle="1"
+        <div
+          data-rt-vhf-scan-indicator="1"
           style="
             flex:0 0 auto;
-            border:1px solid rgba(255,255,255,.28);
+            border:1px solid ${actionSelected ? "rgba(255,255,255,.68)" : "rgba(255,255,255,.28)"};
             border-radius:16px;
             padding:.75rem .95rem;
             font-size:1.05rem;
@@ -331,10 +367,10 @@ export function renderVhfSideBSummary(container, panel, data) {
             font-weight:950;
             color:#fff;
             background:${scanEnabled ? "rgba(255,80,80,.18)" : "rgba(90,210,130,.18)"};
-            cursor:pointer;
+            box-shadow:${actionSelected ? "inset 0 0 0 2px rgba(255,255,255,.18)" : "none"};
           "
           aria-label="${esc(actionLabel)}"
-        >${esc(actionLabel)}</button>
+        >${esc(actionLabel)}</div>
       </div>
 
       <div style="
@@ -418,10 +454,9 @@ export function renderVhfSideBSummary(container, panel, data) {
 
       <div>
         <div class="rt-muted" style="font-size:.95rem; margin-bottom:.35rem;">Options</div>
-        ${renderOptions(options)}
+        ${renderOptions(rightOptions, { selectedIndex: selectedRightIndex })}
       </div>
     </div>
   `;
 
-  attachScanButton(container, scanEnabled);
 }

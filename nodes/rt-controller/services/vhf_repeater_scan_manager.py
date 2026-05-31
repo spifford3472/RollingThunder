@@ -669,6 +669,64 @@ def write_scan_request_disabled_for_select(
     redis_client.set(KEY_SCAN_REQUEST, compact_json(payload))
     publish_state_changed(redis_client, [KEY_SCAN_REQUEST], "vhf_manual_select_scan_request_disabled")
 
+def publish_user_stopped_scan(
+    redis_client: RedisCli,
+    *,
+    repeaters: List[Dict[str, Any]],
+    current_index: int,
+    current_repeater: Optional[Dict[str, Any]],
+    dwell_ms: int,
+    confirm_seconds: float,
+    resume_idle_seconds: float,
+    scan_cfg: Dict[str, Any],
+) -> None:
+    publish_scan(
+        redis_client,
+        scan_model(
+            requested=False,
+            enabled=False,
+            scanning=False,
+            status="disabled",
+            reason="Repeater scanning stopped by user.",
+            repeaters=repeaters,
+            current_index=current_index,
+            current_repeater=current_repeater,
+            dwell_ms=dwell_ms,
+            confirm_squelch_seconds=confirm_seconds,
+            resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
+        ),
+        reason="vhf_scan_stopped_by_user",
+    )
+
+def write_scan_request_disabled_for_activity(
+    redis_client: RedisCli,
+    *,
+    repeater: Dict[str, Any],
+    index: int,
+) -> None:
+    payload = {
+        "requested": False,
+        "enabled": False,
+        "reason": "stopped_on_activity",
+        "source": SOURCE,
+        "current_index": int(index),
+        "current_repeater_id": (
+            repeater.get("id")
+            or repeater.get("source_id")
+            or repeater.get("callsign")
+            or repeater.get("name")
+        ),
+        "current_frequency_mhz": repeater.get("frequency_mhz"),
+        "updated_utc": utc_now(),
+    }
+
+    redis_client.set(KEY_SCAN_REQUEST, compact_json(payload))
+    publish_state_changed(
+        redis_client,
+        [KEY_SCAN_REQUEST],
+        "vhf_scan_request_disabled_after_activity",
+    )
 
 def write_select_state(
     redis_client: RedisCli,
@@ -1053,20 +1111,25 @@ def run_scan_cycle(
         if existing_status in {"manual_selected", "manual_select_tuning"}:
             return start_index
 
-        publish_scan(
+        current_repeater = None
+        existing_current = existing_scan.get("current_repeater")
+        if isinstance(existing_current, dict):
+            current_repeater = existing_current
+        elif repeaters:
+            try:
+                current_repeater = repeaters[start_index % len(repeaters)]
+            except Exception:
+                current_repeater = None
+
+        publish_user_stopped_scan(
             redis_client,
-            scan_model(
-                requested=False,
-                enabled=False,
-                scanning=False,
-                status="disabled",
-                reason="Repeater scanning disabled.",
-                repeaters=repeaters,
-                dwell_ms=dwell_ms,
-                confirm_squelch_seconds=confirm_seconds,
-                resume_idle_seconds=resume_idle_seconds,
-                scan_cfg=scan_cfg,
-            ),
+            repeaters=repeaters,
+            current_index=start_index,
+            current_repeater=current_repeater,
+            dwell_ms=dwell_ms,
+            confirm_seconds=confirm_seconds,
+            resume_idle_seconds=resume_idle_seconds,
+            scan_cfg=scan_cfg,
         )
         return start_index
 
@@ -1396,14 +1459,21 @@ def run_scan_cycle(
 
         if confirm.get("squelch_open") is True:
             last_activity_utc = utc_now()
+
+            write_scan_request_disabled_for_activity(
+                redis_client,
+                repeater=repeater,
+                index=index,
+            )
+
             publish_scan(
                 redis_client,
                 scan_model(
-                    requested=True,
-                    enabled=True,
+                    requested=False,
+                    enabled=False,
                     scanning=False,
                     status="stopped_on_activity",
-                    reason="Confirmed squelch activity; software scan stopped on active repeater.",
+                    reason="Confirmed S-meter activity; software scan stopped on active repeater.",
                     repeaters=repeaters,
                     current_index=index,
                     current_repeater=repeater,
@@ -1413,75 +1483,29 @@ def run_scan_cycle(
                     resume_idle_seconds=resume_idle_seconds,
                     scan_cfg=scan_cfg,
                 ),
+                reason="vhf_scan_stopped_on_activity",
             )
 
-            idle_start = time.monotonic()
-            while current_requested(redis_client, config) and not select_request_pending(redis_client):
-                radio = load_json_model(redis_client, KEY_VHF_RADIO)
-                if not radio_available(radio):
-                    publish_scan(
-                        redis_client,
-                        scan_model(
-                            requested=True,
-                            enabled=False,
-                            scanning=False,
-                            status="unavailable",
-                            reason="VHF radio became unavailable while waiting for channel idle; no radio command sent.",
-                            repeaters=repeaters,
-                            current_index=index,
-                            current_repeater=repeater,
-                            last_squelch_activity_utc=last_activity_utc,
-                            dwell_ms=dwell_ms,
-                            confirm_squelch_seconds=confirm_seconds,
-                            resume_idle_seconds=resume_idle_seconds,
-                            scan_cfg=scan_cfg,
-                        ),
-                    )
-                    return index
-
-                idle_check = adapter_request(redis_client, "read_squelch_status", {}, adapter_timeout)
-                if idle_check.get("squelch_open") is True:
-                    idle_start = time.monotonic()
-                    publish_scan(
-                        redis_client,
-                        scan_model(
-                            requested=True,
-                            enabled=True,
-                            scanning=False,
-                            status="stopped_on_activity",
-                            reason="Activity continues on active repeater.",
-                            repeaters=repeaters,
-                            current_index=index,
-                            current_repeater=repeater,
-                            last_squelch_activity_utc=utc_now(),
-                            dwell_ms=dwell_ms,
-                            confirm_squelch_seconds=confirm_seconds,
-                            resume_idle_seconds=resume_idle_seconds,
-                            scan_cfg=scan_cfg,
-                        ),
-                    )
-                elif time.monotonic() - idle_start >= resume_idle_seconds:
-                    index = (index + 1) % len(repeaters)
-                    break
-                time.sleep(1.0)
+            return index
         else:
             index = (index + 1) % len(repeaters)
 
-    publish_scan(
+    final_repeater = None
+    if repeaters:
+        try:
+            final_repeater = repeaters[index % len(repeaters)]
+        except Exception:
+            final_repeater = None
+
+    publish_user_stopped_scan(
         redis_client,
-        scan_model(
-            requested=False,
-            enabled=False,
-            scanning=False,
-            status="disabled",
-            reason="Repeater scanning disabled.",
-            repeaters=repeaters,
-            current_index=index,
-            dwell_ms=dwell_ms,
-            confirm_squelch_seconds=confirm_seconds,
-            resume_idle_seconds=resume_idle_seconds,
-            scan_cfg=scan_cfg,
-        ),
+        repeaters=repeaters,
+        current_index=index,
+        current_repeater=final_repeater,
+        dwell_ms=dwell_ms,
+        confirm_seconds=confirm_seconds,
+        resume_idle_seconds=resume_idle_seconds,
+        scan_cfg=scan_cfg,
     )
     return index
 

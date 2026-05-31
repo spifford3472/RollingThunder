@@ -47,6 +47,21 @@ VHF_SELECT_REQUEST_KEY = "rt:vhf:select:request"
 VHF_SELECT_STATE_KEY = "rt:vhf:select:state"
 VHF_SELECT_DUPLICATE_SUPPRESS_MS = 1500
 VHF_SELECT_COMPLETED_SUPPRESS_MS = 10000
+VHF_SCAN_REQUEST_KEY = "rt:vhf:scan:request"
+VHF_SCAN_STATE_KEY = "rt:vhf:scan"
+
+VHF_RIGHT_PANEL_ID = "vhf_side_b_summary"
+
+VHF_RIGHT_IDLE_OPTIONS = [
+    {"key": "start_scan", "label": "Start Scan"},
+    {"key": "repeaters", "label": "Repeaters"},
+    {"key": "air", "label": "Air"},
+    {"key": "news", "label": "News"},
+]
+
+VHF_RIGHT_SCANNING_OPTIONS = [
+    {"key": "stop_scan", "label": "Stop Scan"},
+]
 
 def utc_day_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -157,6 +172,199 @@ def publish_vhf_repeater_select_request(
     )
     publish_state_changed(r, [VHF_SELECT_REQUEST_KEY], source="ui_interaction_state")
     return "vhf_select_requested"
+
+def truthy(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on", "enabled", "active", "scanning"}:
+            return True
+        if text in {"0", "false", "no", "n", "off", "disabled", "inactive"}:
+            return False
+    return default
+
+
+def is_vhf_repeater_scan_active(r: redis.Redis) -> bool:
+    scan = as_dict(get_json_or_value(r, VHF_SCAN_STATE_KEY))
+
+    status = str(scan.get("status") or "").strip().lower()
+    actual = str(
+        scan.get("actual_scan_state")
+        or scan.get("scan_state")
+        or scan.get("state")
+        or ""
+    ).strip().lower()
+
+    if truthy(scan.get("scanning"), False):
+        return True
+
+    if actual == "scanning":
+        return True
+
+    # Treat requested-but-paused scan states as "scan running" for right-panel
+    # control purposes, because the only valid action should still be Stop Scan.
+    if truthy(scan.get("requested"), False) and status in {
+        "priming_radio",
+        "scanning",
+        "confirming_activity",
+        "stopped_on_activity",
+        "adapter_waiting",
+        "adapter_timeout",
+    }:
+        return True
+
+    return False
+
+
+def vhf_right_action_options(r: redis.Redis) -> list[Dict[str, Any]]:
+    if is_vhf_repeater_scan_active(r):
+        return [dict(item) for item in VHF_RIGHT_SCANNING_OPTIONS]
+    return [dict(item) for item in VHF_RIGHT_IDLE_OPTIONS]
+
+
+def vhf_right_action_item_id(item: Any) -> str:
+    item = as_dict(item)
+    return str(item.get("key") or item.get("id") or item.get("label") or "").strip()
+
+
+def resolve_vhf_right_panel_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    items = vhf_right_action_options(r)
+    if not items:
+        return None
+
+    return {
+        "items": items,
+        "count": len(items),
+        "anchor_index": 0,
+        "window_size": len(items),
+        "get_id": vhf_right_action_item_id,
+    }
+
+
+def write_vhf_scan_request(
+    r: redis.Redis,
+    *,
+    requested: bool,
+    action_key: str,
+) -> None:
+    now = now_ms()
+
+    payload = {
+        "requested": bool(requested),
+        "enabled": bool(requested),
+        "reason": "right_panel_start_scan" if requested else "right_panel_stop_scan",
+        "source": "ui_interaction_state",
+        "action": action_key,
+        "updated_at_ms": now,
+        "updated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+    r.set(
+        VHF_SCAN_REQUEST_KEY,
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+    )
+    publish_state_changed(
+        r,
+        [VHF_SCAN_REQUEST_KEY],
+        source="ui_interaction_state:vhf_right_panel",
+    )
+
+
+def build_vhf_future_enhancement_modal(action_key: str) -> Dict[str, Any]:
+    action_key = str(action_key or "").strip()
+    labels = {
+        item["key"]: item["label"]
+        for item in VHF_RIGHT_IDLE_OPTIONS
+        if isinstance(item, dict) and item.get("key")
+    }
+
+    title = labels.get(action_key, "Future")
+
+    ts = now_ms()
+    return {
+        "active": True,
+        "id": f"vhf_future_enhancement:{action_key}:{ts}",
+        "type": "vhf_future_enhancement",
+        "title": title,
+        "message": "Future enhancement",
+        "confirm_label": "OK",
+        "cancel_label": "Cancel",
+        "confirmable": True,
+        "cancelable": True,
+        "destructive": False,
+        "opened_at_ms": ts,
+    }
+
+
+def selected_vhf_right_action(
+    r: redis.Redis,
+    state: Dict[str, Any],
+) -> tuple[Dict[str, Any], int, Dict[str, Any]]:
+    model = resolve_vhf_right_panel_browse_model(r) or {
+        "items": [],
+        "count": 0,
+        "anchor_index": 0,
+        "window_size": 1,
+    }
+
+    items = as_list(model.get("items"))
+    count = len(items)
+
+    if count <= 0:
+        return {}, 0, model
+
+    browse = as_dict(state.get("browse"))
+    selected_index = 0
+
+    if str(browse.get("panel") or "").strip() == VHF_RIGHT_PANEL_ID:
+        try:
+            selected_index = int(browse.get("selected_index", 0))
+        except Exception:
+            selected_index = 0
+
+    selected_index = clamp_index(selected_index, count)
+    return as_dict(items[selected_index]), selected_index, model
+
+
+def handle_vhf_right_panel_action(
+    r: redis.Redis,
+    state: Dict[str, Any],
+    intent: str,
+) -> tuple[str, bool]:
+    item, selected_index, model = selected_vhf_right_action(r, state)
+    action_key = str(item.get("key") or "").strip()
+
+    if not action_key:
+        return "ignored_vhf_right_no_action", False
+
+    # Keep browse state anchored to the right-panel option group.
+    state["browse"] = build_browse_state(
+        "vhf",
+        VHF_RIGHT_PANEL_ID,
+        model,
+        selected_index,
+    )
+
+    if action_key == "start_scan":
+        write_vhf_scan_request(r, requested=True, action_key=action_key)
+        return "vhf_scan_start_requested", True
+
+    if action_key == "stop_scan":
+        write_vhf_scan_request(r, requested=False, action_key=action_key)
+        return "vhf_scan_stop_requested", True
+
+    if action_key == "repeaters":
+        # Explicit no-op for now.
+        return "vhf_repeaters_action_noop", True
+
+    if action_key in {"air", "news"}:
+        state["modal"] = build_vhf_future_enhancement_modal(action_key)
+        return "vhf_future_enhancement_opened", True
+
+    return "ignored_vhf_right_unknown_action", True
 
 def publish_radio_log_qso_intent(r: redis.Redis, spot: Dict[str, Any]) -> None:
     context = as_dict(get_json_or_value(r, POTA_CONTEXT_KEY))
@@ -1401,6 +1609,9 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
     if page_id == "vhf":
         if panel_id == "vhf_repeater_scan_summary":
             return resolve_vhf_repeaters_browse_model(r)
+
+        if panel_id == VHF_RIGHT_PANEL_ID:
+            return resolve_vhf_right_panel_browse_model(r)
         
     return None
 
@@ -1904,8 +2115,21 @@ def run_main_loop():
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
+                            elif modal_type == "vhf_future_enhancement":
+                                state["modal"] = None
+                                state_changed = True
+                                publish_ui_result(r, intent, "vhf_future_enhancement_closed")
+
                             else:
                                 publish_ui_result(r, intent, "ignored_unknown_modal")
+
+                        elif (
+                            state.get("page") == "vhf"
+                            and str(state.get("focus") or "").strip() == VHF_RIGHT_PANEL_ID
+                        ):
+                            result, changed = handle_vhf_right_panel_action(r, state, intent)
+                            state_changed = state_changed or changed
+                            publish_ui_result(r, intent, result)
 
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
@@ -2076,6 +2300,14 @@ def run_main_loop():
                             publish_ui_result(r, intent, "ignored_modal_active")
                             continue
 
+                        if (
+                            state.get("page") == "vhf"
+                            and str(state.get("focus") or "").strip() == VHF_RIGHT_PANEL_ID
+                        ):
+                            publish_intent(r, "ui.ok", {})
+                            publish_ui_result(r, intent, "vhf_right_encoder_press_routed_to_ok")
+                            continue
+
                         if not is_browse_active(state):
                             publish_ui_result(r, intent, "ignored_no_browse")
                             continue
@@ -2194,6 +2426,56 @@ def run_main_loop():
                                     save_state(r, state)
                                     last_persist_ms = now_ms()
                                     publish_state_changed(r, [INTERACTION_KEY], source="ui_interaction_state")
+
+                                continue
+
+                            if (
+                                state.get("page") == "vhf"
+                                and str(state.get("focus") or "").strip() == VHF_RIGHT_PANEL_ID
+                            ):
+                                model = resolve_vhf_right_panel_browse_model(r)
+                                if not model:
+                                    continue
+
+                                count = int(model.get("count", 0))
+                                if count <= 0:
+                                    continue
+
+                                browse = as_dict(state.get("browse"))
+                                browse_panel = str(browse.get("panel") or "").strip()
+
+                                if browse_panel == VHF_RIGHT_PANEL_ID and bool(browse.get("active", True)):
+                                    try:
+                                        current_index = int(browse.get("selected_index", 0))
+                                    except Exception:
+                                        current_index = 0
+                                else:
+                                    try:
+                                        current_index = int(model.get("anchor_index", 0))
+                                    except Exception:
+                                        current_index = 0
+
+                                current_index = clamp_index(current_index, count)
+                                new_index = clamp_index(current_index + delta, count)
+
+                                if new_index != current_index or browse_panel != VHF_RIGHT_PANEL_ID:
+                                    state["browse"] = build_browse_state(
+                                        "vhf",
+                                        VHF_RIGHT_PANEL_ID,
+                                        model,
+                                        new_index,
+                                    )
+                                    state_changed = True
+                                    publish_ui_result(r, intent, "vhf_right_action_selected")
+
+                                if state_changed:
+                                    save_state(r, state)
+                                    last_persist_ms = now_ms()
+                                    publish_state_changed(
+                                        r,
+                                        [INTERACTION_KEY],
+                                        source="ui_interaction_state",
+                                    )
 
                                 continue
 

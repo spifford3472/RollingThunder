@@ -3,7 +3,7 @@
   "type": "vhf_side_b_summary",
 
   "interaction": {
-    "browsable": false
+    "browsable": true
   },
 
   "focusable": true,
@@ -22,8 +22,7 @@
   "actions": [],
 
   "meta": {
-    "purpose": "Passive VHF scan/status/action display bound to controller-owned rt:vhf:page. START/STOP emits only vhf.scan.set_enabled through the standard UI intent path.",
-    "title": "VHF Status",
+    "purpose": "Passive VHF scan/status/action display bound to controller-owned rt:vhf:page, rt:vhf:scan, and projected rt:ui:browse state. UI renders selected action state only; controller owns scan request changes.",    "title": "VHF Status",
     "contract": {
       "requiredBindings": [],
       "allowNull": ["page", "scan"]
