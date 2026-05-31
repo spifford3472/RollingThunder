@@ -1679,74 +1679,8 @@ def run_main_loop():
                     elif intent == "ui.ok":
                         modal = state.get("modal")
 
-                        if not isinstance(modal, dict) and not is_browse_active(state):
-                            focus_panel = str(state.get("focus") or "").strip()
-                            page_id = str(state.get("page") or "").strip()
-
-                            if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
-                                repeater = as_dict(item)
-
-                                # 1) Stop controller-owned software scan.
-                                scan_stop = {
-                                    "intent": "vhf.scan.set_enabled",
-                                    "requested": False,
-                                    "enabled": False,
-                                    "source": "ui_interaction_state",
-                                    "reason": "User selected repeater from VHF browse list.",
-                                    "updated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-                                }
-
-                                r.set(
-                                    "rt:vhf:scan:request",
-                                    json.dumps(scan_stop, separators=(",", ":"), ensure_ascii=False),
-                                )
-
-                                # 2) Ask the adapter to tune the selected repeater.
-                                # Adapter owns all IC-2730A / CI-V behavior.
-                                adapter_request = {
-                                    "request_id": f"vhf-user-select-{now_ms()}",
-                                    "action": "tune_repeater_vfo",
-                                    "source": "ui_interaction_state",
-                                    "repeater_id": str(
-                                        repeater.get("id")
-                                        or repeater.get("repeater_id")
-                                        or ""
-                                    ).strip(),
-                                    "callsign": str(
-                                        repeater.get("callsign")
-                                        or repeater.get("call")
-                                        or ""
-                                    ).strip(),
-                                    "name": str(
-                                        repeater.get("name")
-                                        or repeater.get("label")
-                                        or ""
-                                    ).strip(),
-                                    "frequency_mhz": repeater.get("frequency_mhz"),
-                                    "frequency_hz": repeater.get("frequency_hz"),
-                                    "tone_hz": repeater.get("tone_hz"),
-                                    "offset_mhz": repeater.get("offset_mhz"),
-                                    "duplex": repeater.get("duplex"),
-                                    "mode": repeater.get("mode") or "FM",
-                                    "repeater": repeater,
-                                    "payload": repeater,
-                                }
-
-                                r.set(
-                                    "rt:vhf:adapter:request",
-                                    json.dumps(adapter_request, separators=(",", ":"), ensure_ascii=False),
-                                )
-
-                                publish_state_changed(
-                                    r,
-                                    ["rt:vhf:scan:request", "rt:vhf:adapter:request"],
-                                    source="ui_interaction_state",
-                                )
-
-                                publish_ui_result(r, intent, "vhf_repeater_selected")
-                                continue                        
-                            if isinstance(modal, dict):
-                                modal_type = str(modal.get("type") or "").strip()
+                        if isinstance(modal, dict):
+                            modal_type = str(modal.get("type") or "").strip()
 
                             if modal_type == "node_reboot_confirm":
                                 node_id = str(modal.get("node_id") or "").strip().lower()
@@ -1858,6 +1792,9 @@ def run_main_loop():
                                 state_changed = True
                                 publish_ui_result(r, intent)
 
+                            else:
+                                publish_ui_result(r, intent, "ignored_unknown_modal")
+
                         elif is_browse_active(state):
                             browse = as_dict(state.get("browse"))
                             panel_id = str(browse.get("panel") or "").strip()
@@ -1883,7 +1820,7 @@ def run_main_loop():
                                     publish_ui_result(r, intent)
 
                             elif state["page"] == "home" and panel_id == "controller_services_summary":
-                                continue
+                                publish_ui_result(r, intent, "ignored_service_row")
 
                             elif panel_id == "alerts_overlay":
                                 items = as_list(model.get("items"))
@@ -1910,7 +1847,6 @@ def run_main_loop():
                                 browse = as_dict(state.get("browse"))
 
                                 selected_id = str(browse.get("selected_id") or "").strip()
-
                                 new_band = selected_id
 
                                 # Fallback ONLY if browse is missing (should not happen)
@@ -1922,8 +1858,10 @@ def run_main_loop():
                                         or item
                                         or ""
                                     ).strip()
+
                                 if not new_band:
                                     continue
+
                                 # Clear any stale band-select/tune action before applying the newly selected band.
                                 state["modal"] = None
                                 state["pending_action"] = None
@@ -1936,19 +1874,7 @@ def run_main_loop():
                                 pota_context_changed = True
 
                                 state["focus"] = "pota_spots_summary"
-
-                                # Build browse immediately so encoder works on first tick
                                 state["browse"] = None
-                                #state["browse"] = {
-                                #    "active": True,
-                                #    "page": "pota",
-                                #    "panel": "pota_spots_summary",
-                                #    "selected_index": 0,
-                                #    "selected_id": None,  # projector will resolve
-                                #    "count": 0,
-                                #    "window_size": 18,
-                                #    "updated_at_ms": now_ms(),
-                                #}
 
                                 state["pending_action"] = {
                                     "type": "tune_first_spot_after_band_select",
@@ -2005,9 +1931,19 @@ def run_main_loop():
 
                                 state["modal"] = build_hf_spot_outcome_modal(item)
                                 state_changed = True
-                                publish_ui_result(r, intent, "hf_spot_selected")                               
+                                publish_ui_result(r, intent, "hf_spot_selected")
 
+                            elif state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
+                                # VHF OK/select behavior is intentionally deferred.
+                                # Do not stop scan, tune radio, or publish adapter requests here yet.
+                                publish_ui_result(r, intent, "ignored_vhf_ok_not_implemented")
 
+                            else:
+                                publish_ui_result(r, intent, "ignored_no_ok_handler")
+
+                        else:
+                            publish_ui_result(r, intent, "ignored_no_modal_or_browse")
+                            
                     elif intent == "ui.encoder.press":
                         # Encoder press is a panel-local shortcut. It must not confirm modals.
                         if state.get("modal") is not None:
