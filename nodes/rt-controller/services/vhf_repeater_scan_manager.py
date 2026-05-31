@@ -897,12 +897,13 @@ def process_vhf_select_request(
 
     result = adapter_request(
         redis_client,
-        "tune_repeater_vfo",
+        "manual_select_fast_tune_repeater_vfo",
         {
             "reason": "manual_repeater_select",
             "selected_id": selected_id,
             "selected_index": target_index,
             "repeater": repeater,
+            "force_full_tune": False,
         },
         adapter_timeout,
     )

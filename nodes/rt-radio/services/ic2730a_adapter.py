@@ -884,6 +884,285 @@ class IC2730AAdapter:
             },
         )
 
+    def manual_select_fast_tune_repeater_vfo(
+        self,
+        repeater: Dict[str, Any],
+        force_full_tune: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Phase 8.2C-D manual OK/select fast tune action.
+
+        Controller owns manual select flow and serialization.
+        Adapter owns RX/TX guard and direct CI-V Side A/Main VFO tune behavior.
+
+        This action intentionally reuses the existing fast cached Side A/Main
+        tune helper without scan-slot dwell or S-meter/squelch semantics.
+
+        No memory write.
+        No memory clear.
+        No C/D bank load.
+        No built-in IC-2730A scan start/stop.
+        No Side B programming.
+        No PTT/transmit controls.
+        No rigctl.
+        No Redis/UI/system-bus writes by the adapter.
+        """
+        cfg = self.config
+        candidate = repeater if isinstance(repeater, dict) else {}
+        safety = self._software_scan_safety_flags()
+
+        before_cache = (
+            dict(IC2730AAdapter._software_scan_vfo_cache)
+            if isinstance(IC2730AAdapter._software_scan_vfo_cache, dict)
+            else None
+        )
+
+        base_extra = {
+            "action": "manual_select_fast_tune_repeater_vfo",
+            "operation_performed": False,
+            "serial_opened": False,
+            "civ_command_sent": False,
+            "frequency_mhz": candidate.get("frequency_mhz"),
+            "tx_active": None,
+            "rx_tx_status": None,
+            "tune_attempted": False,
+            "tune_ok": False,
+            "scan_tune_ok": False,
+            "force_full_tune": bool(force_full_tune),
+            "commands_sent": [],
+            "skipped_commands": [],
+            "cached_scan_vfo_state_before": before_cache,
+            "cached_scan_vfo_state_after": before_cache,
+            "raw_tune_result": {},
+            "safety": safety,
+        }
+
+        gate_failures: list[str] = []
+        if not cfg.software_scan_enabled:
+            gate_failures.append("software_scan_enabled=false")
+        if not cfg.allow_rx_tx_status_read:
+            gate_failures.append("allow_rx_tx_status_read=false")
+        if not cfg.allow_vfo_tune:
+            gate_failures.append("allow_vfo_tune=false")
+        if not cfg.direct_civ_enabled:
+            gate_failures.append("direct_civ_enabled=false")
+        if not cfg.direct_civ_readonly_probe_enabled:
+            gate_failures.append("direct_civ_readonly_probe_enabled=false")
+        if not cfg.direct_civ_side_a_fast_scan_tune_enabled:
+            gate_failures.append("direct_civ_side_a_fast_scan_tune_enabled=false")
+
+        if gate_failures:
+            return self._result(
+                ok=False,
+                status="disabled",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Manual VHF select fast tune disabled by config: " + ", ".join(gate_failures),
+                extra=base_extra,
+            )
+
+        controller_addr = _safe_hex_byte(
+            cfg.direct_civ_controller_address_hex,
+            DEFAULT_DIRECT_CIV_CONTROLLER_ADDRESS_HEX,
+        )
+        transceiver_addr = _safe_hex_byte(
+            cfg.direct_civ_transceiver_address_hex,
+            DEFAULT_DIRECT_CIV_TRANSCEIVER_ADDRESS_HEX,
+        )
+
+        read_started_mono = time.monotonic()
+
+        try:
+            import serial  # type: ignore
+        except Exception as exc:
+            rx_command = {
+                "name": "rx_tx_status",
+                "documented_command_code": "1C 00",
+                "sent": False,
+                "ok": False,
+                "parsed": {},
+                "reason": f"Python pyserial module is not available; no RX/TX guard command was sent: {exc}",
+                "elapsed_ms": _elapsed_ms(read_started_mono),
+            }
+            return self._result(
+                ok=False,
+                status="unavailable",
+                available=False,
+                reason="RX/TX status could not be safely read; manual select tune aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "commands_sent": [rx_command],
+                },
+            )
+
+        try:
+            with serial.Serial(
+                port=cfg.direct_civ_serial_port,
+                baudrate=cfg.direct_civ_baud,
+                timeout=cfg.direct_civ_timeout_seconds,
+                write_timeout=cfg.direct_civ_timeout_seconds,
+            ) as port:
+                command_result = self._direct_civ_send_payload_full_window(
+                    port=port,
+                    name="rx_tx_status",
+                    payload=bytes([0x1C, 0x00]),
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    timeout_seconds=cfg.direct_civ_timeout_seconds,
+                )
+
+                raw = bytes.fromhex(str(command_result.get("raw_response_hex", "")).replace(" ", ""))
+                frames = self._direct_civ_split_frames(raw)
+                response_payload = self._direct_civ_find_response_payload(
+                    frames=frames,
+                    controller_addr=controller_addr,
+                    transceiver_addr=transceiver_addr,
+                    expected_prefix=bytes([0x1C, 0x00]),
+                )
+
+                parsed = (
+                    self._direct_civ_parse_payload("rx_tx_status", response_payload)
+                    if response_payload is not None
+                    else {}
+                )
+
+                rx_command = {
+                    "name": "rx_tx_status",
+                    "documented_command_code": "1C 00",
+                    "sent": bool(command_result.get("sent")),
+                    "ok": bool(parsed.get("ok")),
+                    "parsed": parsed,
+                    "raw": {
+                        "command": command_result,
+                        "response_payload_hex": self._direct_civ_hex_bytes(response_payload or b""),
+                    },
+                    "reason": str(parsed.get("reason") or command_result.get("reason") or "CI-V RX/TX guard read completed."),
+                    "elapsed_ms": _elapsed_ms(read_started_mono),
+                }
+
+        except Exception as exc:
+            rx_command = {
+                "name": "rx_tx_status",
+                "documented_command_code": "1C 00",
+                "sent": False,
+                "ok": False,
+                "parsed": {},
+                "reason": f"Direct CI-V RX/TX guard read failed: {exc}",
+                "elapsed_ms": _elapsed_ms(read_started_mono),
+            }
+            return self._result(
+                ok=False,
+                status="partial",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="RX/TX status could not be safely read; manual select tune aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "commands_sent": [rx_command],
+                },
+            )
+
+        commands_sent: list[Dict[str, Any]] = [rx_command]
+        rx_parsed = rx_command.get("parsed") if isinstance(rx_command.get("parsed"), dict) else {}
+        rx_tx_status = rx_parsed.get("rx_tx_status") or rx_parsed.get("status")
+
+        tx_active = None
+        if isinstance(rx_tx_status, str):
+            tx_active = rx_tx_status.strip().lower() == "tx"
+        elif rx_parsed.get("rx_not_tx") is not None:
+            tx_active = not bool(rx_parsed.get("rx_not_tx"))
+
+        if tx_active is True:
+            return self._result(
+                ok=False,
+                status="guarded",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="Radio reports TX; manual select fast tune aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "operation_performed": bool(rx_command.get("sent")),
+                    "serial_opened": True,
+                    "civ_command_sent": bool(rx_command.get("sent")),
+                    "tx_active": True,
+                    "rx_tx_status": rx_tx_status,
+                    "commands_sent": commands_sent,
+                },
+            )
+
+        if not bool(rx_command.get("ok")):
+            return self._result(
+                ok=False,
+                status="partial",
+                available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+                reason="RX/TX status could not be safely read; manual select fast tune aborted before tuning.",
+                extra={
+                    **base_extra,
+                    "operation_performed": bool(rx_command.get("sent")),
+                    "serial_opened": True,
+                    "civ_command_sent": bool(rx_command.get("sent")),
+                    "tx_active": tx_active,
+                    "rx_tx_status": rx_tx_status,
+                    "commands_sent": commands_sent,
+                },
+            )
+
+        tune_result = self._direct_civ_side_a_repeater_tune_fast(
+            candidate,
+            force_full_tune=bool(force_full_tune),
+        )
+
+        tune_commands = tune_result.get("commands_sent") if isinstance(tune_result.get("commands_sent"), list) else []
+        skipped_commands = tune_result.get("skipped_commands") if isinstance(tune_result.get("skipped_commands"), list) else []
+
+        commands_sent.append(
+            {
+                "name": "manual_select_fast_tune_repeater_vfo",
+                "ok": bool(tune_result.get("ok")),
+                "status": tune_result.get("status"),
+                "reason": tune_result.get("reason"),
+                "force_full_tune": bool(force_full_tune),
+                "commands_sent": tune_commands,
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": tune_result.get("cached_scan_vfo_state_before"),
+                "cached_scan_vfo_state_after": tune_result.get("cached_scan_vfo_state_after"),
+            }
+        )
+
+        tune_ok = bool(tune_result.get("tune_ok") or tune_result.get("ok"))
+        scan_tune_ok = bool(tune_result.get("scan_tune_ok") or tune_result.get("ok"))
+        tune_status = str(tune_result.get("status") or "error").strip().lower()
+        tune_attempted = bool(tune_result.get("tune_attempted"))
+        tune_operation_performed = bool(tune_result.get("operation_performed"))
+        tune_civ_command_sent = bool(tune_result.get("civ_command_sent") or tune_commands)
+
+        final_status = "ok" if tune_ok else tune_status
+        if final_status not in {"ok", "guarded", "rejected", "disabled", "unavailable"}:
+            final_status = "partial"
+
+        return self._result(
+            ok=bool(tune_ok),
+            status=final_status,
+            available=bool(cfg.enabled and cfg.control_mode != "disabled"),
+            reason=str(tune_result.get("reason") or "Manual select fast tune completed."),
+            extra={
+                **base_extra,
+                "operation_performed": bool(tune_operation_performed or tune_civ_command_sent),
+                "serial_opened": bool(tune_result.get("serial_opened") or tune_operation_performed or tune_civ_command_sent),
+                "civ_command_sent": bool(tune_civ_command_sent),
+                "frequency_mhz": tune_result.get("frequency_mhz", candidate.get("frequency_mhz")),
+                "tx_active": False,
+                "rx_tx_status": rx_tx_status,
+                "tune_attempted": bool(tune_attempted),
+                "tune_ok": bool(tune_ok),
+                "scan_tune_ok": bool(scan_tune_ok),
+                "force_full_tune": bool(force_full_tune),
+                "commands_sent": commands_sent,
+                "skipped_commands": skipped_commands,
+                "cached_scan_vfo_state_before": tune_result.get("cached_scan_vfo_state_before"),
+                "cached_scan_vfo_state_after": tune_result.get("cached_scan_vfo_state_after"),
+                "raw_tune_result": tune_result,
+                "safety": tune_result.get("safety") if isinstance(tune_result.get("safety"), dict) else safety,
+            },
+        )
+
     def read_rx_tx_status(self) -> Dict[str, Any]:
         cfg = self.config
 
