@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 65
+    "build": 77
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -669,7 +669,7 @@
     "repeater_bucket_degrees": 0.25,
     "repeater_db_path": "/opt/rollingthunder/data/vhf/repeaters.sqlite3",
     "repeater_lookup_interval_sec": 30,
-    "repeater_radius_miles": 25,
+    "repeater_radius_miles": 20,
     "page_model_interval_seconds": 1.0,
     "side_b": {
       "enabled": true,

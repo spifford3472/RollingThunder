@@ -6,7 +6,7 @@
     "browsable": false
   },
 
-  "focusable": false,
+  "focusable": true,
 
   "refresh": {
     "mode": "push",
@@ -15,18 +15,18 @@
   },
 
   "bindings": [
-    { "id": "radio", "source": "state", "key": "rt:vhf:radio" },
-    { "id": "side_b", "source": "state", "key": "rt:vhf:side_b" }
+    { "id": "page", "source": "state", "key": "rt:vhf:page" },
+    { "id": "scan", "source": "state", "key": "rt:vhf:scan" }
   ],
 
   "actions": [],
 
   "meta": {
-    "purpose": "Passive Side B monitor placeholder. No Side B tuning, programming, or radio API calls.",
-    "title": "Side B Monitor",
+    "purpose": "Passive VHF scan/status/action display bound to controller-owned rt:vhf:page. START/STOP emits only vhf.scan.set_enabled through the standard UI intent path.",
+    "title": "VHF Status",
     "contract": {
       "requiredBindings": [],
-      "allowNull": ["radio", "side_b"]
+      "allowNull": ["page", "scan"]
     }
   }
 }

@@ -26,7 +26,8 @@
       "ui.back",
       "ui.browse.delta",
       "alert.ack",
-      "alert.silence"
+      "alert.silence",
+      "vhf.scan.set_enabled"
     ]
   },
 
@@ -34,11 +35,12 @@
     "defaultPanel": "vhf_repeater_scan_summary",
     "rotation": [
       "vhf_repeater_scan_summary",
+      "vhf_side_b_summary",
       "alerts_overlay"
     ]
   },
 
   "meta": {
-    "purpose": "Passive VHF/UHF page skeleton. Displays projected VHF radio, nearby repeater, scan placeholder, active memory placeholder, and Side B placeholder models only."
+    "purpose": "VHF/UHF page bound to controller-owned VHF page/map models. UI renders display-ready VHF data and emits only safe UI intents."
   }
 }

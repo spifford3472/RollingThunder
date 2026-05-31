@@ -3,7 +3,7 @@
   "type": "vhf_repeater_scan_summary",
 
   "interaction": {
-    "browsable": false
+    "browsable": true
   },
 
   "focusable": true,
@@ -14,23 +14,19 @@
     "fallbackPollMs": 5000
   },
 
-"bindings": [
-  { "id": "page", "source": "state", "key": "rt:vhf:page" },
-  { "id": "map", "source": "state", "key": "rt:vhf:map" },
-  { "id": "radio", "source": "state", "key": "rt:vhf:radio" },
-  { "id": "nearby", "source": "state", "key": "rt:vhf:repeaters:nearby" },
-  { "id": "scan", "source": "state", "key": "rt:vhf:scan" },
-  { "id": "active_memory", "source": "state", "key": "rt:vhf:repeaters:active_memory" }
-],
+  "bindings": [
+    { "id": "page", "source": "state", "key": "rt:vhf:page" },
+    { "id": "map", "source": "state", "key": "rt:vhf:map" }
+  ],
 
   "actions": [],
 
   "meta": {
-    "purpose": "Passive display of VHF repeater/search-memory status. No radio programming, no scan control, no SQLite reads, no distance calculation.",
-    "title": "Repeater Scan / Search Memory",
+    "purpose": "Passive display of controller-owned VHF repeater list model. No radio programming, no scan control, no SQLite reads, no distance calculation.",
+    "title": "VHF Repeaters",
     "contract": {
       "requiredBindings": [],
-      "allowNull": ["radio", "nearby", "scan", "active_memory"]
+      "allowNull": ["page", "map"]
     }
   }
 }

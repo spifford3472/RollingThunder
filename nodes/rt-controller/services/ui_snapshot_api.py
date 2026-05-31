@@ -1245,7 +1245,12 @@ class UiSnapshotHandler(BaseHTTPRequestHandler):
                                 parsed = _coerce_scalar(parsed)
                                 out[ks] = {"ok": True, "encoding": "text", "value": _truncate(parsed)}
                             else:
-                                out[ks] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
+                                if ks in {"rt:vhf:page", "rt:vhf:map"}:
+                                    out[ks] = {"ok": True, "encoding": "json", "value": parsed}
+                                else:
+                                    out[ks] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
+#                            else:
+#                                out[ks] = {"ok": True, "encoding": "json", "value": _truncate(parsed)}
 
                     elif t == "hash":
                         out[ks] = {"ok": True, "encoding": "hash", "value": _hgetall_parsed(r, k)}

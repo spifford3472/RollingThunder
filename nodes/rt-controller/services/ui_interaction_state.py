@@ -1219,7 +1219,39 @@ def resolve_alerts_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
         "get_id": lambda x: str(x.get("id") or x.get("alert_id") or ""),
     }
 
+def resolve_vhf_repeaters_browse_model(r: redis.Redis) -> Dict[str, Any] | None:
+    raw = get_json_or_value(r, "rt:vhf:page")
+    model = as_dict(raw)
 
+    left_panel = as_dict(model.get("left_panel"))
+    items = as_list(left_panel.get("items"))
+
+    if not items:
+        return None
+
+    normalized_items = [as_dict(item) for item in items if isinstance(item, dict)]
+    if not normalized_items:
+        return None
+
+    def get_id(item: Dict[str, Any]) -> str:
+        item = as_dict(item)
+        return str(
+            item.get("id")
+            or item.get("repeater_id")
+            or item.get("callsign")
+            or item.get("label")
+            or ""
+        ).strip()
+
+    # Do not auto-anchor to the active scanning row.
+    # Start manual browse at the top of the controller-provided list.
+    return {
+        "items": normalized_items,
+        "count": len(normalized_items),
+        "anchor_index": 0,
+        "window_size": 7,
+        "get_id": get_id,
+    }
 
 def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[str, Any] | None:
     page_id = str(page_id or "").strip()
@@ -1253,7 +1285,11 @@ def resolve_browse_model(r: redis.Redis, page_id: str, panel_id: str) -> Dict[st
 
         if panel_id == "hf_spots_summary":
             return resolve_hf_spots_browse_model(r)
-
+        
+    if page_id == "vhf":
+        if panel_id == "vhf_repeater_scan_summary":
+            return resolve_vhf_repeaters_browse_model(r)
+        
     return None
 
 def build_browse_state(
@@ -1282,7 +1318,7 @@ def build_browse_state(
         "selected_index": selected_index,
         "selected_id": selected_id,
         "count": count,
-        "window_size": 18,
+        "window_size": int(model.get("window_size") or 18),
         "updated_at_ms": now_ms(),
     }
 
@@ -1643,8 +1679,74 @@ def run_main_loop():
                     elif intent == "ui.ok":
                         modal = state.get("modal")
 
-                        if isinstance(modal, dict):
-                            modal_type = str(modal.get("type") or "").strip()
+                        if not isinstance(modal, dict) and not is_browse_active(state):
+                            focus_panel = str(state.get("focus") or "").strip()
+                            page_id = str(state.get("page") or "").strip()
+
+                            if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
+                                repeater = as_dict(item)
+
+                                # 1) Stop controller-owned software scan.
+                                scan_stop = {
+                                    "intent": "vhf.scan.set_enabled",
+                                    "requested": False,
+                                    "enabled": False,
+                                    "source": "ui_interaction_state",
+                                    "reason": "User selected repeater from VHF browse list.",
+                                    "updated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                                }
+
+                                r.set(
+                                    "rt:vhf:scan:request",
+                                    json.dumps(scan_stop, separators=(",", ":"), ensure_ascii=False),
+                                )
+
+                                # 2) Ask the adapter to tune the selected repeater.
+                                # Adapter owns all IC-2730A / CI-V behavior.
+                                adapter_request = {
+                                    "request_id": f"vhf-user-select-{now_ms()}",
+                                    "action": "tune_repeater_vfo",
+                                    "source": "ui_interaction_state",
+                                    "repeater_id": str(
+                                        repeater.get("id")
+                                        or repeater.get("repeater_id")
+                                        or ""
+                                    ).strip(),
+                                    "callsign": str(
+                                        repeater.get("callsign")
+                                        or repeater.get("call")
+                                        or ""
+                                    ).strip(),
+                                    "name": str(
+                                        repeater.get("name")
+                                        or repeater.get("label")
+                                        or ""
+                                    ).strip(),
+                                    "frequency_mhz": repeater.get("frequency_mhz"),
+                                    "frequency_hz": repeater.get("frequency_hz"),
+                                    "tone_hz": repeater.get("tone_hz"),
+                                    "offset_mhz": repeater.get("offset_mhz"),
+                                    "duplex": repeater.get("duplex"),
+                                    "mode": repeater.get("mode") or "FM",
+                                    "repeater": repeater,
+                                    "payload": repeater,
+                                }
+
+                                r.set(
+                                    "rt:vhf:adapter:request",
+                                    json.dumps(adapter_request, separators=(",", ":"), ensure_ascii=False),
+                                )
+
+                                publish_state_changed(
+                                    r,
+                                    ["rt:vhf:scan:request", "rt:vhf:adapter:request"],
+                                    source="ui_interaction_state",
+                                )
+
+                                publish_ui_result(r, intent, "vhf_repeater_selected")
+                                continue                        
+                            if isinstance(modal, dict):
+                                modal_type = str(modal.get("type") or "").strip()
 
                             if modal_type == "node_reboot_confirm":
                                 node_id = str(modal.get("node_id") or "").strip().lower()
@@ -2049,7 +2151,11 @@ def run_main_loop():
                                 if state["page"] == "pota" and panel_id == "pota_spots_summary":
                                     new_index = find_next_browse_index_for_pota_spots(r, model, anchor_index, delta)
                                 else:
-                                    new_index = clamp_index(anchor_index + delta, count)
+                                    if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
+                                        #new_index = max(0, min(count - 1, current_index + delta))
+                                        new_index = max(0, min(count - 1, anchor_index + delta))
+                                    else:
+                                        new_index = clamp_index(current_index + delta, count)
 
                                 state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
                                 state_changed = True
@@ -2063,7 +2169,11 @@ def run_main_loop():
                                 if state["page"] == "pota" and panel_id == "pota_spots_summary":
                                     new_index = find_next_browse_index_for_pota_spots(r, model, current_index, delta)
                                 else:
-                                    new_index = clamp_index(current_index + delta, count)
+                                    if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
+                                        #new_index = max(0, min(count - 1, anchor_index + delta))
+                                        new_index = max(0, min(count - 1, current_index + delta))
+                                    else:
+                                        new_index = clamp_index(anchor_index + delta, count)
 
                                 if new_index != current_index:
                                     state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)

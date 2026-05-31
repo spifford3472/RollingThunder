@@ -1,7 +1,8 @@
 // vhf_side_b_summary.js
-// PURE RENDERER — displays controller/projector-owned Side B model only.
-// No Side B tuning, no Side B programming, no radio API calls,
-// no Redis access, no intent execution.
+// PURE RENDERER — displays controller/projector-owned VHF page status/options model.
+// START/STOP emits only the safe vhf.scan.set_enabled UI intent through runtime.
+// No Redis access, no SQLite reads, no distance calculation, no radio control,
+// no adapter calls, no rigctl, no PTT/transmit controls, no memory operations.
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -14,20 +15,37 @@ function esc(value) {
 }
 
 function unwrapObject(value) {
-  if (!value) return {};
+  let v = value;
 
-  if (
-    typeof value === "object" &&
-    value.value &&
-    typeof value.value === "object" &&
-    !Array.isArray(value.value)
-  ) {
-    return value.value;
+  for (let i = 0; i < 4; i++) {
+    if (!v) return {};
+
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s) return {};
+      try {
+        v = JSON.parse(s);
+        continue;
+      } catch (_) {
+        return {};
+      }
+    }
+
+    if (
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      v.value !== undefined
+    ) {
+      v = v.value;
+      continue;
+    }
+
+    if (typeof v === "object" && !Array.isArray(v)) return v;
+
+    return {};
   }
 
-  if (typeof value === "object" && !Array.isArray(value)) return value;
-
-  return {};
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 
 function text(value, fallback = "-") {
@@ -35,164 +53,375 @@ function text(value, fallback = "-") {
   return s || fallback;
 }
 
-function hasModel(obj) {
-  return !!obj && typeof obj === "object" && Object.keys(obj).length > 0;
+function firstText(...values) {
+  for (const value of values) {
+    const s = String(value ?? "").trim();
+    if (s) return s;
+  }
+  return "";
 }
 
-function radioLine(radio) {
-  if (!hasModel(radio)) return "VHF radio status unknown";
-
-  const status = text(radio?.status || radio?.state || radio?.availability, "");
-  const reason = text(radio?.reason || radio?.message, "");
-
-  if (status && reason) return `${status} — ${reason}`;
-  return status || reason || "VHF radio model present";
+function boolish(value) {
+  if (value === true || value === 1) return true;
+  const s = String(value ?? "").trim().toLowerCase();
+  return ["1", "true", "yes", "y", "on", "enabled", "active", "scanning"].includes(s);
 }
 
-function freqLine(sideB) {
-  const direct = text(sideB?.frequency || sideB?.freq || sideB?.frequency_mhz, "");
-  if (direct) return direct;
-
-  const hz = Number(sideB?.freq_hz || sideB?.frequency_hz || 0);
-  if (Number.isFinite(hz) && hz > 0) return (hz / 1000000).toFixed(5);
-
-  const mhz = Number(sideB?.freq_mhz || 0);
-  if (Number.isFinite(mhz) && mhz > 0) return mhz.toFixed(5);
-
-  return "—";
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
-function activityLine(sideB) {
-  const parts = [];
+function statusPanel(page) {
+  const sp = page?.status_panel;
+  return sp && typeof sp === "object" && !Array.isArray(sp) ? sp : {};
+}
 
-  const squelch = text(sideB?.squelch || sideB?.squelch_status || sideB?.open, "");
-  const last = text(sideB?.last_activity_utc || sideB?.updated_utc || sideB?.timestamp_utc, "");
-  const message = text(sideB?.reason || sideB?.message, "");
+function selectedRepeater(page, status) {
+  for (const candidate of [
+    status?.current_repeater,
+    status?.selected_repeater,
+    status?.repeater,
+    page?.current_repeater,
+    page?.selected_repeater,
+  ]) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate;
+  }
+  return {};
+}
 
-  if (squelch) parts.push(`Squelch ${squelch}`);
-  if (last) parts.push(last);
-  if (message) parts.push(message);
+function optionLabel(option) {
+  if (typeof option === "string") return option;
+  if (!option || typeof option !== "object") return "";
+  return firstText(option.label, option.name, option.id, option.key);
+}
 
-  return parts.join(" • ") || "No activity details supplied";
+function optionDisabled(option) {
+  if (!option || typeof option !== "object") return false;
+  return boolish(option.disabled) || boolish(option.noop) || String(option.status || "").toLowerCase() === "disabled";
+}
+
+function badgeLabel(badge) {
+  if (typeof badge === "string") return badge;
+  if (!badge || typeof badge !== "object") return "";
+  return firstText(badge.label, badge.name, badge.text, badge.kind, badge.type);
+}
+
+function repeaterBadges(repeater, status) {
+  const out = [];
+
+  for (const source of [status, repeater]) {
+    for (const badge of asArray(source?.badges)) {
+      const label = badgeLabel(badge);
+      if (label) out.push(label);
+    }
+
+    if (boolish(source?.ares) || boolish(source?.ares_flag) || boolish(source?.is_ares)) out.push("ARES");
+    if (boolish(source?.skywarn) || boolish(source?.skywarn_flag) || boolish(source?.is_skywarn)) out.push("SkyWarn");
+  }
+
+  return Array.from(new Set(out.map((x) => String(x).trim()).filter(Boolean)));
+}
+
+function renderBadges(repeater, status) {
+  const badges = repeaterBadges(repeater, status);
+  if (!badges.length) return "";
+
+  return `
+    <div style="display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.65rem;">
+      ${badges.map((label) => `
+        <span style="
+          display:inline-block;
+          border:1px solid rgba(255,255,255,.24);
+          border-radius:999px;
+          padding:.18rem .55rem;
+          font-size:.92rem;
+          font-weight:900;
+          letter-spacing:.025em;
+          background:rgba(255,255,255,.07);
+        ">${esc(label)}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderOptions(options) {
+  if (!options.length) {
+    return `<div class="rt-muted" style="font-size:1.05rem;">No VHF options supplied.</div>`;
+  }
+
+  return `
+    <div style="display:flex; gap:.45rem; flex-wrap:wrap;">
+      ${options.map((option) => {
+        const label = optionLabel(option) || "OPTION";
+        const disabled = optionDisabled(option);
+        const selected = boolish(option?.selected) || boolish(option?.active);
+
+        return `
+          <span style="
+            display:inline-block;
+            border:1px solid ${selected ? "rgba(255,255,255,.55)" : "rgba(255,255,255,.18)"};
+            border-radius:999px;
+            padding:.25rem .62rem;
+            font-size:.95rem;
+            font-weight:900;
+            opacity:${disabled ? ".42" : "1"};
+            background:${selected ? "rgba(255,255,255,.13)" : "rgba(255,255,255,.035)"};
+          ">${esc(label)}${disabled ? " · OFF" : ""}</span>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function inferScanEnabled(page, scan, status) {
+  if (typeof page?.scan_enabled === "boolean") return page.scan_enabled;
+  if (typeof status?.scan_enabled === "boolean") return status.scan_enabled;
+  if (typeof scan?.enabled === "boolean") return scan.enabled;
+  if (typeof scan?.requested === "boolean") return scan.requested;
+
+  const state = String(
+    status?.scan_state ||
+    status?.actual_scan_state ||
+    page?.scan_state ||
+    scan?.actual_scan_state ||
+    scan?.status ||
+    ""
+  ).trim().toLowerCase();
+
+  return ["enabled", "scanning", "active", "software_scanning"].includes(state);
+}
+
+function attachScanButton(container, enabled) {
+  const btn = container.querySelector("[data-rt-vhf-scan-toggle='1']");
+  if (!btn) return;
+
+  btn.addEventListener("click", () => {
+    container.dispatchEvent(new CustomEvent("rt-emit-intent", {
+      bubbles: true,
+      detail: {
+        intent: "vhf.scan.set_enabled",
+        params: { enabled: !enabled }
+      }
+    }));
+  });
 }
 
 export function renderVhfSideBSummary(container, panel, data) {
-  const radio = unwrapObject(data?.radio);
-  const sideB = unwrapObject(data?.side_b);
+  const page = unwrapObject(data?.page);
+  const scan = unwrapObject(data?.scan);
+  const status = statusPanel(page);
+  const repeater = selectedRepeater(page, status);
+  const options = asArray(page?.options);
 
-  const sideBPresent = hasModel(sideB);
+  const scanEnabled = inferScanEnabled(page, scan, status);
+  const actionLabel = scanEnabled ? "STOP SCAN" : "START SCAN";
 
-  const status = sideBPresent
-    ? text(sideB?.status || sideB?.state, "model present")
-    : "Side B monitor model not active yet";
+  const headline = firstText(
+    status.headline,
+    page.headline,
+    scan.headline,
+    scan.status,
+    "VHF Scan"
+  );
 
-  const label = sideBPresent
-    ? text(sideB?.label || sideB?.name || sideB?.channel, "Side B")
-    : "Side B / 146.520 Monitor";
+  const reason = firstText(
+    status.reason,
+    status.message,
+    page.reason,
+    scan.reason,
+    scan.message,
+    "Controller-owned VHF status model"
+  );
 
-  const mode = sideBPresent
-    ? text(sideB?.mode || sideB?.modulation, "—")
-    : "—";
+  const scanState = firstText(
+    status.scan_state,
+    status.actual_scan_state,
+    page.scan_state,
+    scan.actual_scan_state,
+    scan.status,
+    scan.state,
+    scanEnabled ? "enabled" : "disabled"
+  );
 
-  const freq = sideBPresent ? freqLine(sideB) : "—";
-  const activity = sideBPresent ? activityLine(sideB) : "Waiting for controller-provided Side B model.";
+  const callsign = firstText(
+    repeater.callsign,
+    repeater.call,
+    status.callsign,
+    status.call,
+    "—"
+  );
+
+  const name = firstText(
+    repeater.name,
+    repeater.label,
+    status.name,
+    status.label,
+    status.repeater_name,
+    "No repeater selected"
+  );
+
+  const frequency = firstText(
+    repeater.frequency,
+    repeater.frequency_label,
+    repeater.freq,
+    repeater.freq_label,
+    repeater.frequency_mhz,
+    repeater.freq_mhz,
+    status.frequency,
+    status.frequency_label,
+    status.frequency_mhz,
+    status.freq_mhz,
+    "—"
+  );
+
+  const subline = firstText(
+    repeater.subline,
+    repeater.description,
+    status.subline,
+    status.detail,
+    status.selected_detail,
+    ""
+  );
 
   container.innerHTML = `
     <div style="
       height:100%;
       box-sizing:border-box;
       display:grid;
-      grid-template-rows:auto 1fr auto;
-      gap:.9rem;
+      grid-template-rows:auto auto 1fr auto;
+      gap:.85rem;
       overflow:hidden;
     ">
       <div style="
         display:flex;
-        align-items:baseline;
+        align-items:flex-start;
         justify-content:space-between;
-        gap:.9rem;
+        gap:.85rem;
         overflow:hidden;
       ">
         <div style="min-width:0;">
           <div style="
-            font-size:2.35rem;
-            line-height:1.03;
+            font-size:2.15rem;
+            line-height:1.0;
             font-weight:950;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
-          ">${esc(label)}</div>
+          ">${esc(headline)}</div>
           <div class="rt-muted" style="
-            margin-top:.2rem;
-            font-size:1.35rem;
+            margin-top:.25rem;
+            font-size:1.08rem;
             line-height:1.12;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
-          ">${esc(status)}</div>
+          ">${esc(reason)}</div>
         </div>
 
+        <button
+          type="button"
+          data-rt-vhf-scan-toggle="1"
+          style="
+            flex:0 0 auto;
+            border:1px solid rgba(255,255,255,.28);
+            border-radius:16px;
+            padding:.75rem .95rem;
+            font-size:1.05rem;
+            line-height:1.0;
+            font-weight:950;
+            color:#fff;
+            background:${scanEnabled ? "rgba(255,80,80,.18)" : "rgba(90,210,130,.18)"};
+            cursor:pointer;
+          "
+          aria-label="${esc(actionLabel)}"
+        >${esc(actionLabel)}</button>
+      </div>
+
+      <div style="
+        border:1px solid rgba(255,255,255,.10);
+        border-radius:16px;
+        padding:.75rem .85rem;
+        background:rgba(255,255,255,.035);
+        overflow:hidden;
+      ">
+        <div class="rt-muted" style="font-size:1.0rem;">Scan State</div>
         <div style="
-          text-align:right;
-          flex:0 0 auto;
-          border:1px solid rgba(255,255,255,.10);
-          border-radius:14px;
-          padding:.6rem .85rem;
-          background:rgba(255,255,255,.035);
-        ">
-          <div class="rt-muted" style="font-size:1.05rem;">Mode</div>
-          <div style="font-size:1.65rem; line-height:1.05; font-weight:900;">${esc(mode)}</div>
-        </div>
+          margin-top:.2rem;
+          font-size:1.45rem;
+          line-height:1.08;
+          font-weight:950;
+          white-space:nowrap;
+          overflow:hidden;
+          text-overflow:ellipsis;
+        ">${esc(scanState)}</div>
       </div>
 
       <div style="
         min-height:0;
-        display:grid;
-        grid-template-columns:1fr 1fr;
-        gap:.85rem;
+        border:1px solid rgba(255,255,255,.10);
+        border-radius:18px;
+        padding:1rem;
+        background:rgba(255,255,255,.03);
+        overflow:hidden;
       ">
-        <div style="
-          border:1px solid rgba(255,255,255,.10);
-          border-radius:18px;
-          padding:1rem;
-          background:rgba(255,255,255,.03);
-          overflow:hidden;
-        ">
-          <div class="rt-muted" style="font-size:1.25rem;">Frequency</div>
-          <div style="
-            margin-top:.35rem;
-            font-size:3.1rem;
-            line-height:1.0;
-            font-weight:950;
-            letter-spacing:.025em;
-            white-space:nowrap;
-            overflow:hidden;
-            text-overflow:ellipsis;
-          ">${esc(freq)}</div>
-        </div>
+        <div class="rt-muted" style="font-size:1.02rem;">Current / Selected Repeater</div>
 
         <div style="
-          border:1px solid rgba(255,255,255,.10);
-          border-radius:18px;
-          padding:1rem;
-          background:rgba(255,255,255,.03);
-          overflow:hidden;
+          margin-top:.45rem;
+          display:grid;
+          grid-template-columns:minmax(0,1fr) auto;
+          gap:.8rem;
+          align-items:start;
         ">
-          <div class="rt-muted" style="font-size:1.25rem;">Control Path</div>
+          <div style="min-width:0;">
+            <div style="
+              font-size:2.0rem;
+              line-height:1.0;
+              font-weight:950;
+              white-space:nowrap;
+              overflow:hidden;
+              text-overflow:ellipsis;
+            ">${esc(callsign)}</div>
+            <div style="
+              margin-top:.32rem;
+              font-size:1.25rem;
+              line-height:1.12;
+              font-weight:850;
+              white-space:nowrap;
+              overflow:hidden;
+              text-overflow:ellipsis;
+            ">${esc(name)}</div>
+            ${subline ? `
+              <div class="rt-muted" style="
+                margin-top:.28rem;
+                font-size:1.0rem;
+                line-height:1.14;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
+              ">${esc(subline)}</div>
+            ` : ""}
+            ${renderBadges(repeater, status)}
+          </div>
+
           <div style="
-            margin-top:.45rem;
-            font-size:1.45rem;
-            line-height:1.18;
-            font-weight:850;
-            max-height:4.8em;
-            overflow:hidden;
-          ">${esc(radioLine(radio))}</div>
+            text-align:right;
+            flex:0 0 auto;
+            font-size:1.75rem;
+            line-height:1.0;
+            font-weight:950;
+            letter-spacing:.02em;
+            white-space:nowrap;
+          ">${esc(frequency)}</div>
         </div>
       </div>
 
-      <div class="rt-footer">
-        <span class="rt-muted" style="font-size:1.25rem;">${esc(activity)}</span>
+      <div>
+        <div class="rt-muted" style="font-size:.95rem; margin-bottom:.35rem;">Options</div>
+        ${renderOptions(options)}
       </div>
     </div>
   `;
+
+  attachScanButton(container, scanEnabled);
 }

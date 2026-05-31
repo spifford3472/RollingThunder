@@ -267,6 +267,11 @@ function validateIntent(intent, params) {
       }
     }
 
+  if (name === "vhf.scan.set_enabled") {
+    const enabled = Boolean(p.enabled ?? p.requested ?? false);
+    return { ok: true, intent: name, params: { enabled } };
+  }
+
     const park_ref = String(p.park_ref || "").trim();
     const their_pota_ref = String(p.their_pota_ref || park_ref || "").trim();
     const my_pota_refs = Array.isArray(p.my_pota_refs)
@@ -295,7 +300,7 @@ function validateIntent(intent, params) {
       },
     };
   }
-
+  
   if ([
     "ui.page.next",
     "ui.page.prev",
@@ -501,7 +506,8 @@ function isBrowseCapableType(panelType) {
     t === "pota_parks_summary" ||
     t === "pota_spots_summary" ||
     t === "hf_bands_summary" ||
-    t === "hf_spots_summary"
+    t === "hf_spots_summary" ||
+    t === "vhf_repeater_scan_summary" 
   );
 }
 
@@ -1384,6 +1390,22 @@ const UI_PROJECTION_TOPIC = "ui.projection.changed";
   }
 
   window.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      const s = nav.getState();
+      const activePanelId = String(s?.activePanelId || "").trim();
+
+      if (currentPageId === "vhf" && activePanelId === "vhf_side_b_summary") {
+        const slot = slotByPanelId.get("vhf_side_b_summary");
+        const btn = slot?.querySelector?.("[data-rt-vhf-scan-toggle='1']") || null;
+
+        if (btn && typeof btn.click === "function") {
+          e.preventDefault();
+          btn.click();
+          return;
+        }
+      }
+    }
+
     const mapped = keyToIntent(e);
     if (!mapped) return;
     e.preventDefault();
