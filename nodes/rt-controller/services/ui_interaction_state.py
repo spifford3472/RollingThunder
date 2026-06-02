@@ -2420,9 +2420,7 @@ def run_main_loop():
                                     state_changed = True
                                     publish_ui_result(r, intent)
 
-                                # CRITICAL: modal movement must publish immediately.
                                 if state_changed:
-                                    # Persist but DO NOT short-circuit loop
                                     save_state(r, state)
                                     last_persist_ms = now_ms()
                                     publish_state_changed(r, [INTERACTION_KEY], source="ui_interaction_state")
@@ -2491,37 +2489,26 @@ def run_main_loop():
                             panel_id = state["focus"]
 
                             if not isinstance(browse, dict) or browse.get("panel") != panel_id or not browse.get("active", True):
-                                anchor_index = int(model.get("anchor_index", 0))
-                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                    new_index = find_next_browse_index_for_pota_spots(r, model, anchor_index, delta)
-                                else:
-                                    if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
-                                        #new_index = max(0, min(count - 1, current_index + delta))
-                                        new_index = max(0, min(count - 1, anchor_index + delta))
-                                    else:
-                                        new_index = clamp_index(current_index + delta, count)
-
-                                state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
-                                state_changed = True
-
+                                try:
+                                    current_index = int(model.get("anchor_index", 0))
+                                except Exception:
+                                    current_index = 0
                             else:
                                 try:
                                     current_index = int(browse.get("selected_index", 0))
                                 except Exception:
                                     current_index = 0
 
-                                if state["page"] == "pota" and panel_id == "pota_spots_summary":
-                                    new_index = find_next_browse_index_for_pota_spots(r, model, current_index, delta)
-                                else:
-                                    if state["page"] == "vhf" and panel_id == "vhf_repeater_scan_summary":
-                                        #new_index = max(0, min(count - 1, anchor_index + delta))
-                                        new_index = max(0, min(count - 1, current_index + delta))
-                                    else:
-                                        new_index = clamp_index(anchor_index + delta, count)
+                            current_index = clamp_index(current_index, count)
 
-                                if new_index != current_index:
-                                    state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
-                                    state_changed = True
+                            if state["page"] == "pota" and panel_id == "pota_spots_summary":
+                                new_index = find_next_browse_index_for_pota_spots(r, model, current_index, delta)
+                            else:
+                                new_index = clamp_index(current_index + delta, count)
+
+                            if new_index != current_index or not isinstance(browse, dict) or browse.get("panel") != panel_id:
+                                state["browse"] = build_browse_state(state["page"], panel_id, model, new_index)
+                                state_changed = True
 
         now = now_ms()
 
@@ -2555,7 +2542,6 @@ def run_main_loop():
             spots_model = resolve_pota_spots_browse_model(r)
 
             if spots_model:
-                # Enter browse correctly
                 state["focus"] = "pota_spots_summary"
                 state["browse"] = build_browse_state(
                     "pota",
@@ -2564,14 +2550,13 @@ def run_main_loop():
                     0,
                 )
 
-                # Tune first spot
                 first_spot = selected_item_from_model(spots_model, 0)
                 if first_spot:
                     publish_radio_tune_intent(r, first_spot)
 
                 state["pending_action"] = None
                 state_changed = True
-
+                
         # Controller-owned services model refresh cadence.
         # HOME active: refresh every 60s.
         # Away from HOME: refresh every 1h.
