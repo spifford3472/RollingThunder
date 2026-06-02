@@ -15,8 +15,7 @@ Environment=RT_REDIS_DB=0
 Environment=RT_REDIS_TIMEOUT_SEC=0.35
 Environment=RT_POLL_SEC=15.0
 EnvironmentFile=/etc/rollingthunder/redis.env
-Environment=RT_UNIT_MAP_JSON={"rigctld":"rigctld.service","rigctld-watchdog":"rt-rigctld-watchdog.service","radio-presence":"rt-radio-presence.service","service-state-publisher":"rt-radio-service-state-publisher.service","ui-intent-worker":"rt-radio-ui-intent-worker.service"}
-
+Environment=RT_UNIT_MAP_JSON={"rigctld":"rigctld.service","rigctld-watchdog":"rt-rigctld-watchdog.service","radio-presence":"rt-radio-presence.service","service-state-publisher":"rt-radio-service-state-publisher.service","ui-intent-worker":"rt-radio-ui-intent-worker.service","external-fan-monitor":"rt-external-fan-monitor.service"}
 ExecStart=/usr/bin/python3 /opt/rollingthunder/nodes/rt-radio/services/rt-radio-service-state-publisher.py
 Restart=always
 RestartSec=10

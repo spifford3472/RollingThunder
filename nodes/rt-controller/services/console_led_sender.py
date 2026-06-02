@@ -25,6 +25,7 @@ POST_RESET_DELAY_SEC = 0.20
 POST_SNAPSHOT_DELAY_SEC = 0.20
 RETRY_SEC = 2.0
 POLL_SEC = 0.50
+FORCE_RESYNC_SEC = 30.0
 
 KEY_UI_LED_SNAPSHOT = "rt:ui:led_snapshot"
 
@@ -399,6 +400,7 @@ def main() -> int:
     ser: serial.Serial | None = None
     r: redis.Redis | None = None
     last_snapshot: dict[str, Any] | None = None
+    last_force_resync_at = 0.0
     last_push_token: str | None = None
 
     while _running:
@@ -433,7 +435,15 @@ def main() -> int:
 
             semantic_snapshot = read_led_snapshot(r)
             transport_snapshot = build_transport_snapshot(semantic_snapshot)
-            last_snapshot = send_snapshot_if_changed(ser, transport_snapshot, last_snapshot)
+            now = time.monotonic()
+
+            if now - last_force_resync_at >= FORCE_RESYNC_SEC:
+                send_line(ser, transport_snapshot)
+                log("forced snapshot resync")
+                last_snapshot = transport_snapshot
+                last_force_resync_at = now
+            else:
+                last_snapshot = send_snapshot_if_changed(ser, transport_snapshot, last_snapshot)
             last_push_token = send_show_push_if_needed(ser, semantic_snapshot, last_push_token)
 
             time.sleep(POLL_SEC)
@@ -451,6 +461,7 @@ def main() -> int:
             ser = None
             last_snapshot = None
             last_push_token = None
+            last_force_resync_at = 0.0
             time.sleep(RETRY_SEC)
 
     close_quietly(ser)

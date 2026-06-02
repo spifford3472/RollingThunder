@@ -65,6 +65,17 @@ function numOrNull(v) {
   return null;
 }
 
+function boolish(v, defaultValue = false) {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on", "running"].includes(s)) return true;
+    if (["0", "false", "no", "n", "off", "stopped"].includes(s)) return false;
+  }
+  return defaultValue;
+}
+
 /** Returns { ageMs, stale, okTs } where okTs indicates we had a usable timestamp. */
 function freshnessFrom(obj, tsField, staleAfterMs) {
   const ts = numOrNull(obj?.[tsField]);
@@ -414,6 +425,40 @@ export function renderTopbarCore(container, panel, data) {
   }
 }
 
+  // ---- External fan runtime indicator
+  // Renderer consumes projected rt:fan:external state only.
+  // It does not read GPIO, infer wiring, or command fans.
+  const externalFan = data?.external_fan || null;
+
+  let fanSymbol = "○";
+  let fanLabel = "FAN OFF";
+  let fanOpacity = 0.55;
+
+  if (!isObj(externalFan)) {
+    fanSymbol = "●";
+    fanLabel = "FAN ?";
+    fanOpacity = 0.45;
+  } else {
+    const fanUpdatedMs = numOrNull(externalFan.last_update_ms);
+    const fanStaleFlag = boolish(externalFan.stale, false);
+    const fanAgeMs = fanUpdatedMs == null ? null : Date.now() - fanUpdatedMs;
+    const fanStale = fanStaleFlag || fanUpdatedMs == null || fanAgeMs > 60000;
+
+    if (fanStale) {
+      fanSymbol = "○";
+      fanLabel = "FAN STALE";
+      fanOpacity = 0.35;
+    } else if (boolish(externalFan.running, false)) {
+      fanSymbol = "🌀";
+      fanLabel = "FAN";
+      fanOpacity = 1.0;
+    } else {
+      fanSymbol = "○";
+      fanLabel = "FAN OFF";
+      fanOpacity = 0.55;
+    }
+  }
+
   container.innerHTML = `
     <div class="rt-topbar"
         style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:6px 10px;">
@@ -444,6 +489,7 @@ export function renderTopbarCore(container, panel, data) {
           ${iconBadge({ symbol: gpsSymbol, label: gpsLabel, opacity: gpsOpacity })}
           ${iconBadge({ symbol: rigSymbol, label: "RIG", opacity: rigOpacity })}
           ${iconBadge({ symbol: vhfSymbol, label: "VHF", opacity: vhfOpacity })}
+          ${iconBadge({ symbol: fanSymbol, label: fanLabel, opacity: fanOpacity })}
           ${iconBadge({ symbol: cpuSymbol, label: "CPU", opacity: 1.0 })}
           ${weatherBadge({ symbol: weatherSymbol, label: weatherText, opacity: weatherOpacity, iconClass: weatherIconClass })}
         </div>

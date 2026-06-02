@@ -10,7 +10,7 @@
   "runtimeVersion": {
     "major": 0,
     "minor": 55,
-    "build": 89
+    "build": 90
   },
   "deploymentDefaults": {
     "fleet": "rollingthunder",
@@ -147,6 +147,17 @@
     "bind": "0.0.0.0",
     "port": 8630,
     "pollMs": 1000
+  },
+  "hardware": {
+    "external_fan": {
+      "enabled": true,
+      "gpio": 17,
+      "pin": 11,
+      "active_high": true,
+      "sample_interval_seconds": 0.2,
+      "stable_samples": 3,
+      "force_publish_seconds": 30
+    }
   },
   "services": {
     "redis_state": {

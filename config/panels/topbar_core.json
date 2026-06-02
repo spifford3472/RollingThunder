@@ -14,14 +14,15 @@
     { "id": "temp", "source": "state", "key": "rt:env:temp" },
     { "id": "weather", "source": "state", "key": "rt:weather:current" },
     { "id": "radio_state", "source": "state", "key": "rt:radio:state" },
-    { "id": "vhf_radio", "source": "state", "key": "rt:vhf:radio" }
+    { "id": "vhf_radio", "source": "state", "key": "rt:vhf:radio" },
+    { "id": "external_fan", "source": "state", "key": "rt:fan:external" }
   ],
   "meta": {
     "purpose": "Always-visible status bar (time, gps, alert indicator). No actions.",
     "title": " ",
     "contract": {
       "requiredBindings": ["clock"],
-      "allowNull": ["gps_fix", "gps_speed", "active_alerts", "temp"]
+      "allowNull": ["gps_fix", "gps_speed", "active_alerts", "temp", "external_fan"]
     }
   }
 }

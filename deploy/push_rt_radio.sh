@@ -62,7 +62,9 @@ UNITS=(
   "rt-rigctld-watchdog.service"
   "rt-radio-service-state-publisher.service"
   "rt-vhf-ic2730a-adapter-status.service"
+  "rt-external-fan-monitor.service"
 )
+
 
 UNITS_STR="$(printf '%q ' "${UNITS[@]}")"
 
@@ -87,6 +89,7 @@ fail_missing "${SYSTEMD_DIR}/rt-radio-deploy-report-publisher.timer"
 fail_missing "${SYSTEMD_DIR}/rigctld.service"
 fail_missing "${SYSTEMD_DIR}/rt-rigctld-watchdog.service"
 fail_missing "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service"
+fail_missing "${SYSTEMD_DIR}/rt-external-fan-monitor.service"
 
 fail_missing "${TOOLS_DIR}/publish_deploy_report.sh"
 fail_missing "${GLOBAL_TOOLS_DIR}/ui_intent_worker.py"
@@ -101,7 +104,7 @@ fail_missing "${SVC_DIR}/radio/radios/ft891.py"
 fail_missing "${SYSTEMD_DIR}/rt-radio-service-state-publisher.service"
 fail_missing "${SVC_DIR}/ic2730a_adapter.py"
 fail_missing "${SVC_DIR}/vhf_ic2730a_adapter_status.py"
-
+fail_missing "${SVC_DIR}/external_fan_monitor.py"
 
 
 # Common rsync excludes
@@ -216,9 +219,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   ssh "${TARGET_USER}@${TARGET_HOST}" "set -e
     chmod +x '${RT_TOOLS}/publish_deploy_report.sh' || true
     chmod +x '${RT_TOOLS}/ui_intent_worker.py' || true
+    chmod +x '${RT_SVC}/external_fan_monitor.py' || true
   "
 else
-  echo "[dry] would chmod +x ${RT_TOOLS}/publish_deploy_report.sh ${RT_TOOLS}/ui_intent_worker.py"
+  echo "[dry] would chmod +x ${RT_TOOLS}/publish_deploy_report.sh ${RT_TOOLS}/ui_intent_worker.py ${RT_SVC}/external_fan_monitor.py"
 fi
 
 echo "[push] Remove legacy deploy-report units (if present)"
@@ -272,6 +276,10 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     "${SYSTEMD_DIR}/rt-vhf-ic2730a-adapter-status.service" \
     "${UNIT_DST_DIR}/rt-vhf-ic2730a-adapter-status.service" "644"
 
+  push_root_file "${TARGET_HOST}" "${TARGET_USER}" \
+    "${SYSTEMD_DIR}/rt-external-fan-monitor.service" \
+    "${UNIT_DST_DIR}/rt-external-fan-monitor.service" "644"    
+
 else
   echo "[dry] would install units to ${UNIT_DST_DIR}: ${UNITS[*]}"
   echo "[dry] would install udev rule to ${UDEV_DST_DIR}/99-rollingthunder-ft891.rules"
@@ -311,6 +319,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
     sudo systemctl --no-pager --full status rt-radio-deploy-report-publisher.timer | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-radio-service-state-publisher.service | sed -n '1,40p' || true
     sudo systemctl --no-pager --full status rt-vhf-ic2730a-adapter-status.service | sed -n '1,40p' || true
+    sudo systemctl --no-pager --full status rt-external-fan-monitor.service | sed -n '1,40p' || true
     exit 0
   "
 
